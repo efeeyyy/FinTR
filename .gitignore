@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.venv/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Models, checkpoints, and experiment output
+models/
+checkpoints/
+outputs/
+runs/
+wandb/
+
+# Financial data: manifests/placeholders may be committed explicitly
+data/raw/*
+data/interim/*
+data/processed/*
+data/eval/*
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!data/eval/.gitkeep
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
