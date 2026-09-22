@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 
 DEFAULT_ENDPOINT = "wss://ws.7k2v9x1r0z8t4m3n5p7w.com/"
+DEFAULT_ORIGIN = "https://7k2v9x1r0z8t4m3n5p7w.com"
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +51,7 @@ class DispatchResult:
 @dataclass(frozen=True, slots=True)
 class CollectorConfig:
     endpoint: str = DEFAULT_ENDPOINT
+    origin: str = DEFAULT_ORIGIN
     open_timeout_seconds: float = 10.0
     receive_timeout_seconds: float = 5.0
     close_timeout_seconds: float = 5.0
@@ -62,6 +64,15 @@ class CollectorConfig:
             raise ValueError("endpoint must be an absolute wss:// URL")
         if parsed.query or parsed.fragment:
             raise ValueError("endpoint must not contain query or fragment data")
+        parsed_origin = urlsplit(self.origin)
+        if (
+            parsed_origin.scheme != "https"
+            or not parsed_origin.netloc
+            or parsed_origin.path
+            or parsed_origin.query
+            or parsed_origin.fragment
+        ):
+            raise ValueError("origin must be an absolute https:// origin")
         if self.max_events < 1:
             raise ValueError("max_events must be positive")
         if self.max_message_bytes < 1:

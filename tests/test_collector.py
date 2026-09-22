@@ -215,6 +215,54 @@ class SecretSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("init_data=[REDACTED]", message)
         self.assertNotIn(secret, "\n".join(record.getMessage() for record in records))
 
+    async def test_browser_origin_is_forwarded_to_connector(self) -> None:
+        connector_calls: list[dict] = []
+
+        class Provider:
+            def get_init_data(self) -> str:
+                return "query_id=SAFE-FIXTURE"
+
+        class EmptyConnection:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+            async def send(self, message: str) -> None:
+                pass
+
+            async def recv(self) -> str:
+                raise TimeoutError
+
+        def connector(url: str, **kwargs):
+            connector_calls.append(kwargs)
+            return EmptyConnection()
+
+        config = CollectorConfig(receive_timeout_seconds=0.01)
+        collector = WebSocketCollector(
+            Provider(),
+            config=config,
+            retry_policy=RetryPolicy(max_retries=0),
+            connector=connector,
+        )
+
+        await collector.collect((build_brokerages_request(),))
+
+        self.assertEqual(len(connector_calls), 1)
+        self.assertEqual(connector_calls[0]["origin"], config.origin)
+
+    def test_origin_must_be_a_bare_https_origin(self) -> None:
+        invalid_origins = (
+            "http://7k2v9x1r0z8t4m3n5p7w.com",
+            "https://7k2v9x1r0z8t4m3n5p7w.com/path",
+            "https://7k2v9x1r0z8t4m3n5p7w.com?query=value",
+        )
+        for origin in invalid_origins:
+            with self.subTest(origin=origin):
+                with self.assertRaisesRegex(ValueError, "absolute https:// origin"):
+                    CollectorConfig(origin=origin)
+
 
 class RateAndRetryTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_request_is_suppressed_within_window(self) -> None:

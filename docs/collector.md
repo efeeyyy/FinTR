@@ -43,6 +43,12 @@ Python 3.11+ destekler. İstemci güncel `websockets.asyncio.client.connect`
 API'sini kullanır; bağlantı, mesaj boyutu, receive ve close timeout'ları
 sınırlıdır.
 
+Canlı Mini App handshake'i tarayıcı origin'ini gönderir. Cloudflare, bu başlık
+olmadan isteği uygulamaya iletmeden HTTP 403 ile reddettiği için collector
+`Origin: https://7k2v9x1r0z8t4m3n5p7w.com` başlığını açıkça gönderir. Origin
+config'de query, fragment veya path kabul etmeyen ayrı bir HTTPS origin olarak
+doğrulanır; auth verisi yine yalnız URL'deki geçici `init_data` parametresidir.
+
 - Resmî paket: <https://pypi.org/project/websockets/>
 - Resmî asyncio client API:
   <https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html>

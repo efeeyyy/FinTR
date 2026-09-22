@@ -176,6 +176,7 @@ class WebSocketCollector:
         results: list[DispatchResult] = []
         async with self._connector(
             connection_url,
+            origin=self._config.origin,
             open_timeout=self._config.open_timeout_seconds,
             close_timeout=self._config.close_timeout_seconds,
             max_size=self._config.max_message_bytes,
