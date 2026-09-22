@@ -3,7 +3,7 @@
 import importlib.util
 import io
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -26,7 +26,7 @@ def fixture_frame(event_type: str) -> str:
 
 
 class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
-    async def run_smoke(self, results, *, requests=None, argv=()):
+    async def run_smoke(self, results, *, requests=None, argv=("--allow-session-takeover",)):
         parser = smoke._parser()
         args = parser.parse_args(argv)
         output = io.StringIO()
@@ -45,6 +45,31 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
             collector.return_value.collect.assert_awaited_once()
             config = collector.call_args.kwargs["config"]
         return code, output.getvalue(), config
+
+    async def test_session_takeover_flag_is_required_before_secret_or_connection(self):
+        parser = smoke._parser()
+        args = parser.parse_args(())
+        error = io.StringIO()
+        with (
+            patch.object(smoke, "WebSocketCollector") as collector,
+            patch.object(smoke, "InteractiveSecretProvider") as provider,
+            patch.object(smoke, "_requests") as requests,
+            redirect_stderr(error),
+        ):
+            with self.assertRaises(SystemExit) as captured:
+                await smoke._run(args, parser)
+
+        self.assertEqual(captured.exception.code, 2)
+        self.assertIn("allows only one active session", error.getvalue())
+        self.assertIn("--allow-session-takeover", error.getvalue())
+        provider.assert_not_called()
+        collector.assert_not_called()
+        requests.assert_not_called()
+
+    async def test_takeover_warning_is_visible_when_flag_is_present(self):
+        _, output, _ = await self.run_smoke(())
+        self.assertIn("WARNING", output)
+        self.assertIn("may close the active Telegram Mini App session", output)
 
     async def test_only_unknown_controls_fail_without_payload_output(self):
         results = await replay_frames((
@@ -116,7 +141,9 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
         for flag in ("--max-frames", "--max-events"):
             with self.subTest(flag=flag):
                 _, output, config = await self.run_smoke(
-                    (), argv=(flag, "2", "--timeout", "0.1")
+                    (), argv=(
+                        "--allow-session-takeover", flag, "2", "--timeout", "0.1"
+                    )
                 )
                 self.assertEqual(config.max_events, 2)
                 self.assertEqual(config.receive_timeout_seconds, 0.1)

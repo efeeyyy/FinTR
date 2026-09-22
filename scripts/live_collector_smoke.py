@@ -35,6 +35,11 @@ REQUEST_RESPONSE_EVENTS: dict[str, str] = {
     "get_custodian_diff": "custodian_diff_data",
 }
 
+SESSION_TAKEOVER_WARNING = (
+    "WARNING: this WebSocket connection may close the active Telegram Mini App "
+    "session because the provider allows only one active session per account/initData."
+)
+
 
 def _date(value: str) -> date:
     try:
@@ -55,6 +60,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--from-date", type=_date)
     parser.add_argument("--to-date", type=_date)
     parser.add_argument("--allow-large-range", action="store_true")
+    parser.add_argument(
+        "--allow-session-takeover",
+        action="store_true",
+        help=(
+            "Acknowledge that this connection may close the active Telegram Mini App "
+            "session. Required for every live run."
+        ),
+    )
     parser.add_argument(
         "--timeout", type=float, default=5.0,
         help="Timeout for each receive, in seconds (default: 5; maximum: 30).",
@@ -108,6 +121,13 @@ def _requests(args: argparse.Namespace, parser: argparse.ArgumentParser):
 
 
 async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    if not args.allow_session_takeover:
+        parser.error(
+            f"{SESSION_TAKEOVER_WARNING} Close the Mini App first, then rerun with "
+            "--allow-session-takeover."
+        )
+
+    print(SESSION_TAKEOVER_WARNING)
     if not 0 < args.timeout <= 30:
         parser.error("--timeout must be greater than 0 and at most 30 seconds")
     if not 1 <= args.max_events <= 50:

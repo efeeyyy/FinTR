@@ -113,12 +113,28 @@ normalized object. Replay hiçbir auth bilgisi gerektirmez.
 
 ## Live smoke
 
-Varsayılan smoke yalnız `get_brokerages` gönderir ve initData'yı hidden prompt
-ile ister:
+Canlı sağlayıcı aynı hesap/initData için tek aktif WebSocket oturumuna izin verir.
+Collector bağlantısı açık Telegram Mini App oturumunu kapatabilir ve Mini App'te
+“Başka Cihazdan Giriş Yapıldı” uyarısına yol açabilir. Eşzamanlı kullanım
+desteklenmez. Bu nedenle live smoke her çalıştırmada açık
+`--allow-session-takeover` onayı ister; flag yoksa initData istemeden ve ağa
+bağlanmadan exit code 2 ile durur.
+
+Güvenli çalışma sırası:
+
+1. Telegram Mini App açıkken gerekli `initData` değerini geçici olarak alın.
+2. Mini App'i kapatın; aynı oturumu eşzamanlı kullanmayın.
+3. Collector'ı `--allow-session-takeover` flag'iyle başlatın ve hidden prompt'a
+   initData'yı girin.
+4. Collector bittikten sonra Telegram'da Mini App'i yeniden açarak yeni oturum
+   başlatın.
+
+Varsayılan smoke yalnız `get_brokerages` gönderir:
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src"
-.\.venv\Scripts\python.exe scripts\live_collector_smoke.py
+.\.venv\Scripts\python.exe scripts\live_collector_smoke.py `
+  --allow-session-takeover
 ```
 
 Başarı (exit code 0), gönderilen request türlerinden **en az birinin** beklenen
@@ -152,6 +168,7 @@ Sembol snapshot'ları için tarihler açıkça verilmelidir:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\live_collector_smoke.py `
+  --allow-session-takeover `
   --symbol ASELS `
   --start-date 2026-09-01 `
   --end-date 2026-09-22 `
@@ -164,6 +181,7 @@ varsayılan değildir. Yalnız açık istekle eklenir:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\live_collector_smoke.py `
+  --allow-session-takeover `
   --symbol ASELS `
   --start-date 2026-09-01 --end-date 2026-09-22 `
   --custody-date 2026-09-22 `
