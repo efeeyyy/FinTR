@@ -32,6 +32,7 @@ Proje yatırım tavsiyesi, hedef fiyat veya doğrudan al/sat kararı üretmez.
 - Ürün davranışı: [`PROJECT_SPEC.md`](PROJECT_SPEC.md)
 - Mimari: [`docs/architecture.md`](docs/architecture.md)
 - Feature formülleri: [`docs/features.md`](docs/features.md)
+- Context örneği: [`docs/context_example_v0.md`](docs/context_example_v0.md)
 - Ortam raporu: [`docs/environment.md`](docs/environment.md)
 - Inference baseline: [`docs/inference_baseline.md`](docs/inference_baseline.md)
 - Aktif rubric: [`eval/rubrics/market_microstructure_v0.md`](eval/rubrics/market_microstructure_v0.md)
