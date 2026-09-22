@@ -121,6 +121,33 @@ $env:PYTHONPATH = "$PWD\src"
 .\.venv\Scripts\python.exe scripts\live_collector_smoke.py
 ```
 
+Başarı (exit code 0), gönderilen request türlerinden **en az birinin** beklenen
+response event'inin parser tarafından normalize edilmesini gerektirir. Yalnız
+handshake, `welcome`/`hb` veya istenmeyen bir known event yeterli değildir;
+beklenen response alınmazsa exit code 1 döner. Kontrol frame'lerinin yalnız event
+adı gösterilir; payload şemaları yorumlanmaz ve piyasa parser'larına eklenmez.
+
+Smoke eşlemesi `scripts/live_collector_smoke.py::REQUEST_RESPONSE_EVENTS` içindedir:
+
+| Request | Beklenen response |
+|---|---|
+| `get_brokerages` | `brokerages_data` |
+| `get_akd` | `akd_snapshot` |
+| `get_custodian` | `custodian_data` |
+| `get_custody_distribution` | `custody_distribution_data` |
+| `get_custody_stats` | `custody_stats_data` |
+| `custody_analysis` | `custody_analysis_data` |
+| `get_custodian_diff` | `custodian_diff_data` |
+
+`--max-frames` (varsayılan 8, en fazla 50), kontrol frame'leri dahil her bağlantı
+denemesindeki toplam frame sınırıdır. Eski `--max-events` aynı seçeneğin uyumlu
+alias'ıdır; yalnız piyasa event'lerini saymaz. `--timeout` (varsayılan 5 s,
+en fazla 30 s) her receive için ayrı sınırdır, toplam oturum deadline'ı değildir.
+Collector en fazla iki retry yapar; open/close timeout'ları da sınırlıdır.
+Beklenen yanıt, bounded collection tamamlandıktan sonra değerlendirilir.
+Bu smoke tüm requestlerin tamamlandığını veya sembol/tarih bazında yanıt
+korelasyonunu doğrulamaz; yalnız istenen response türüne ulaşıldığını doğrular.
+
 Sembol snapshot'ları için tarihler açıkça verilmelidir:
 
 ```powershell
