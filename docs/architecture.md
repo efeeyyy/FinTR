@@ -36,9 +36,12 @@ WebSocket / raw market data
         evaluation ------------> rubric metrikleri + failure örnekleri
 ```
 
-Bu aşamada WebSocket bağlantısı kurulmaz. `tests/fixtures/market/` altındaki
-sanitize mesajlar, gelecekteki sağlayıcı adaptörünün beklenen sınırını temsil
-eder.
+Bounded WebSocket collector uygulanmıştır. Kullanıcının canlı denemelerinde
+handshake başarılıdır; ancak `get_brokerages` için beklenen response henüz
+alınamamıştır. `tests/fixtures/market/` altındaki sanitize mesajlar offline
+sözleşmelerdir; canlı sağlayıcı şemasının doğrulandığını göstermez. Son gözlem ve
+public JS ile brokerage parser uyuşmazlığı için [collector sınırları](collector.md)
+belgesine bakın.
 
 ## Modül sorumlulukları
 
@@ -75,6 +78,11 @@ cache dosyaları Git'e eklenmez.
 ## Sonraki mimari dilim
 
 Context builder ve authentication'dan ayrıştırılmış bounded WebSocket collector
-tamamlanmıştır. Bir sonraki dilim persistent storage, retention ve provenance
-manifest tasarımıdır. Telegram authentication otomasyonu, bilinmeyen depth/trade
-request protokolleri, fiyat/işlem şeması ve veri lisansı ayrı mimari karar ister.
+offline testlidir; canlı provider entegrasyonu tamamlanmış değildir. Öncelikli
+doğrulama eşiği request/response akışını ve gerçek response şemasını kanıtlamak,
+fixture/parser uyuşmazlığını gidermek ve kaynak doğruluğu ile lisans/provenance
+koşullarını netleştirmektir. Bu provider yolu persistent collection ve
+dataset/training için hazır değildir. Persistent storage, retention ve provenance
+manifest tasarımı sonraki dilimdir; tasarım yapılması canlı toplamaya hazır
+olunduğu anlamına gelmez. Telegram authentication otomasyonu, bilinmeyen
+depth/trade request protokolleri ve fiyat/işlem şeması ayrı mimari karar ister.

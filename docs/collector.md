@@ -45,10 +45,56 @@ dispatcher'dan unknown result olarak geçer. Welcome gelmezse receive timeout'u
 veya toplam frame sınırı içinde request gönderilmeden dönülür. Bu sınırlar
 welcome beklenirken de geçerlidir; retry/dedup davranışı değişmemiştir.
 
-Bu sıra değişikliği henüz canlı doğrulanmamış bir hipotezdir: bildirilen son
-smoke'ta `welcome` ve yedi `hb` alınmış, `brokerages_data` alınmamıştır.
-Gönderimi welcome sonrasına taşımanın bunu çözdüğü iddia edilmez. Offline testler
-yalnız gönderim sırasını, tek seferlik tetiklemeyi ve bekleme sınırlarını doğrular.
+Welcome-sonrası gönderim kullanıcı tarafından canlı denendi; beklenen response
+yine alınmadı. Bu sıra değişikliği sorunu çözmüş sayılmaz. Offline testler yalnız
+gönderim sırasını, tek seferlik tetiklemeyi ve bekleme sınırlarını doğrular.
+
+## Canlı doğrulama durumu ve protokol sınırları
+
+Aşağıdaki canlı sonuçlar kullanıcı/yönetici tarafından bildirilen gözlemlerdir;
+bu dokümantasyon güncellemesinde yeni bağlantı kurulmadı. Public Mini App JS
+bulguları da yönetici tarafından aktarılan kaynak incelemesidir; canlı response
+örneği veya sunucu protokol garantisi değildir.
+
+- **Transport:** Origin düzeltmesinden sonra WebSocket handshake başarılıdır;
+  bildirilen denemelerde HTTP 403 giderilmiştir. `welcome` ve `hb` alınması,
+  piyasa request'inin sunucuda kabul edildiğini kanıtlamaz.
+- **Son smoke:** Mini App kapalıyken 35 frame sınırında bir `welcome` ve 34 `hb`
+  alınmış, `brokerages_data` alınmamış ve araç `Smoke failed` ile sonlanmıştır.
+  Önceki 8 frame sınırındaki ve welcome-sonrası gönderim denemelerinde de
+  beklenen response yoktur. Oturum çakışması son gözlemi açıklamıyor; asıl neden
+  henüz belirlenmedi.
+- **Gönderim kanıtının sınırı:** Repo kodu welcome sonrasında
+  `{"type":"get_brokerages"}` için `websocket.send()` çağrısını await eder.
+  Bu istemci davranışıdır; sunucunun request'i kabul ettiği, işlediği veya yanıt
+  verdiği doğrulanmamıştır. Frame sınırını artırmak ya da welcome sonrasına
+  ertelemek bu denemelerde beklenen response'u sağlamamıştır.
+- **Client-side cache:** Aktarılan public JS'teki `fetchBrokerages()` önce
+  in-memory ve güncel localStorage cache'ini kontrol eder. Yalnız cache yoksa
+  OPEN socket'e `{"type":"get_brokerages"}` gönderir. Mini App'te kurum
+  listesinin görünmesi tek başına yeni bir WebSocket response'u kanıtlamaz;
+  cache davranışı da collector'da yanıt gelmemesinin nedeni olarak doğrulanmış
+  değildir.
+
+Brokerage şemasında ayrıca çözülmemiş bir uyuşmazlık vardır:
+
+| Kanıt düzeyi | Beklenen biçim |
+|---|---|
+| Aktarılan public JS `brokerages_data` handler'ı | `e.data` array veya onun nested `.data` array'i; satırlarda `code`, `title`, `short_title` |
+| Repo fixture/parser sözleşmesi | `date` + `data.results` array'i; satırlarda `code`, `name` |
+| Alınmış canlı `brokerages_data` frame'i | Yok; gerçek response şeması doğrulanmadı |
+
+Repo beklentisi `tests/fixtures/market/brokerages_data.json` ve
+`src/fintr/data/parsers/brokerages.py` ile doğrulanabilir. Fixture canlı kaynaktan
+doğrulanmış bir şema olarak sunulmamalıdır. Public JS ile uyuşmazlık, ileride
+response gelirse parser uyumluluğu riski taşır; şu an event'in hiç gelmemesini
+açıklamaz. Bu kayıt kapsamında parser, fixture veya request eşlemesi değiştirilmedi.
+
+Bu provider yolu uçtan uca piyasa verisi erişimi, kaynak doğruluğu, persistent
+collection veya dataset/training için hazır değildir. Offline test başarısı
+canlı şema, veri bütünlüğü, lisans/izin ve provenance doğrulamasının yerine geçmez.
+Kalıcı toplama ve veri kullanımından önce gerçek response sözleşmesi ile
+kaynak/izin/provenance koşulları doğrulanmalıdır.
 
 ## Dependency seçimi
 
@@ -68,6 +114,9 @@ doğrulanır; auth verisi yine yalnız URL'deki geçici `init_data` parametresid
   <https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html>
 
 ## Desteklenen response event'leri
+
+Aşağıdaki liste kod/fixture düzeyindeki desteği gösterir; canlı sağlayıcıyla
+uçtan uca doğrulanmış event listesi değildir.
 
 - `depth_update`
 - `akd_snapshot`
