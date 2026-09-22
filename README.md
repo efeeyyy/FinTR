@@ -14,7 +14,9 @@ Proje yatırım tavsiyesi, hedef fiyat veya doğrudan al/sat kararı üretmez.
 - Quantized Qwen base-model inference baseline'ı kaydedildi.
 - Sanitize piyasa fixture'ları, stdlib veri modelleri, katı parser'lar ve
   deterministik feature engine eklendi.
-- Training, canlı WebSocket bağlantısı, veri toplama ve RAG henüz yoktur.
+- Authentication'dan ayrıştırılmış, kısa ömürlü WebSocket collector ve replay
+  transport eklendi; sürekli veri toplama henüz yoktur.
+- Training ve RAG henüz yoktur.
 
 ## Dizinler
 
@@ -33,6 +35,7 @@ Proje yatırım tavsiyesi, hedef fiyat veya doğrudan al/sat kararı üretmez.
 - Mimari: [`docs/architecture.md`](docs/architecture.md)
 - Feature formülleri: [`docs/features.md`](docs/features.md)
 - Context örneği: [`docs/context_example_v0.md`](docs/context_example_v0.md)
+- Collector: [`docs/collector.md`](docs/collector.md)
 - Ortam raporu: [`docs/environment.md`](docs/environment.md)
 - Inference baseline: [`docs/inference_baseline.md`](docs/inference_baseline.md)
 - Aktif rubric: [`eval/rubrics/market_microstructure_v0.md`](eval/rubrics/market_microstructure_v0.md)

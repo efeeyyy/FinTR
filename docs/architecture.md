@@ -44,6 +44,8 @@ eder.
 
 - `fintr.data.models`: normalize ve immutable piyasa veri sözleşmeleri.
 - `fintr.data.parsers`: mesaj türüne özgü doğrulama ve normalize etme.
+- `fintr.collector`: runtime secret provider, bounded WebSocket/replay transport,
+  event dispatcher, request builders ve freshness-aware snapshot assembler.
 - `fintr.features`: LLM'den bağımsız sayısal özellik hesapları.
 - `fintr.inference.context`: sınırlı, provenance taşıyan structured context ve
   deterministik text renderer.
@@ -72,7 +74,7 @@ cache dosyaları Git'e eklenmez.
 
 ## Sonraki mimari dilim
 
-Context builder tamamlanmıştır. Bir sonraki dilim, kimlik bilgilerini kaynak
-koddan ayıran ve normalize parser sınırına ham mesaj ileten canlı WebSocket
-collector tasarımıdır. Authentication, yeniden bağlanma, rate limit, saklama,
-fiyat/işlem şeması ve veri lisansı uygulamadan önce ayrı mimari karar ister.
+Context builder ve authentication'dan ayrıştırılmış bounded WebSocket collector
+tamamlanmıştır. Bir sonraki dilim persistent storage, retention ve provenance
+manifest tasarımıdır. Telegram authentication otomasyonu, bilinmeyen depth/trade
+request protokolleri, fiyat/işlem şeması ve veri lisansı ayrı mimari karar ister.

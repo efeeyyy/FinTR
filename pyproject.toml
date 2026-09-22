@@ -10,7 +10,9 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Proprietary" }
 authors = [{ name = "FinTR-LLM contributors" }]
-dependencies = []
+dependencies = [
+  "websockets>=17.1,<18",
+]
 
 [project.optional-dependencies]
 dev = [
