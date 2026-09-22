@@ -36,6 +36,20 @@ WebSocket transport ----> raw JSON frame
 Transport, event doğrulama ve parser katmanları ayrıdır. `ReplayTransport`, canlı
 bağlantı olmadan aynı dispatcher/parser yolunu kullanır.
 
+Canlı transport, request gönderimini ilk üst düzey `welcome` event'inin sonrasına
+erteler; gönderim döngüsü her bağlantı denemesinde yalnız bir kez çalışır.
+Tekrarlanan `welcome` veya `hb` yeniden gönderimi tetiklemez. `hb`, `error`,
+`banned` ve nested `market_update` içindeki bir `welcome` hazır sinyali sayılmaz.
+Welcome payload'ına özel şema eklenmez veya payload loglanmaz; event mevcut
+dispatcher'dan unknown result olarak geçer. Welcome gelmezse receive timeout'u
+veya toplam frame sınırı içinde request gönderilmeden dönülür. Bu sınırlar
+welcome beklenirken de geçerlidir; retry/dedup davranışı değişmemiştir.
+
+Bu sıra değişikliği henüz canlı doğrulanmamış bir hipotezdir: bildirilen son
+smoke'ta `welcome` ve yedi `hb` alınmış, `brokerages_data` alınmamıştır.
+Gönderimi welcome sonrasına taşımanın bunu çözdüğü iddia edilmez. Offline testler
+yalnız gönderim sırasını, tek seferlik tetiklemeyi ve bekleme sınırlarını doğrular.
+
 ## Dependency seçimi
 
 `websockets>=17.1,<18` kullanılır. 17.1, Python 3.12 Windows wheel'i sağlar ve

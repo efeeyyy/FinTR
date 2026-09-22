@@ -182,10 +182,7 @@ class WebSocketCollector:
             max_size=self._config.max_message_bytes,
             logger=_silent_websocket_logger(),
         ) as websocket:
-            for request in requests:
-                if await self._rate_limiter.acquire(request):
-                    await websocket.send(request.to_json())
-
+            requests_attempted = False
             while len(results) < self._config.max_events:
                 try:
                     async with asyncio.timeout(
@@ -194,7 +191,18 @@ class WebSocketCollector:
                         frame = await websocket.recv()
                 except TimeoutError:
                     break
-                results.append(self._dispatcher.dispatch_frame(frame))
+                result = self._dispatcher.dispatch_frame(frame)
+                results.append(result)
+                # Provider readiness hypothesis: only a top-level welcome opens sending.
+                if (
+                    not requests_attempted
+                    and result.event_type == "welcome"
+                    and result.wrapper_type is None
+                ):
+                    requests_attempted = True
+                    for request in requests:
+                        if await self._rate_limiter.acquire(request):
+                            await websocket.send(request.to_json())
         return tuple(results)
 
     async def collect(

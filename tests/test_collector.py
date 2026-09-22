@@ -1,9 +1,11 @@
+import asyncio
 import json
 import logging
 import unittest
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
 from fintr.collector.assembler import MarketSnapshotAssembler
 from fintr.collector.client import (
@@ -262,6 +264,95 @@ class SecretSafetyTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(origin=origin):
                 with self.assertRaisesRegex(ValueError, "absolute https:// origin"):
                     CollectorConfig(origin=origin)
+
+
+class WelcomeOrderingTests(unittest.IsolatedAsyncioTestCase):
+    async def collect_frames(self, frames, *, max_events=8):
+        actions = []
+        remaining = iter(frames)
+
+        class Connection:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def send(self, message):
+                actions.append(("send", message))
+
+            async def recv(self):
+                try:
+                    frame = next(remaining)
+                except StopIteration:
+                    actions.append(("wait", None))
+                    # Exercise the collector's real bounded receive timeout.
+                    await asyncio.Future()
+                actions.append(("recv", frame["type"]))
+                return json.dumps(frame)
+
+        provider = Mock()
+        connector = Mock(return_value=Connection())
+        config = CollectorConfig(max_events=max_events, receive_timeout_seconds=0.01)
+        collector = WebSocketCollector(
+            provider, config=config, connector=connector,
+            rate_limiter=RequestRateLimiter(
+                minimum_interval_seconds=0, deduplication_window_seconds=0,
+            ),
+        )
+        # Use only the transport path with a fake connector; no secret is requested.
+        results = await collector._collect_once(config.endpoint, (build_brokerages_request(),))
+        provider.get_init_data.assert_not_called()
+        connector.assert_called_once()
+        return actions, results
+
+    async def test_welcome_precedes_single_send_despite_repeated_controls(self):
+        with self.assertLogs("fintr.collector.dispatcher", level="DEBUG") as logs:
+            actions, results = await self.collect_frames((
+                {"type": "welcome", "data": {"opaque": "DO_NOT_PRINT"}},
+                {"type": "hb"}, {"type": "welcome"}, {"type": "hb"},
+                load("brokerages_data.json"),
+            ))
+        self.assertEqual(actions[:2], [
+            ("recv", "welcome"), ("send", '{"type":"get_brokerages"}'),
+        ])
+        self.assertEqual(sum(kind == "send" for kind, _ in actions), 1)
+        self.assertFalse(results[0].known)
+        self.assertIsNone(results[0].normalized)
+        self.assertIsInstance(results[-1].normalized, BrokerageDirectory)
+        self.assertNotIn("DO_NOT_PRINT", "\n".join(logs.output))
+
+    async def test_hb_before_welcome_does_not_trigger_send(self):
+        actions, _ = await self.collect_frames(({"type": "hb"}, {"type": "welcome"}))
+        self.assertEqual(actions[:3], [
+            ("recv", "hb"), ("recv", "welcome"),
+            ("send", '{"type":"get_brokerages"}'),
+        ])
+
+    async def test_no_welcome_timeout_sends_nothing(self):
+        actions, results = await self.collect_frames(())
+        self.assertEqual(actions, [("wait", None)])
+        self.assertEqual(results, ())
+
+    async def test_other_events_do_not_open_sending(self):
+        for event_type in ("hb", "error", "banned"):
+            with self.subTest(event_type=event_type):
+                actions, results = await self.collect_frames(({"type": event_type},))
+                self.assertFalse(any(kind == "send" for kind, _ in actions))
+                self.assertEqual(len(results), 1)
+
+    async def test_frame_limit_applies_while_waiting_for_welcome(self):
+        actions, results = await self.collect_frames((
+            {"type": "hb"}, {"type": "hb"}, {"type": "welcome"},
+        ), max_events=2)
+        self.assertEqual(actions, [("recv", "hb"), ("recv", "hb")])
+        self.assertEqual(len(results), 2)
+
+    async def test_nested_welcome_does_not_open_sending(self):
+        actions, _ = await self.collect_frames((
+            {"type": "market_update", "data": {"type": "welcome"}},
+        ))
+        self.assertFalse(any(kind == "send" for kind, _ in actions))
 
 
 class RateAndRetryTests(unittest.IsolatedAsyncioTestCase):
