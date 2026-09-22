@@ -1,142 +1,160 @@
 # FinTR-LLM ürün spesifikasyonu
 
-Durum: Taslak v0.1  
-Kapsam: Ürün davranışı ve değerlendirme gereksinimleri
+Durum: Taslak v0.2
+Kapsam: Türkiye/Borsa İstanbul piyasa mikroyapısı analizi
 
 ## 1. Amaç
 
-FinTR-LLM; KAP açıklamaları, finansal raporlar, faaliyet raporları ve finansal
-dipnotları Türkçe olarak açıklayan, önemli bilgileri çıkaran, dönemsel değişimleri
-karşılaştıran ve analiz için veri yeterliliğini değerlendiren bir doküman analiz
-sistemidir. Planlanan yöntem, açık ağırlıklı bir base LLM üzerinde QLoRA/SFT ve
-güncel bilgiyi veri-tarihli retrieval ile sağlamaktır.
+FinTR-LLM; Borsa İstanbul için derinlik, gerçekleşen işlemler, aracı kurum
+dağılımı (AKD), takas/saklama, kurum bilgisi ve fiyat-hacim verilerini ortak bir
+şemada birleştirip Türkçe açıklayan bir araştırma sistemidir. LLM, deterministik
+olarak hesaplanan özellikleri yorumlar; kaynak veriyi veya hesap motorunu ikame
+etmez.
 
-## 2. Kapsam dışı davranışlar
+Sistem yatırım tavsiyesi, hedef fiyat ya da doğrudan al/sat kararı vermek için
+tasarlanmaz. Çıktının amacı mevcut veriyi özetlemek, farklı zaman ufuklarındaki
+bulguları karşılaştırmak, çelişkileri ve veri eksiklerini göstermek ve kanıtın
+izin verdiği ölçüde koşullu yorum üretmektir.
 
-Sistem:
+## 2. Veri kapsamı
 
-- yatırım tavsiyesi vermez, hedef fiyat veya doğrudan al/sat kararı üretmez;
-- kaynakta bulunmayan rakam, tarih, olay veya açıklama üretmez;
-- fiyat hareketini finansal raporun kendisiyle karıştırmaz;
-- endeks üyeliğini finansal rapor doğruluğunun veya şirket kalitesinin kanıtı
-  saymaz;
-- somut kanıt olmadan şirketi, yönetimi veya işlemi “manipülatif” olarak
-  nitelendirmez;
-- tanımsız veya keyfi 1-10 risk/güven skorları üretmez.
+İlk ürün dilimi şu veri ailelerini kapsar:
 
-## 3. Girdi sözleşmesi
+- kademe bazlı alış/satış derinliği (`depth_update`);
+- aracı kurum dağılımı (`get_akd`, `akd_snapshot`);
+- takas/saklama anlık görünümü ve dönem farkları;
+- takas dağılımı, geçmişi ve yatırımcı istatistikleri;
+- aracı kurum kodu ve unvanı eşlemesi;
+- ileride eklenecek fiyat, hacim ve gerçekleşen işlem serileri.
 
-Her analiz girdisi mümkün olduğunda şu metadata ile taşınır:
+Her kayıt sembolünü, gözlem/işlem tarihini ve mümkünse kaynak zaman damgasını
+korur. Kimlik bilgileri, token, cookie ve session alanları kalıcı veri modelinin
+parçası değildir.
 
-- `document_id`, kaynak URL veya kaynak kimliği ve checksum;
-- doküman türü ve yayın/dönem tarihi;
-- şirket unvanı ve varsa BIST kodu;
-- para birimi, ölçek (TL, bin TL, milyon TL) ve konsolidasyon kapsamı;
-- bağımsız denetim durumu ve varsa revizyon ilişkisi;
-- sayfa, tablo, dipnot veya paragraf konumu.
+## 3. Temel ayrımlar
 
-Eksik metadata, model tarafından tahmin edilmez; analizi etkiliyorsa eksik veri
-olarak bildirilir.
+### 3.1 AKD ile takas aynı veri değildir
+
+AKD, seçilen işlem dönemi içindeki aracı kurum alış/satış akışını gösterir.
+Takas/saklama ise belirli tarihteki saklama bakiyesini veya tarihler arasındaki
+değişimi gösterir. Sistem bu iki veri ailesini birbirinin yerine kullanamaz ve
+aynı kurum kodunun görünmesini aynı yatırımcı ya da aynı ekonomik neden olarak
+yorumlayamaz.
+
+### 3.2 Gözlem ile neden aynı şey değildir
+
+Emir defteri dengesizliği, yoğun kurum alımı veya takas değişimi bir gözlemdir.
+Bunlardan manipülasyon, koordinasyon, sahiplik, niyet ya da gelecekteki fiyat
+yönü doğrudan çıkarılamaz. Nedensel iddialar için ayrıca doğrulanabilir kanıt
+gerekir.
+
+### 3.3 Deterministik hesap ile LLM yorumu ayrıdır
+
+Toplam lot, yoğunlaşma, spread ve dönem farkları feature engine tarafından açık
+formüllerle hesaplanır. LLM sayıları yeniden hesaplamak yerine verilen kaynak ve
+özellikleri açıklamak, ilişkilendirmek ve sınırlamalarını belirtmekle yükümlüdür.
 
 ## 4. Çıktı sözleşmesi
 
-Yanıt, göreve uygun olan bölümleri kullanır:
+Bir analiz çıktısı, görevle ilgili olduğu ölçüde şunları içermelidir:
 
-1. **Sade özet:** Belgenin söylediğini açık Türkçeyle aktarır.
-2. **Kanıtlanmış önemli noktalar:** Her iddiayı belge bölümü, dönem ve birimle
-   ilişkilendirir.
-3. **Finansal anlam:** Muhtemel etkileri kesin olgudan ayırır ve varsayımları
-   görünür kılar.
-4. **Dönem karşılaştırması:** Aynı tanım, para birimi, ölçek ve kapsam içindeki
-   karşılaştırılabilir dönemleri kullanır.
-5. **Eksik veri:** Yalnızca kararı veya yorumu maddi biçimde geliştirecek spesifik
-   verileri ve neden gerektiğini belirtir.
-6. **Belirsizlik/sınırlamalar:** Çelişki, okunamayan alan, muhasebe politikası
-   değişimi veya kapsam farkını açıklar.
+1. **Veri kapsamı:** Sembol, dönem, kullanılan veri aileleri ve eksik alanlar.
+2. **Kanıtlanmış gözlemler:** Kaynak değerler ve deterministik özellikler.
+3. **Çok ufuklu karşılaştırma:** Gün içi, 1 gün, 7 gün, 30 gün ve 90 gün
+   sonuçlarını karıştırmadan ayrı yorum.
+4. **Uyum ve çelişkiler:** Derinlik, AKD, takas ve fiyat-hacim bulgularının
+   birbirini desteklediği veya ayrıştığı noktalar.
+5. **Koşullu yorum:** Alternatif açıklamalar ve nedensellik sınırı.
+6. **Eksik veri:** Yalnızca sonucu maddi biçimde geliştirecek spesifik alan,
+   dönem ve gerekçe.
 
 ## 5. Fonksiyonel gereksinimler
 
-### FR-01 — KAP açıklaması özeti
+### FR-01 — Sayısal sadakat
 
-Sistem olayın ne olduğunu, tarafları, tarihi, tutarı/birimi, koşulları ve mevcut
-durumu sade Türkçeyle özetlemelidir. Belirtilmeyen unsurlar “belirtilmemiş” olarak
-kalmalıdır.
+Kaynak değerlerin işareti, birimi, sembolü ve tarihi korunmalıdır. Türetilmiş her
+değer belgelenmiş bir formüle dayanmalı; sıfır payda için yanıltıcı oran
+üretilmemelidir.
 
-### FR-02 — Olası finansal anlam
+### FR-02 — Derinlik analizi
 
-Sistem olayın gelir, gider, varlık, yükümlülük, özkaynak ve nakit akışı üzerindeki
-muhtemel kanallarını açıklamalı; gerçekleşmiş muhasebe etkisi ile geleceğe dönük
-olasılığı birbirinden ayırmalıdır.
+Sistem toplam ve ilk beş kademe alış/satış lotlarını, alış-satış dengesizliğini,
+spread'i ve spread yüzdesini hesaplayabilmelidir. Tek anlık derinlik görüntüsünü
+kalıcı talep veya gelecekteki işlem garantisi olarak sunmamalıdır.
 
-### FR-03 — Finansal tablo değişim analizi
+### FR-03 — AKD analizi
 
-Sistem gelir tablosu, bilanço ve nakit akış tablosundaki önemli değişimleri mutlak
-tutar, karşılaştırılabilir oran ve dönem bazında saptamalıdır. Payda sıfırsa veya
-dönemler karşılaştırılabilir değilse yanıltıcı yüzde üretmemelidir.
+Sistem en yüksek net alıcı/satıcıları, ilk beş yoğunlaşmasını ve kurum maliyeti
+ile piyasa fiyatı farkını hesaplayabilmelidir. Negatif net değerleri korumalı;
+kurum kodu eksik satırı geçerli kabul etmemelidir.
 
-### FR-04 — Dönem karşılaştırılabilirliği
+### FR-04 — Takas/saklama analizi
 
-Sistem çeyrek/kümülatif dönem, enflasyon muhasebesi, para birimi, ölçek,
-konsolidasyon ve yeniden sınıflandırma farklarını kontrol etmeden dönemsel sonuç
-çıkarmamalıdır.
+Sistem 1/7/30/90 günlük değişimleri, ilk beş saklama yoğunlaşmasını ve kurum
+akışının zaman içindeki yön tutarlılığını hesaplayabilmelidir. Takas değişimini
+tek başına aynı günkü işlem, nihai yatırımcı kimliği veya niyet kanıtı saymamalıdır.
 
-### FR-05 — Dipnot çıkarımı
+### FR-05 — Çok kaynaklı muhakeme
 
-Sistem en azından borç vade/faiz yapısı, teminat ve taahhütler, davalar,
-karşılıklar, ilişkili taraf işlemleri, segmentler, kur riski, değer düşüklüğü,
-süreklilik ve bilanço sonrası olaylar gibi maddi dipnotları taramalıdır.
+Derinlik, AKD, takas ve fiyat-hacim verileri ayrı kaynaklar olarak etiketlenmeli;
+farklı tarih veya kapsamlı veriler doğrudan birleştirilmemelidir. Uyumlu ve
+çelişkili sinyaller ayrı gösterilmelidir.
 
 ### FR-06 — Veri yeterliliği
 
-Sistem istenen analiz için girdinin yeterli olup olmadığını belirlemelidir. Eksik
-ise genel “daha fazla veri” talebi yerine gerekli doküman/dönem/kalemi ve kullanım
-amacını söylemelidir. Veri yeterliyse gereksiz takip sorusu sormamalıdır.
+Sistem istenen yorum için veri yeterliyse gereksiz ek veri istememelidir. Veri
+yetersizse genel bir talep yerine gereken veri ailesini, sembolü, dönemi ve
+analizdeki kullanımını belirtmelidir.
 
-### FR-07 — Sayısal ve olgusal grounding
+### FR-07 — Belirsizlik ve nedensellik
 
-Her rakam kaynakla aynı değer, işaret, birim, para birimi ve dönemde olmalıdır.
-Türetilen rakam açıkça “hesaplanan” diye etiketlenmeli ve yeniden üretilebilir
-olmalıdır. Kaynaklar çelişirse öncelik veya seçim gerekçesi açıklanmalıdır.
+Olgu, deterministik hesap, çıkarım ve hipotez açıkça ayrılmalıdır. Kanıt olmadan
+“manipülatif”, “topluyor”, “dağıtıyor” gibi niyet veya suçlayıcı etiketler
+kullanılmamalıdır.
 
-### FR-08 — Rapor/piyasa ayrımı
+### FR-08 — Fiyat tahmini sınırı
 
-Finansal doküman analizi ile fiyat, hacim, likidite ve endeks bağlamı ayrı
-bölümlerde tutulmalıdır. Fiyat tepkisinin nedenselliği yalnızca zaman birlikteliği
-üzerinden iddia edilmemelidir.
+Sistem desteklenmeyen fiyat yönü, getiri, hedef fiyat veya kesin zamanlama
+tahmini üretmemelidir. Olası senaryolar sunulursa koşullar ve ters senaryo da
+belirtilmelidir.
 
-### FR-09 — Market context retrieval
+### FR-09 — Eksik ve hatalı veri
 
-BIST30/BIST50/BIST100 üyeliği, likidite, fiili dolaşım ve işlem hacmi model
-ağırlıklarında kalıcı gerçek olarak kullanılmamalıdır. Bu alanlar kaynak ve
-geçerlilik tarihi taşıyan retrieval kayıtlarından alınmalı, finansal rapor
-doğruluğu göstergesi olarak kullanılmamalıdır.
+Parser yanlış tipi açık hata ile reddetmeli; sayısal metni, boş tarihi veya
+eksik kurum kodunu sessizce dönüştürmemelidir. Gerçek sıfır ile eksik değer
+birbirinden ayrılmalıdır.
 
-### FR-10 — Somut yönetişim ve denetim sinyalleri
+### FR-10 — İzlenebilirlik
 
-Sistem bağımsız denetim görüşünü, finansal tablo düzeltmelerini, ilişkili taraf
-işlemlerini ve SPK/KAP açıklamalarını kaynakta yer aldığı kapsamda değerlendirmeli;
-etiketleyici veya suçlayıcı sonucu kanıtsız genellememelidir.
+Normalize kayıtlar sembol, tarih/zaman, kaynak mesaj türü ve dönüşüm sürümüne
+kadar izlenebilir olmalıdır. Feature çıktısı kullanılan formül sürümünü ve girdi
+zamanını taşıyabilmelidir.
 
-### FR-11 — Kriter tabanlı göstergeler
+## 6. Kapsam dışı
 
-İleride eklenen risk veya güven göstergeleri; girdi alanlarını, eşikleri, eksik
-veri davranışını, hesap formülünü ve gerekçeyi göstermelidir. Tek başına modelin
-öznel kanaatine dayanan puan yasaktır.
+- Canlı WebSocket bağlantısı, kimlik doğrulama ve veri sağlayıcı entegrasyonu;
+- dataset toplama, KAP scraping veya RAG;
+- training, PEFT/LoRA, TRL ve QLoRA;
+- emir iletimi, portföy yönetimi veya otomatik al/sat;
+- tek metrikten üretilen keyfi güven/risk skoru;
+- kaynakta olmayan kurum, yatırımcı, fiyat veya hacim bilgisini uydurma.
 
-## 6. Kalite kapıları
+## 7. Kalite kapıları
 
-- Numerical accuracy ve factual grounding için kritik hata toleransı sıfırdır.
-- Hallüsinasyon içeren örnek, ortalama skor iyi olsa dahi ayrıca raporlanır.
-- Eval split'i training ve model seçimi verisinden doküman ailesi bazında ayrıdır.
-- Retrieval kullanılan testlerde bilgi kaynağı ve “as-of” tarihi kaydedilir.
-- Her sürüm, `eval/rubrics/financial_document_analysis_v0.md` rubric'iyle
-  karşılaştırılabilir bir rapor üretir.
+- Sayısal sadakat ve sembol/tarih eşleşmesinde kritik hata toleransı sıfırdır.
+- AKD/takas karışıklığı ve desteklenmeyen fiyat tahmini ayrıca kritik hata olarak
+  raporlanır.
+- Evaluation fixture'ları training verisine ve gelecekteki retrieval corpus'una
+  karıştırılmaz.
+- Parser ve feature formülleri LLM olmadan birim testlerinden geçmelidir.
+- Model değerlendirmesi `eval/rubrics/market_microstructure_v0.md` ile
+  sürümlenmelidir.
 
-## 7. Kabul ölçütleri — ilk ürün dilimi
+## 8. İlk ürün dilimi kabul ölçütleri
 
-İlk dikey dilim, sentetik olmayan ve lisans/izin durumu kayıtlı küçük bir eval
-setinde KAP özeti ile iki dönemli finansal tablo karşılaştırmasını çalıştırmalı;
-çıktıdaki her sayısal iddia kaynağa bağlanmalı ve eksik veri davranışı ayrı test
-edilmelidir. Eşikler pilot annotation sonrasında, rubric değiştirilmeden önce
-sürüm numarası artırılarak belirlenecektir.
-
+Sanitize edilmiş fixture'ların tümü stdlib veri modellerine parse edilmeli;
+eksik alan ve yanlış tip testleri açık hata üretmelidir. İstenen feature'lar
+deterministik biçimde hesaplanmalı ve formülleri belgelenmelidir. Mevcut
+quantized Qwen inference yolu değişmeden kalmalı; sonraki aşamada yalnızca
+normalize `MarketSnapshot` ve feature çıktısını kullanan context builder
+eklenmelidir.

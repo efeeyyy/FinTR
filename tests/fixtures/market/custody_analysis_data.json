@@ -1,0 +1,21 @@
+{
+  "type": "custody_analysis_data",
+  "data": {
+    "symbol": "GLRMK",
+    "dates": ["2026-09-20", "2026-09-21", "2026-09-22"],
+    "custody": {
+      "2026-09-20": [
+        {"broker_code": "AAA", "percentage": 29.8, "lot_count": 30000000, "daily_net": 250000, "net_size": 250000, "cost": 121.4},
+        {"broker_code": "BBB", "percentage": 1.0, "lot_count": 1000000, "daily_net": -100000, "net_size": -100000, "cost": 124.0}
+      ],
+      "2026-09-21": [
+        {"broker_code": "AAA", "percentage": 30.1, "lot_count": 31000000, "daily_net": 1000000, "net_size": 1250000, "cost": 122.0},
+        {"broker_code": "BBB", "percentage": 0.5, "lot_count": 500000, "daily_net": -500000, "net_size": -600000, "cost": 123.8}
+      ],
+      "2026-09-22": [
+        {"broker_code": "AAA", "percentage": 30.6, "lot_count": 31500432, "daily_net": 500432, "net_size": 1750432, "cost": 122.8},
+        {"broker_code": "BBB", "percentage": 0.0, "lot_count": 0, "daily_net": 0, "net_size": -600000, "cost": 0}
+      ]
+    }
+  }
+}

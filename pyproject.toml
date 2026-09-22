@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "fintr-llm"
 version = "0.0.1"
-description = "Turkish financial document analysis research toolkit"
+description = "Turkish BIST market microstructure analysis research toolkit"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Proprietary" }
@@ -28,4 +28,3 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-

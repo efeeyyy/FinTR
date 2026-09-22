@@ -1,0 +1,13 @@
+{
+  "type": "akd_snapshot",
+  "symbol": "GLRMK",
+  "date": "2026-09-22",
+  "market_price": 123.50,
+  "data": {
+    "results": [
+      {"code": "AAA", "buy_lots": 150000, "sell_lots": 50000, "net_lots": 100000, "average_cost": 122.80, "buy_value": 18420000.0, "sell_value": 6175000.0},
+      {"code": "BBB", "buy_lots": 20000, "sell_lots": 95000, "net_lots": -75000, "average_cost": 124.10, "buy_value": 2470000.0, "sell_value": 11732500.0},
+      {"code": "CCC", "buy_lots": 0, "sell_lots": 0, "net_lots": 0, "average_cost": 0}
+    ]
+  }
+}

@@ -1,68 +1,74 @@
-# Architecture draft
+# FinTR-LLM architecture
 
 ## Tasarım ilkeleri
 
-- Belge kanıtı, hesaplanan sonuç ve yorum birbirinden ayrılır.
-- Güncel piyasa bağlamı model ağırlığında değil, kaynak ve tarih taşıyan retrieval
-  katmanında tutulur.
-- Evaluation verisi training ve retrieval corpus'undan fiziksel ve mantıksal
-  olarak ayrılır.
-- Her ara artefact kaynağına, dönüşüm sürümüne ve checksum'a kadar izlenebilir.
-- Bileşenler küçük veri örnekleriyle bağımsız test edilebilir.
+- Ham piyasa verisi, normalize kayıt, deterministik özellik ve LLM yorumu ayrı
+  katmanlardır.
+- Sembol, tarih/zaman ve mesaj türü dönüşüm boyunca korunur.
+- Parser'lar eksik alanı veya yanlış tipi sessizce düzeltmez.
+- AKD ve takas farklı zaman/kapsam semantiğine sahip veri aileleridir.
+- Evaluation verisi gelecekteki training verisinden fiziksel ve mantıksal olarak
+  ayrı tutulur.
+- Mevcut quantized Qwen inference katmanı veri toplama ve hesap katmanından
+  bağımsız kalır.
 
-## Planlanan akış
+## Hedef akış
 
 ```text
-Kaynak doküman + metadata
-          |
-          v
-  Alma / doğrulama ------> immutable raw + manifest
-          |
-          v
- Ayrıştırma / OCR -------> sayfa, tablo, dipnot konumları
-          |
-          v
- Normalizasyon ----------> birim, para birimi, dönem, şirket kimliği
-          |
-          +--------------> training/validation hazırlama
-          |                       (group-aware split)
-          |
-          +--------------> retrieval index
-          |                       (kaynak + as-of tarihi)
-          v
- Prompt / inference ------> iddia + kanıt + belirsizlik
-          |
-          v
- Evaluation --------------> rubric metrikleri + hata örnekleri
+WebSocket / raw market data
+            |
+            v
+          parser --------------> açık şema/tip hataları
+            |
+            v
+     normalized schema --------> stdlib dataclasses + symbol/date provenance
+            |
+            v
+       feature engine ---------> deterministik, sürümlü formüller
+            |
+            v
+       context builder --------> kaynak / hesap / eksik veri ayrımı
+            |
+            v
+       LLM inference ----------> Türkçe açıklama + koşullu muhakeme
+            |
+            v
+        evaluation ------------> rubric metrikleri + failure örnekleri
 ```
+
+Bu aşamada WebSocket bağlantısı kurulmaz. `tests/fixtures/market/` altındaki
+sanitize mesajlar, gelecekteki sağlayıcı adaptörünün beklenen sınırını temsil
+eder.
 
 ## Modül sorumlulukları
 
-- `fintr.data`: şema, manifest, checksum, parsing, normalizasyon ve split kontrolleri
-- `fintr.training`: SFT/QLoRA config üretimi, seed ve deney provenance kaydı
-- `fintr.inference`: yapılandırılmış prompt/çıktı, alıntı/kanıt bağlama
-- `fintr.evaluation`: rubric metrikleri, deterministik kontroller ve raporlama
-- `fintr.retrieval`: veri-tarihli BIST/market context ve doküman kanıt erişimi
+- `fintr.data.models`: normalize ve immutable piyasa veri sözleşmeleri.
+- `fintr.data.parsers`: mesaj türüne özgü doğrulama ve normalize etme.
+- `fintr.features`: LLM'den bağımsız sayısal özellik hesapları.
+- `fintr.inference`: mevcut model yükleme ve metin üretimi; bu aşamada değişmez.
+- `fintr.evaluation`: piyasa mikroyapısı rubric'i ve deterministik kontroller.
+- `fintr.training` / `fintr.retrieval`: sonraki aşamalar; bu çalışmada devre dışı.
+
+## Veri modelleri
+
+Fiyat, maliyet ve yüzdeler `Decimal`; lot, değer ve yatırımcı adedi `int`; tarih
+alanları `date`/`datetime` olarak normalize edilir. Koleksiyonlar immutable
+`tuple` biçimindedir. `MarketSnapshot`, aynı sembole ait opsiyonel veri ailelerini
+bir araya getirir; tarih/kapsam uyumunu context builder ayrıca doğrulayacaktır.
 
 ## Veri bölgeleri
 
-- `data/raw`: değiştirilemez kaynak kopyaları ve manifestler
-- `data/interim`: OCR/parsing çıktıları; yeniden üretilebilir
-- `data/processed`: training/validation için normalize kayıtlar
-- `data/eval`: erişimi ve kullanımı ayrıştırılmış gold evaluation verisi
+- `tests/fixtures/market`: yalnızca sanitize edilmiş küçük protokol örnekleri.
+- `data/raw`: gelecekteki değiştirilemez ham veri; Git dışında.
+- `data/interim`: yeniden üretilebilir parsing çıktıları; Git dışında.
+- `data/processed`: normalize araştırma verisi; Git dışında.
+- `data/eval`: erişimi ayrılmış gold evaluation verisi; Git dışında.
 
-Gerçek finansal dokümanlar Git'e eklenmemelidir. Büyük artefact ve lisanslı veri
-saklama yöntemi, veri toplamadan önce ayrı bir mimari kararla belirlenecektir.
+Token, cookie, session, kimlik bilgisi, gerçek lisanslı veri, model ağırlığı ve
+cache dosyaları Git'e eklenmez.
 
-## Henüz verilmemiş kararlar
+## Sonraki mimari dilim
 
-- Base model ve tokenizer
-- Doküman parsing/OCR araç zinciri
-- Eğitim işletim sistemi (native Windows veya WSL2/Linux)
-- Veri lisanslama ve saklama altyapısı
-- Retrieval store ve embedding modeli
-- Kesin bağımlılık sürümleri ve lockfile biçimi
-
-Bu kararlar benchmark, lisans, Türkçe performansı ve 8 GiB VRAM bellek bütçesi
-görülmeden sabitlenmeyecektir.
-
+Bir sonraki güvenli dilim, `MarketSnapshot` ve feature sonuçlarını sınırlı ve
+izlenebilir bir metin bağlamına dönüştüren context builder'dır. Canlı bağlantı,
+saklama altyapısı, fiyat/işlem şeması ve veri lisansı ayrı mimari karar ister.

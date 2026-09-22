@@ -1,0 +1,12 @@
+{
+  "type": "custodian_data",
+  "symbol": "GLRMK",
+  "date": "2026-09-22",
+  "data": {
+    "results": [
+      {"custodian": "AAA", "value": 31500432, "percentage": 30.6},
+      {"custodian": "BBB", "value": 0, "percentage": 0.0},
+      {"custodian": "CCC", "value": 21474836480, "percentage": 69.4}
+    ]
+  }
+}

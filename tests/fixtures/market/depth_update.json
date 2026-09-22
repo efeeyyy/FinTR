@@ -1,0 +1,16 @@
+{
+  "type": "depth_update",
+  "symbol": "GLRMK",
+  "timestamp": "2026-09-22T10:15:30+03:00",
+  "data": {
+    "bids": [
+      {"price": 123.40, "lots": 9000000000000, "order_count": 12},
+      {"price": 123.30, "lots": 2500, "order_count": 8},
+      {"price": 123.20, "lots": 0, "order_count": 0}
+    ],
+    "asks": [
+      {"price": 123.50, "lots": 3100, "order_count": 9},
+      {"price": 123.60, "lots": 4200, "order_count": 10}
+    ]
+  }
+}

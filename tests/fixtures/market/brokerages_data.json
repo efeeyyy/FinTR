@@ -1,0 +1,10 @@
+{
+  "type": "brokerages_data",
+  "date": "2026-09-22",
+  "data": {
+    "results": [
+      {"code": "AAA", "name": "Örnek Menkul A.Ş."},
+      {"code": "BBB", "name": "Test Yatırım A.Ş."}
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "type": "custodian_diff_data",
+  "symbol": "GLRMK",
+  "first_date": "2026-09-15",
+  "last_date": "2026-09-22",
+  "data": {
+    "results": [
+      {"custodian": "AAA", "first_value": 30000000, "last_value": 31500432, "difference": 1500432, "first_percentage": 29.5, "last_percentage": 30.6},
+      {"custodian": "BBB", "first_value": 500000, "last_value": 0, "difference": -500000, "first_percentage": 0.5, "last_percentage": 0.0}
+    ]
+  }
+}

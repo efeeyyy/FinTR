@@ -1,0 +1,9 @@
+{
+  "type": "custody_stats_data",
+  "symbol": "GLRMK",
+  "data": {
+    "retail_percentage": {"data": [{"date": "2026-09-15", "value": 42.5}, {"date": "2026-09-22", "value": 41.0}]},
+    "institution_percentage": {"data": [{"date": "2026-09-15", "value": 57.5}, {"date": "2026-09-22", "value": 59.0}]},
+    "investor_count": {"data": [{"date": "2026-09-15", "value": 120000}, {"date": "2026-09-22", "value": 121250}]}
+  }
+}
