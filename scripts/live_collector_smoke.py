@@ -74,7 +74,7 @@ PERIOD_ANALYSIS_CONTEXT_BEGIN = "<<<FINTR_PERIOD_ANALYSIS_CONTEXT_JSON_BEGIN>>>"
 PERIOD_ANALYSIS_CONTEXT_END = "<<<FINTR_PERIOD_ANALYSIS_CONTEXT_JSON_END>>>"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PERIOD_ANALYSIS_REQUEST_TYPES = (
-    "get_akd", "custody_analysis", "get_custodian_diff",
+    "get_brokerages", "get_akd", "custody_analysis", "get_custodian_diff",
 )
 _EVENT_STATUS_ALLOWLIST = frozenset({
     "welcome", "hb", "error", "banned",
@@ -209,14 +209,15 @@ def _parser() -> argparse.ArgumentParser:
     period_output.add_argument(
         "--emit-period-analysis-context", action="store_true",
         help=(
-            "After all three period requests are sent and matched, print the full "
-            "sanitized AKD/daily analysis/custodian-difference packet as marked JSON."
+            "After all four period requests are sent and matched, print the full "
+            "sanitized brokerage-directory/AKD/daily analysis/custodian-difference "
+            "packet as marked JSON."
         ),
     )
     period_output.add_argument(
         "--save-period-analysis-context", action="store_true",
         help=(
-            "After all three period requests are sent and matched, save the full "
+            "After all four period requests are sent and matched, save the full "
             "sanitized packet under data/interim/period_analysis without printing it."
         ),
     )
@@ -386,8 +387,9 @@ def _requests(args: argparse.Namespace, parser: argparse.ArgumentParser):
 
 
 def _period_analysis_requests(symbol: str, start: date, end: date):
-    """Build the three distinct query families for one date-agnostic period profile."""
+    """Build the four distinct query families for one date-agnostic period profile."""
     return (
+        build_brokerages_request(),
         build_akd_request(symbol, start, end),
         build_custody_analysis_request(symbol, start, end),
         build_custodian_diff_request(symbol, start, end),
@@ -418,7 +420,7 @@ def _period_analysis_packet(
 ) -> dict[str, object]:
     """Validate sent/echoed scope and build a full, explicitly grained packet."""
     expected_requests = _period_analysis_requests(symbol, start, end)
-    symbol = expected_requests[0].data["company"]
+    symbol = expected_requests[1].data["company"]
     if tuple(
         (request.request_type, request.data) for request in requests
     ) != tuple(
@@ -436,6 +438,7 @@ def _period_analysis_packet(
     if sent_types != PERIOD_ANALYSIS_REQUEST_TYPES:
         raise PeriodAnalysisHandoffError("not_all_requests_sent")
 
+    brokerages = _period_response(results, "brokerages_data", LiveBrokeragesResponse)
     akd = _period_response(results, "akd_data", LiveAKDResponse)
     analysis = _period_response(
         results, "custody_analysis_data", LiveCustodyAnalysisResponse,
@@ -550,7 +553,28 @@ def _period_analysis_packet(
         }
 
     packet: dict[str, object] = {
-        "schema": "fintr_period_analysis_handoff_v1",
+        "schema": "fintr_period_analysis_handoff_v2",
+        "brokerage_directory": {
+            "grain": (
+                "undated_provider_snapshot_rows; exact_code_match_only; "
+                "not_ultimate_investor"
+            ),
+            "source_event": "brokerages_data",
+            "row_count": len(brokerages.rows),
+            "rows": [
+                {
+                    "code": row.code,
+                    "title": row.title,
+                    "short_title": row.short_title,
+                }
+                for row in brokerages.rows
+            ],
+            "flags": {
+                "undated": True,
+                "exact_code_match_only": True,
+                "identifies_ultimate_investor": False,
+            },
+        },
         "requested_period": {
             "symbol": symbol,
             "start_date": start.isoformat(),
@@ -753,6 +777,7 @@ def _period_analysis_capture_payload(
 
     try:
         source_map = {
+            "get_brokerages": "not_reported_by_normalized_schema",
             "get_akd": packet["get_akd_period"]["provenance"]["server_echo"]["source"],
             "custody_analysis": "not_reported_by_normalized_schema",
             "get_custodian_diff": packet["get_custodian_diff_period"]
@@ -783,9 +808,9 @@ def _period_analysis_capture_payload(
                     canonical_packet,
                 ).hexdigest(),
                 "transformation": (
-                    "three validated normalized typed responses to full "
-                    "fintr_period_analysis_handoff_v1 packet; all normalized rows "
-                    "and family coverage retained"
+                    "four validated normalized typed responses to full "
+                    "fintr_period_analysis_handoff_v2 packet; all normalized rows, "
+                    "family coverage, and the accepted brokerage directory retained"
                 ),
             },
             "packet": packet,

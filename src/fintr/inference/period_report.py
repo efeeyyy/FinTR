@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from fintr.data.period_capture import PeriodCapture
+from fintr.data.period_capture import PeriodCapture, resolve_brokerage_label
 from fintr.features.period import (
     FORMULA_VERSION,
     FORMULAS,
@@ -28,6 +28,9 @@ REPORT_CONSTRAINTS: tuple[str, ...] = (
     "A code not listed on a date is missing data, not zero.",
     "Provider metadata percentages have an unverified calculation method.",
     "No price or volume series is included; no price direction can be inferred.",
+    "Brokerage/custodian labels are resolved by exact code only, from an "
+    "undated directory snapshot; unresolved or ambiguous codes are never "
+    "guessed, and a label never identifies an ultimate investor.",
 )
 
 
@@ -37,6 +40,10 @@ def _num(value: Decimal | None) -> str | None:
 
 def _day(value: date | None) -> str | None:
     return None if value is None else value.isoformat()
+
+
+def _label(capture: PeriodCapture, code: str) -> dict[str, Any]:
+    return resolve_brokerage_label(capture.brokerage_directory, code)
 
 
 def build_period_report(
@@ -74,11 +81,11 @@ def build_period_report(
             "source": "get_akd_period.net.size",
             "code_count": len(period_net),
             "top_positive": [
-                {"code": row.code, "net": _num(row.value)}
+                {"code": row.code, "net": _num(row.value), "label": _label(capture, row.code)}
                 for row in period_net[:top_n] if row.value > 0
             ],
             "top_negative": [
-                {"code": row.code, "net": _num(row.value)}
+                {"code": row.code, "net": _num(row.value), "label": _label(capture, row.code)}
                 for row in reversed(period_net[-top_n:]) if row.value < 0
             ],
         },
@@ -89,12 +96,14 @@ def build_period_report(
                              capture.custodian_diff_end.isoformat()],
             "largest_increases": [
                 {"code": row.code, "difference": _num(row.difference),
-                 "first_value": _num(row.first_value), "last_value": _num(row.last_value)}
+                 "first_value": _num(row.first_value), "last_value": _num(row.last_value),
+                 "label": _label(capture, row.code)}
                 for row in diffs[:top_n] if row.difference > 0
             ],
             "largest_decreases": [
                 {"code": row.code, "difference": _num(row.difference),
-                 "first_value": _num(row.first_value), "last_value": _num(row.last_value)}
+                 "first_value": _num(row.first_value), "last_value": _num(row.last_value),
+                 "label": _label(capture, row.code)}
                 for row in reversed(diffs[-top_n:]) if row.difference < 0
             ],
         },
@@ -125,7 +134,8 @@ def build_period_report(
                  "first_status": row.first_status,
                  "last_value": _num(row.last_value),
                  "daily_last_value": _num(row.daily_last_value),
-                 "last_status": row.last_status}
+                 "last_status": row.last_status,
+                 "label": _label(capture, row.code)}
                 for row in diff_check.rows
                 if row.first_status != "match" or row.last_status != "match"
             ],
@@ -137,6 +147,7 @@ def build_period_report(
             "codes": [
                 {
                     "code": item.code,
+                    "label": _label(capture, item.code),
                     "listed_sum": _num(item.listed_sum),
                     "listed_days": sum(value is not None for _, value in item.points),
                     "runs": [

@@ -122,13 +122,45 @@ def _capture(packet: dict | None = None) -> dict:
         "capture_metadata": {
             "schema": "fintr_period_analysis_capture_v1",
             "captured_at_utc": "2026-01-08T18:00:00Z",
-            "packet_schema": "fintr_period_analysis_handoff_v1",
+            "packet_schema": packet.get("schema", "fintr_period_analysis_handoff_v1"),
             "packet_sha256_canonical_json": hashlib.sha256(
                 canonical_json(packet).encode("utf-8")
             ).hexdigest(),
         },
         "packet": packet,
     }
+
+
+# code, title, short_title; EEE is deliberately duplicated with conflicting
+# names so its exact-code resolution is ambiguous, never a guessed name.
+DIRECTORY_ROWS = (
+    ("AAA", "AAA Synthetic Title", "AAA Short"),
+    ("EEE", "First EEE Synthetic Name", "First EEE Short"),
+    ("EEE", "Second EEE Synthetic Name", "Second EEE Short"),
+)
+
+
+def _v2_packet(brokerage_rows: tuple = DIRECTORY_ROWS) -> dict:
+    packet = _packet()
+    packet["schema"] = "fintr_period_analysis_handoff_v2"
+    packet["brokerage_directory"] = {
+        "grain": (
+            "undated_provider_snapshot_rows; exact_code_match_only; "
+            "not_ultimate_investor"
+        ),
+        "source_event": "brokerages_data",
+        "row_count": len(brokerage_rows),
+        "rows": [
+            {"code": code, "title": title, "short_title": short_title}
+            for code, title, short_title in brokerage_rows
+        ],
+        "flags": {
+            "undated": True,
+            "exact_code_match_only": True,
+            "identifies_ultimate_investor": False,
+        },
+    }
+    return packet
 
 
 class PeriodCaptureLoaderTests(unittest.TestCase):
@@ -248,6 +280,86 @@ class PeriodReportTests(unittest.TestCase):
         self.assertIs(report["provider_metadata"]["method_verified"], False)
         with self.assertRaises(ValueError):
             build_period_report(self.capture, lags=(2,), detail_lag=2, top_n=0)
+
+
+class BrokerageDirectoryLabelTests(unittest.TestCase):
+    """v1 captures carry no directory; v2 captures resolve by exact code only."""
+
+    def test_v1_capture_has_no_directory_and_labels_stay_directory_not_in_capture(self):
+        capture = parse_period_capture(_capture())
+        self.assertFalse(capture.brokerage_directory.present)
+        self.assertIsNone(capture.brokerage_directory.index)
+
+        report = build_period_report(capture, lags=(0,), detail_lag=0, top_n=5)
+        label = report["period_akd_net"]["top_positive"][0]["label"]
+        self.assertEqual(
+            label, {"status": "directory_not_in_capture", "title": None, "short_title": None},
+        )
+
+    def test_v2_capture_loads_directory_and_resolves_by_exact_code(self):
+        capture = parse_period_capture(_capture(_v2_packet()))
+        self.assertTrue(capture.brokerage_directory.present)
+        self.assertEqual(capture.brokerage_directory.row_count, 3)
+
+        report = build_period_report(capture, lags=(0,), detail_lag=0, top_n=5)
+        net_labels = {
+            row["code"]: row["label"]
+            for row in (
+                report["period_akd_net"]["top_positive"]
+                + report["period_akd_net"]["top_negative"]
+            )
+        }
+        self.assertEqual(net_labels["AAA"]["status"], "resolved")
+        self.assertEqual(net_labels["AAA"]["title"], "AAA Synthetic Title")
+        self.assertEqual(net_labels["AAA"]["short_title"], "AAA Short")
+        self.assertEqual(
+            net_labels["BBB"],
+            {"status": "unresolved", "title": None, "short_title": None},
+        )
+
+        diff_labels = {
+            row["code"]: row["label"]
+            for row in (
+                report["custodian_diff"]["largest_increases"]
+                + report["custodian_diff"]["largest_decreases"]
+            )
+        }
+        self.assertEqual(diff_labels["EEE"]["status"], "ambiguous")
+        self.assertIsNone(diff_labels["EEE"]["title"])
+        self.assertIsNone(diff_labels["EEE"]["short_title"])
+
+        exception_labels = {
+            row["code"]: row["label"]
+            for row in report["custodian_diff_check"]["exceptions"]
+        }
+        self.assertEqual(exception_labels["EEE"]["status"], "ambiguous")
+
+        flow_labels = {row["code"]: row["label"] for row in report["broker_flow_runs"]["codes"]}
+        self.assertEqual(flow_labels["AAA"]["status"], "resolved")
+        self.assertEqual(flow_labels["BBB"]["status"], "unresolved")
+
+    def test_v2_directory_row_count_mismatch_is_rejected(self):
+        packet = _v2_packet()
+        packet["brokerage_directory"]["row_count"] = 99
+        with self.assertRaisesRegex(
+            PeriodCaptureError, "brokerage_directory_row_count_mismatch",
+        ):
+            parse_period_capture(_capture(packet))
+
+    def test_unsupported_packet_schema_is_rejected(self):
+        packet = _packet()
+        packet["schema"] = "fintr_period_analysis_handoff_v3"
+        document = _capture(packet)
+        with self.assertRaisesRegex(PeriodCaptureError, "unsupported_schema"):
+            parse_period_capture(document)
+
+    def test_text_rendering_shows_short_title_only_when_resolved(self):
+        capture = parse_period_capture(_capture(_v2_packet()))
+        report = build_period_report(capture, lags=(0, 1, 2), detail_lag=2, top_n=5)
+        text = analyze.render_text(report)
+        self.assertIn("AAA (AAA Short)", text)
+        self.assertNotIn("BBB (", text)
+        self.assertNotIn("EEE (", text)
 
 
 class AnalyzePeriodScriptTests(unittest.TestCase):

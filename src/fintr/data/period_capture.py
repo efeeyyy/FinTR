@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from fintr.data.brokerage_index import BrokerageResolutionStatus, LiveBrokerageIndex
+from fintr.data.models import LiveBrokerageRow, LiveBrokeragesResponse
 from fintr.data.parsers.common import (
     MarketDataParseError,
     require_date,
@@ -23,7 +25,11 @@ from fintr.data.parsers.common import (
 
 
 CAPTURE_SCHEMA = "fintr_period_analysis_capture_v1"
-PACKET_SCHEMA = "fintr_period_analysis_handoff_v1"
+PACKET_SCHEMA_V1 = "fintr_period_analysis_handoff_v1"
+PACKET_SCHEMA_V2 = "fintr_period_analysis_handoff_v2"
+SUPPORTED_PACKET_SCHEMAS = (PACKET_SCHEMA_V1, PACKET_SCHEMA_V2)
+# Kept for external callers written against the original, single-version name.
+PACKET_SCHEMA = PACKET_SCHEMA_V1
 
 
 class PeriodCaptureError(ValueError):
@@ -64,6 +70,21 @@ class PeriodMetadataDay:
 
 
 @dataclass(frozen=True, slots=True)
+class BrokerageDirectoryInfo:
+    """Exact-code brokerage directory carried by a v2 capture, if any.
+
+    ``present`` is False for a v1 capture (schema predates the directory): a
+    code is then reported as ``directory_not_in_capture``, never as
+    unresolved, because absence of the directory is not the same claim as an
+    exact-code miss against a directory that was actually captured.
+    """
+
+    present: bool
+    row_count: int
+    index: LiveBrokerageIndex | None
+
+
+@dataclass(frozen=True, slots=True)
 class PeriodCapture:
     """Validated period capture; every dated series is in ascending date order."""
 
@@ -80,6 +101,7 @@ class PeriodCapture:
     custodian_diff_end: date
     custodian_diff: tuple[CustodianDiffRow, ...]
     metadata: tuple[PeriodMetadataDay, ...]
+    brokerage_directory: BrokerageDirectoryInfo
 
 
 def canonical_json(value: Any) -> str:
@@ -146,6 +168,39 @@ def _optional_decimal(entry: Mapping[str, Any], key: str, path: str) -> Decimal 
     return None if value is None else require_decimal(value, f"{path}.{key}")
 
 
+def _brokerage_directory(packet: Mapping[str, Any], packet_schema: str) -> BrokerageDirectoryInfo:
+    """Parse the v2 brokerage directory; a v1 packet carries none at all."""
+    if packet_schema != PACKET_SCHEMA_V2:
+        return BrokerageDirectoryInfo(present=False, row_count=0, index=None)
+
+    directory = require_mapping(
+        require_field(packet, "brokerage_directory", "packet"), "packet.brokerage_directory",
+    )
+    raw_rows = require_list(
+        require_field(directory, "rows", "packet.brokerage_directory"),
+        "packet.brokerage_directory.rows",
+    )
+    row_path = "packet.brokerage_directory.rows"
+    rows: list[LiveBrokerageRow] = []
+    for index, raw in enumerate(raw_rows):
+        entry_path = f"{row_path}[{index}]"
+        entry = require_mapping(raw, entry_path)
+        rows.append(LiveBrokerageRow(
+            code=require_string(require_field(entry, "code", entry_path), f"{entry_path}.code"),
+            title=require_string(require_field(entry, "title", entry_path), f"{entry_path}.title"),
+            short_title=require_string(
+                require_field(entry, "short_title", entry_path), f"{entry_path}.short_title",
+            ),
+        ))
+    declared_row_count = require_field(directory, "row_count", "packet.brokerage_directory")
+    if not isinstance(declared_row_count, int) or isinstance(declared_row_count, bool):
+        raise PeriodCaptureError("invalid_capture_field: packet.brokerage_directory.row_count")
+    if declared_row_count != len(rows):
+        raise PeriodCaptureError("brokerage_directory_row_count_mismatch")
+    index = LiveBrokerageIndex.from_response(LiveBrokeragesResponse(tuple(rows)))
+    return BrokerageDirectoryInfo(present=True, row_count=len(rows), index=index)
+
+
 def parse_period_capture(document: Any) -> PeriodCapture:
     """Validate a decoded capture (numbers as Decimal) and its packet hash."""
     try:
@@ -153,8 +208,10 @@ def parse_period_capture(document: Any) -> PeriodCapture:
         meta = require_mapping(require_field(root, "capture_metadata", "capture"),
                                "capture.capture_metadata")
         packet = require_mapping(require_field(root, "packet", "capture"), "capture.packet")
-        if (meta.get("schema") != CAPTURE_SCHEMA or packet.get("schema") != PACKET_SCHEMA
-                or meta.get("packet_schema") != PACKET_SCHEMA):
+        packet_schema = packet.get("schema")
+        if (meta.get("schema") != CAPTURE_SCHEMA
+                or packet_schema not in SUPPORTED_PACKET_SCHEMAS
+                or meta.get("packet_schema") != packet_schema):
             raise PeriodCaptureError("unsupported_schema")
         expected_hash = require_string(
             require_field(meta, "packet_sha256_canonical_json", "capture.capture_metadata"),
@@ -277,11 +334,39 @@ def parse_period_capture(document: Any) -> PeriodCapture:
             ),
             custodian_diff=tuple(diff_rows),
             metadata=tuple(sorted(metadata, key=lambda day: day.date)),
+            brokerage_directory=_brokerage_directory(packet, packet_schema),
         )
     except MarketDataParseError as exc:
         raise PeriodCaptureError(
             f"invalid_capture_field: {exc.field_path or 'unknown'}"
         ) from None
+
+
+DIRECTORY_NOT_IN_CAPTURE = "directory_not_in_capture"
+
+
+def resolve_brokerage_label(directory: BrokerageDirectoryInfo, code: str) -> dict[str, str | None]:
+    """Look up one exact code; never guesses across a v1/no-directory capture.
+
+    Returns a plain, JSON-ready ``{"status", "title", "short_title"}`` object.
+    ``status`` is one of the ``BrokerageResolutionStatus`` values, or
+    ``directory_not_in_capture`` when the capture predates the directory
+    (v1) so absence of a match is not conflated with an exact-code miss.
+    """
+    if not isinstance(directory, BrokerageDirectoryInfo):
+        raise TypeError("directory must be a BrokerageDirectoryInfo")
+    if not isinstance(code, str):
+        raise TypeError("code must be a string")
+    if directory.index is None:
+        return {"status": DIRECTORY_NOT_IN_CAPTURE, "title": None, "short_title": None}
+    resolution = directory.index.resolve(code)
+    if resolution.status is BrokerageResolutionStatus.RESOLVED:
+        return {
+            "status": resolution.status.value,
+            "title": resolution.label.title,
+            "short_title": resolution.label.short_title,
+        }
+    return {"status": resolution.status.value, "title": None, "short_title": None}
 
 
 def load_period_capture(path: Path) -> PeriodCapture:

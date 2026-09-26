@@ -55,8 +55,9 @@ piyasanın temsilî örneklemi değildir.
 ### Tam dönem analizini sohbete aktarma
 
 `--emit-period-analysis-context`, beşli bounded bağlamdan ayrı bir profildir.
-`--symbol`, `--start-date` ve `--end-date` zorunludur; aynı tarih aralığı için
-`get_akd`, günlük `custody_analysis` ve `get_custodian_diff` gönderir. Örneğin:
+`--symbol`, `--start-date` ve `--end-date` zorunludur; `get_brokerages` ile
+birlikte aynı tarih aralığı için `get_akd`, günlük `custody_analysis` ve
+`get_custodian_diff` olmak üzere dört istek gönderir. Örneğin:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\live_collector_smoke.py `
@@ -80,12 +81,16 @@ bilgisi bulunur. Tam normalize paket `packet` alanında kalır; ham frame,
 initData, request ID ve endpoint kaydedilmez. Dosya sonradan sohbete doğrudan
 eklenebilir.
 
-İşaretli kompakt JSON yalnız üç gönderimin tamamı ve üç typed yanıtın her biri
-doğrulandıktan sonra basılır. `get_akd` ve `get_custodian_diff` dönem satırları,
-`custody_analysis` içindeki günlük AKD akışı ve günlük Takas bakiyeleri ayrı
-aile/grain alanlarında, sağlayıcı sıraları ve tüm normalize edilmiş satırlarla
-taşınır. Her ailede tam satır/gün sayıları bulunur; kırpma yapılmaz. Decimal
-değerler hassasiyetleri korunarak JSON sayısı olarak yazılır.
+İşaretli kompakt JSON yalnız dört gönderimin tamamı ve dört typed yanıtın her
+biri doğrulandıktan sonra basılır. `get_akd` ve `get_custodian_diff` dönem
+satırları, `custody_analysis` içindeki günlük AKD akışı ve günlük Takas
+bakiyeleri ayrı aile/grain alanlarında, sağlayıcı sıraları ve tüm normalize
+edilmiş satırlarla taşınır. Her ailede tam satır/gün sayıları bulunur; kırpma
+yapılmaz. Decimal değerler hassasiyetleri korunarak JSON sayısı olarak
+yazılır. `get_brokerages` yanıtı ayrıca `brokerage_directory` bölümünde
+tarihsiz, yalnız tam kod eşleşmesiyle kullanılan kabul edilmiş kurum
+satırlarını (`code`, `title`, `short_title`) taşır; paket şeması bu nedenle
+`fintr_period_analysis_handoff_v2`'dir.
 
 Yerel gönderim sembol/tarih provenance'ı, sunucunun echo ettiği sembol/tarih ve
 `actual_from` ayrı gösterilir. `get_akd` yanıtı sembol ve dönem echo etmez;

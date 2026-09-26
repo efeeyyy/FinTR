@@ -101,6 +101,19 @@ Gecikme eşleşmesi zamanlama gözlemidir; sağlayıcı yöntemini, nedenselliğ
 nihai yatırımcıyı kanıtlamaz. `t + L` gözlemi pakette yoksa ilgili AKD günleri
 `akd_dates_without_later_custody` altında ayrıca listelenir.
 
+`fintr_period_analysis_handoff_v2` paketi (`get_brokerages` dahil dörtlü
+profil) `brokerage_directory` bölümünde o anki, tarihsiz ve yalnız tam kod
+eşleşmesiyle kullanılan bir kurum listesi taşır (`code`, `title`,
+`short_title`); nihai yatırımcıyı belirtmez. Rapor, dönem AKD üst listeleri,
+takas farkı üst listeleri, kurum akış dizileri ve takas farkı istisnalarındaki
+her kodun yanına `{status, title, short_title}` biçiminde bir `label` ekler.
+`status` değerleri: `resolved`, `unresolved`, `ambiguous` (birden çok çelişen
+ad varsa isim seçilmez) ve eski `fintr_period_analysis_handoff_v1` paketlerinde
+(kayıtta kurum dizini hiç yok) `directory_not_in_capture`. Takas (custodian)
+kodları da aynı dizine karşı aranır; dizinde yoksa `unresolved` kalır, elle
+eşleştirme yapılmaz. Metin çıktısında yalnızca `resolved` durumundaki kodlar
+`KOD (short_title)` biçiminde gösterilir.
+
 Çalıştırma (ağ ve model çağrısı yok):
 
 ```powershell

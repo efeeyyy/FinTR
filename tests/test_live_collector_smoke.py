@@ -80,6 +80,7 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
         self, *, end: date = date(2026, 9, 23), diff_end: date | None = None,
         secret_source: str | None = None,
     ):
+        brokerages = fixture_frame("brokerages_data_live")
         akd = fixture_frame("akd_data_partial")
         analysis = fixture_frame("custody_analysis_data_live")
         custody_diff = fixture_frame("custodian_diff_data_live").replace(
@@ -93,8 +94,9 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
         requests = smoke._period_analysis_requests(
             "AKFIS", date(2026, 9, 14), end,
         )
-        results = list(await replay_frames((akd, analysis, custody_diff)))
-        for index, provenance in enumerate((
+        results = list(await replay_frames((brokerages, akd, analysis, custody_diff)))
+        provenance = (
+            None,
             SentAKDRequestProvenance("AKFIS", date(2026, 9, 14), end),
             SentCustodyAnalysisRequestProvenance(
                 "AKFIS", date(2026, 9, 14), end,
@@ -102,12 +104,13 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
             SentCustodianDiffRequestProvenance(
                 "AKFIS", date(2026, 9, 14), end,
             ),
-        )):
+        )
+        for index in range(1, len(results)):
             results[index] = replace(
                 results[index],
                 normalized=replace(
                     results[index].normalized,
-                    request_provenance=provenance,
+                    request_provenance=provenance[index],
                 ),
                 normalization_pending=False,
             )
@@ -947,9 +950,10 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(config.receive_timeout_seconds, 0.1)
                 self.assertIn("2 total frames per attempt", output)
 
-    def test_period_analysis_profile_builds_three_exact_range_requests(self):
+    def test_period_analysis_profile_builds_four_exact_range_requests(self):
         parser = smoke._parser()
         expected = (
+            '{"type":"get_brokerages"}',
             '{"type":"get_akd","data":{"company":"AKFIS",'
             '"start":"2026-09-08","end":"2026-09-25"}}',
             '{"type":"custody_analysis","data":{"symbol":"AKFIS",'
@@ -969,7 +973,7 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
                 requests = smoke._requests(args, parser)
                 self.assertEqual(
                     tuple(request.request_type for request in requests),
-                    ("get_akd", "custody_analysis", "get_custodian_diff"),
+                    smoke.PERIOD_ANALYSIS_REQUEST_TYPES,
                 )
                 self.assertEqual(
                     tuple(request.to_json() for request in requests), expected,
@@ -1028,6 +1032,20 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("synthetic-diff-request", output)
         self.assertNotIn("request_id", output)
         packet = json.loads(packet_text)
+        self.assertEqual(packet["schema"], "fintr_period_analysis_handoff_v2")
+        directory = packet["brokerage_directory"]
+        self.assertEqual(directory["source_event"], "brokerages_data")
+        self.assertEqual(directory["row_count"], 1)
+        self.assertEqual(directory["rows"], [{
+            "code": "SYNTH-CODE-001",
+            "title": "Synthetic Candidate Title",
+            "short_title": "Synthetic",
+        }])
+        self.assertEqual(directory["flags"], {
+            "undated": True,
+            "exact_code_match_only": True,
+            "identifies_ultimate_investor": False,
+        })
         self.assertEqual(packet["requested_period"]["symbol"], "AKFIS")
         self.assertEqual(packet["get_akd_period"]["row_count"], 1)
         self.assertEqual(
@@ -1096,7 +1114,7 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("authorization:abc123", output)
         self.assertIn("Event: [UNKNOWN_EVENT_TYPE] (unknown)", output)
         for event_type in (
-            "akd_data", "custody_analysis_data", "custodian_diff_data",
+            "brokerages_data", "akd_data", "custody_analysis_data", "custodian_diff_data",
         ):
             self.assertIn(f"Event: {event_type} (known)", output)
         self.assertIn(smoke.PERIOD_ANALYSIS_CONTEXT_BEGIN, output)
@@ -1109,7 +1127,7 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
             "--end-date", "2026-09-23",
         )
         for name, candidate_results in (
-            ("missing", results[:2]),
+            ("missing", results[:3]),
             (
                 "mismatched server range",
                 (await self.period_analysis_case(
@@ -1205,7 +1223,11 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 set(metadata["provider_sources"]),
-                {"get_akd", "custody_analysis", "get_custodian_diff"},
+                {"get_brokerages", "get_akd", "custody_analysis", "get_custodian_diff"},
+            )
+            self.assertEqual(
+                metadata["provider_sources"]["get_brokerages"],
+                "not_reported_by_normalized_schema",
             )
             self.assertEqual(
                 metadata["provider_sources"]["custody_analysis"],

@@ -102,6 +102,14 @@ def _shown(value: str | None) -> str:
     return "listelenmemiş" if value is None else value
 
 
+def _coded(item: dict) -> str:
+    """Code, plus its resolved short_title in parentheses; never a guessed name."""
+    label = item.get("label")
+    if isinstance(label, dict) and label.get("status") == "resolved" and label.get("short_title"):
+        return f"{item['code']} ({label['short_title']})"
+    return item["code"]
+
+
 def render_text(report: dict) -> str:
     """Short Turkish summary; every number comes from the report."""
     scope = report["scope"]
@@ -120,19 +128,19 @@ def render_text(report: dict) -> str:
     )
     for item in diff["exceptions"]:
         lines.append(
-            f"  - {item['code']}: ilk {item['first_value']} / panel "
+            f"  - {_coded(item)}: ilk {item['first_value']} / panel "
             f"{_shown(item['daily_first_value'])} ({item['first_status']}); son "
             f"{item['last_value']} / panel {_shown(item['daily_last_value'])} "
             f"({item['last_status']})"
         )
     lines += ["", "Dönem AKD neti (en yüksek / en düşük):"]
     net = report["period_akd_net"]
-    lines += [f"  + {row['code']}: {row['net']}" for row in net["top_positive"]]
-    lines += [f"  - {row['code']}: {row['net']}" for row in net["top_negative"]]
+    lines += [f"  + {_coded(row)}: {row['net']}" for row in net["top_positive"]]
+    lines += [f"  - {_coded(row)}: {row['net']}" for row in net["top_negative"]]
     lines += ["", "Takas dönem farkı (en büyük artış / azalış):"]
     custody = report["custodian_diff"]
-    lines += [f"  + {row['code']}: {row['difference']}" for row in custody["largest_increases"]]
-    lines += [f"  - {row['code']}: {row['difference']}" for row in custody["largest_decreases"]]
+    lines += [f"  + {_coded(row)}: {row['difference']}" for row in custody["largest_increases"]]
+    lines += [f"  - {_coded(row)}: {row['difference']}" for row in custody["largest_decreases"]]
     lines += ["", "Kurum akış dizileri (aynı işaretli ardışık günler):"]
     for item in report["broker_flow_runs"]["codes"]:
         runs = "; ".join(
@@ -140,7 +148,7 @@ def render_text(report: dict) -> str:
             f"{run['net_sum']}"
             for run in item["runs"]
         )
-        lines.append(f"  {item['code']} toplam {item['listed_sum']} ({item['listed_days']} gün): {runs}")
+        lines.append(f"  {_coded(item)} toplam {item['listed_sum']} ({item['listed_days']} gün): {runs}")
     lag = report["lagged_akd_custody_match"]
     lines += ["", "AKD neti ile sonraki takas değişimi eşleşmesi:"]
     lines += [
