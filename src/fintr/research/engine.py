@@ -24,6 +24,7 @@ import bisect
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+import math
 import random
 import statistics
 
@@ -32,10 +33,10 @@ from fintr.data.price_history import DailyBar, PriceHistoryCapture
 from fintr.features.price_join import classify_price_bar, join_price_history
 from fintr.research.conditions import evaluate_condition
 from fintr.research.features import truncate_period_capture
-from fintr.research.study_spec import StudySpec
+from fintr.research.study_spec import BlockBootstrapConfig, StudySpec
 
 
-FORMULA_VERSION = "study_engine_v1"
+FORMULA_VERSION = "study_engine_v2"  # v2: E1 block bootstrap + hypothesis_test block
 
 FORMULAS: dict[str, str] = {
     "entry_price": (
@@ -55,7 +56,10 @@ FORMULAS: dict[str, str] = {
         "spec.adjustment_boundary_policy. Both outcomes are counted."
     ),
     "gross_return": "exit_price / entry_price - 1",
-    "net_return": "gross_return - 2 * (transaction_cost_bps / 10000) (round-trip: entry + exit)",
+    "net_return": (
+        "gross_return - 2 * (transaction_cost_bps / 10000); transaction_cost_bps "
+        "is per side, charged once at entry and once at exit (round-trip = 2x)"
+    ),
     "baseline": (
         "the same entry/exit/cost computation run for every server date in "
         "scope, regardless of the condition; the conditioned population is "
@@ -68,7 +72,35 @@ FORMULAS: dict[str, str] = {
         "replacement from the conditioned and baseline net_return lists); "
         "an informational statistic about the observed sample, not a "
         "source financial value -- computed in float, not Decimal, because "
-        "it is a resampling estimate"
+        "it is a resampling estimate. Secondary diagnostic only: it treats "
+        "events as independent, which same-day cross-symbol events and "
+        "overlapping holding windows are not"
+    ),
+    "block_bootstrap": (
+        "E1 moving block bootstrap by signal date (Kunsch 1989): the sorted "
+        "distinct signal dates of the kept (non-dropped) conditioned and "
+        "baseline events, N of them, are the resampling unit; ceil(N/L) "
+        "start positions are drawn with replacement from 0..N-L "
+        "(random.Random(block_bootstrap.seed)), each contributing the L "
+        "consecutive dates from that start, and the concatenation is cut to "
+        "N dates. Every event (all symbols) on a drawn date enters the "
+        "replicate, once per draw of that date. Each replicate's "
+        "conditioned mean and baseline mean are event-weighted means over "
+        "the same drawn dates; delta*_b = conditioned_mean - baseline_mean. "
+        "A replicate whose drawn dates contain no conditioned (or no "
+        "baseline) event has no delta*_b (undefined) and is counted. "
+        "Computed in float (resampling estimate, not a source value)."
+    ),
+    "one_sided_p_value": (
+        "predicted_direction negative: p = (1 + #{delta*_b >= 0}) / (B + 1); "
+        "positive: p = (1 + #{delta*_b <= 0}) / (B + 1); B = "
+        "block_bootstrap.resamples; an undefined replicate is counted as "
+        "not supporting the predicted direction (conservative)"
+    ),
+    "bootstrap_percentile": (
+        "nearest-rank percentile over the defined delta*_b values sorted "
+        "ascending: q-th percentile = sorted[ceil(q * n) - 1], n = number of "
+        "defined replicates"
     ),
     "custody_scale_jump": (
         "a server date d (in daily_custody_lots) where the total lot count "
@@ -123,6 +155,15 @@ def detect_custody_scale_jumps(capture: PeriodCapture, ratio_threshold: Decimal)
     return tuple(flagged)
 
 
+def tradeable_price_bars(price: PriceHistoryCapture) -> tuple[DailyBar, ...]:
+    """Ascending bars usable as a trading day: not a holiday placeholder and
+    carrying both open and close."""
+    return tuple(
+        bar for bar in price.bars
+        if classify_price_bar(bar) != "placeholder" and bar.open is not None and bar.close is not None
+    )
+
+
 def load_symbol_data(
     symbol: str, capture: PeriodCapture, price: PriceHistoryCapture, *,
     adjustment_ratio_epsilon: Decimal, custody_scale_jump_ratio: Decimal,
@@ -136,10 +177,7 @@ def load_symbol_data(
     # already treats this as a legitimate, unenforced difference; the CLI
     # caller is responsible for pairing the right files under one --data
     # SYMBOL= entry.
-    tradeable_bars = tuple(
-        bar for bar in price.bars
-        if classify_price_bar(bar) != "placeholder" and bar.open is not None and bar.close is not None
-    )
+    tradeable_bars = tradeable_price_bars(price)
     close_by_date = {bar.trade_date: bar.close for bar in price.bars if bar.close is not None}
     joined = join_price_history(capture, price, adjustment_ratio_epsilon=adjustment_ratio_epsilon)
     return SymbolData(
@@ -325,6 +363,176 @@ def bootstrap_diff_ci(
 
 
 @dataclass(frozen=True, slots=True)
+class DatePanel:
+    """Kept events grouped by signal date, ascending: the E1 resampling unit."""
+
+    dates: tuple[date, ...]
+    conditioned_sum: tuple[float, ...]
+    conditioned_count: tuple[int, ...]
+    baseline_sum: tuple[float, ...]
+    baseline_count: tuple[int, ...]
+
+
+def build_date_panel(
+    conditioned_events: list[EventOutcome], baseline_events: list[EventOutcome],
+) -> DatePanel:
+    """Groups kept (non-dropped) events by ``signal_date`` across all symbols.
+
+    The date axis is every signal date carrying at least one kept
+    conditioned or baseline event; a date whose events were all dropped
+    carries no return and is not a resampling unit.
+    """
+    cond: dict[date, list[float]] = {}
+    base: dict[date, list[float]] = {}
+    for events, target in ((conditioned_events, cond), (baseline_events, base)):
+        for event in events:
+            if event.dropped:
+                continue
+            target.setdefault(event.signal_date, []).append(float(event.net_return))
+    dates = tuple(sorted(cond.keys() | base.keys()))
+    return DatePanel(
+        dates=dates,
+        conditioned_sum=tuple(math.fsum(cond.get(d, ())) for d in dates),
+        conditioned_count=tuple(len(cond.get(d, ())) for d in dates),
+        baseline_sum=tuple(math.fsum(base.get(d, ())) for d in dates),
+        baseline_count=tuple(len(base.get(d, ())) for d in dates),
+    )
+
+
+def draw_moving_block_indices(rng: random.Random, n_dates: int, block_length: int) -> list[int]:
+    """One moving-block resample of date positions ``0..n_dates-1``.
+
+    ``ceil(n_dates / block_length)`` block starts are drawn with replacement
+    from ``0..n_dates - block_length``; each contributes ``block_length``
+    consecutive positions; the concatenation is cut to ``n_dates``.
+    """
+    if block_length < 1 or n_dates < block_length:
+        raise EngineError("block_length_exceeds_distinct_signal_dates")
+    n_starts = n_dates - block_length + 1
+    indices: list[int] = []
+    while len(indices) < n_dates:
+        start = rng.randrange(n_starts)
+        indices.extend(range(start, start + block_length))
+    return indices[:n_dates]
+
+
+def block_bootstrap_replicates(
+    panel: DatePanel, *, block_length: int, resamples: int, seed: int,
+) -> list[tuple[float | None, float | None]]:
+    """``(conditioned_mean, baseline_mean)`` per replicate; ``None`` when the
+    drawn dates hold no event of that population. Deterministic given the
+    panel, ``block_length``, ``resamples`` and ``seed`` (own
+    ``random.Random(seed)``, no global random state)."""
+    rng = random.Random(seed)
+    n = len(panel.dates)
+    replicates: list[tuple[float | None, float | None]] = []
+    for _ in range(resamples):
+        indices = draw_moving_block_indices(rng, n, block_length)
+        c_count = sum(panel.conditioned_count[i] for i in indices)
+        b_count = sum(panel.baseline_count[i] for i in indices)
+        c_mean = math.fsum(panel.conditioned_sum[i] for i in indices) / c_count if c_count else None
+        b_mean = math.fsum(panel.baseline_sum[i] for i in indices) / b_count if b_count else None
+        replicates.append((c_mean, b_mean))
+    return replicates
+
+
+def one_sided_p_value(deltas: list[float | None], predicted_direction: str) -> float:
+    """README formula; ``None`` (undefined replicate) never supports the
+    predicted direction."""
+    if predicted_direction == "negative":
+        against = sum(1 for d in deltas if d is None or d >= 0)
+    elif predicted_direction == "positive":
+        against = sum(1 for d in deltas if d is None or d <= 0)
+    else:
+        raise EngineError("invalid_predicted_direction")
+    return (1 + against) / (len(deltas) + 1)
+
+
+def nearest_rank_percentile(sorted_values: list[float], q: Decimal) -> float | None:
+    if not sorted_values:
+        return None
+    rank = math.ceil(q * len(sorted_values))
+    return sorted_values[max(0, min(len(sorted_values) - 1, rank - 1))]
+
+
+@dataclass(frozen=True, slots=True)
+class BlockBootstrapResult:
+    method: str
+    block_length_signal_dates: int
+    resamples: int
+    seed: int
+    distinct_signal_dates: int  # N, the resampling units (kept events of either population)
+    distinct_conditioned_signal_dates: int
+    observed_difference: float | None
+    predicted_direction: str | None
+    p_value_one_sided: float | None
+    percentile_05: float | None
+    percentile_95: float | None
+    undefined_resamples: int
+    status: str  # "computed" | "no_conditioned_events" | "no_baseline_events" | "too_few_signal_dates"
+
+
+BLOCK_BOOTSTRAP_METHOD = "moving_block_by_signal_date"
+
+
+def moving_block_bootstrap(
+    conditioned_events: list[EventOutcome], baseline_events: list[EventOutcome], *,
+    config: BlockBootstrapConfig, predicted_direction: str | None,
+) -> BlockBootstrapResult:
+    """E1: see ``FORMULAS["block_bootstrap"]``/``["one_sided_p_value"]``.
+
+    ``predicted_direction`` comes only from the spec's preregistration
+    block; without it no p value is reported (never both tails, so a tail
+    cannot be chosen after seeing the result).
+    """
+    if predicted_direction not in (None, "negative", "positive"):
+        raise EngineError("invalid_predicted_direction")
+    panel = build_date_panel(conditioned_events, baseline_events)
+    n_cond_dates = sum(1 for count in panel.conditioned_count if count)
+    n_cond = sum(panel.conditioned_count)
+    n_base = sum(panel.baseline_count)
+    observed = None
+    if n_cond and n_base:
+        observed = math.fsum(panel.conditioned_sum) / n_cond - math.fsum(panel.baseline_sum) / n_base
+
+    def empty(status: str) -> BlockBootstrapResult:
+        return BlockBootstrapResult(
+            BLOCK_BOOTSTRAP_METHOD, config.block_length_signal_dates, config.resamples, config.seed,
+            len(panel.dates), n_cond_dates, observed, predicted_direction, None, None, None, 0, status,
+        )
+
+    if not n_cond:
+        return empty("no_conditioned_events")
+    if not n_base:
+        return empty("no_baseline_events")
+    if len(panel.dates) < config.block_length_signal_dates:
+        return empty("too_few_signal_dates")
+    replicates = block_bootstrap_replicates(
+        panel, block_length=config.block_length_signal_dates, resamples=config.resamples,
+        seed=config.seed,
+    )
+    deltas = [None if c is None or b is None else c - b for c, b in replicates]
+    defined = sorted(d for d in deltas if d is not None)
+    return BlockBootstrapResult(
+        method=BLOCK_BOOTSTRAP_METHOD,
+        block_length_signal_dates=config.block_length_signal_dates,
+        resamples=config.resamples,
+        seed=config.seed,
+        distinct_signal_dates=len(panel.dates),
+        distinct_conditioned_signal_dates=n_cond_dates,
+        observed_difference=observed,
+        predicted_direction=predicted_direction,
+        p_value_one_sided=(
+            None if predicted_direction is None else one_sided_p_value(deltas, predicted_direction)
+        ),
+        percentile_05=nearest_rank_percentile(defined, Decimal("0.05")),
+        percentile_95=nearest_rank_percentile(defined, Decimal("0.95")),
+        undefined_resamples=len(deltas) - len(defined),
+        status="computed",
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class HorizonStats:
     horizon: int
     event_count: int
@@ -342,6 +550,8 @@ class HorizonStats:
     dropped_custody_scale_jump: int
     condition_not_evaluable: int
     adjusted_close_used_count: int
+    distinct_conditioned_signal_dates: int
+    block_bootstrap: BlockBootstrapResult | None
 
 
 def _stats_from_returns(returns: list[Decimal]) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
@@ -357,7 +567,10 @@ def summarize_horizon(
     conditioned: list[EventOutcome], baseline: list[EventOutcome], *,
     horizon: int, min_event_warning_threshold: int, bootstrap_seed: int, bootstrap_resamples: int,
     bootstrap_confidence_level: Decimal,
+    block_bootstrap: BlockBootstrapConfig | None = None, predicted_direction: str | None = None,
 ) -> HorizonStats:
+    """``block_bootstrap`` (E1) is computed only when a config is given;
+    the i.i.d. ``bootstrap`` is always computed as a secondary diagnostic."""
     kept = [event for event in conditioned if not event.dropped]
     kept_returns = [event.net_return for event in kept]
     baseline_kept = [event.net_return for event in baseline if not event.dropped]
@@ -393,6 +606,12 @@ def summarize_horizon(
             1 for e in conditioned if e.drop_reason == "condition_not_evaluable"
         ),
         adjusted_close_used_count=sum(1 for e in kept if e.price_basis == "adjusted"),
+        distinct_conditioned_signal_dates=len({event.signal_date for event in kept}),
+        block_bootstrap=(
+            None if block_bootstrap is None else moving_block_bootstrap(
+                conditioned, baseline, config=block_bootstrap, predicted_direction=predicted_direction,
+            )
+        ),
     )
 
 
