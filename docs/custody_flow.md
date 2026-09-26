@@ -1,4 +1,4 @@
-# Custody-flow: eksik AKD kodu politikası (custody_flow_v2)
+# Custody-flow: eksik AKD kodu politikası ve tahmini bireysel lot (custody_flow_v3)
 
 `fintr.features.custody_flow.compute_custody_residual` bir server-tarihindeki
 AKD net listesinde bir kodun eksik olmasını iki farklı politikayla ele alır.
@@ -41,7 +41,7 @@ residual(code, t) = (lot[code, t] - lot[code, p]) - akd_net(code, a)
 Her `CodeResidual` satırı `akd_defaulted: bool` alanı taşır: `True` yalnızca
 AKD girdisi bu satırda `zero` politikasıyla `0`'a tamamlandığında. Her
 `CustodyResidualResult`, kullanılan `missing_akd_policy` ve
-`formula_version` (`custody_flow_v2`) değerlerini taşır.
+`formula_version` (`custody_flow_v3`) değerlerini taşır.
 
 ## Karar ve kanıt (2026-09-26)
 
@@ -66,3 +66,62 @@ Bu bir çıkarımdır, doğrulanmış bir kural değildir: capture kapsamının
 dışındaki dönemler veya farklı bir sağlayıcı/format için aynı varsayım
 otomatik olarak geçerli sayılmamalıdır. Belirsiz kalan bir girdi hâlâ
 `unknown` politikasıyla `None` olarak işaretlenebilir.
+
+## Tahmini bireysel/kurumsal lot serisi (`compute_estimated_retail_lots`)
+
+`fintr.features.custody_flow.compute_estimated_retail_lots`, sağlayıcının
+verdiği `retail_pct` / `institutional_pct` yüzdesini, **aynı** saklama
+tarihindeki toplam saklama lotuna uygulayarak bir lot-ölçeğinde tahmin
+üretir. Bu bir sağlayıcı raporu değil, **hesaplanan** bir değerdir.
+
+### Formül
+
+```text
+total(t)                      = Σ_c custody_lots(c, t)   (t'nin tüm saklama kodları, gecikme/ileri taşıma yok)
+estimated_retail_lots(t)       = retail_pct(t) / 100 * total(t)
+estimated_institutional_lots(t)= institutional_pct(t) / 100 * total(t)
+```
+
+Her ikisi de `None` olur eğer:
+- ilgili yüzde (`retail_pct` veya `institutional_pct`) o tarih için null ise, VEYA
+- o tarihin saklama paneli capture'da hiç yoksa (`total(t)` tanımsız).
+
+İleri taşıma (forward-fill) yapılmaz; her tarih kendi başınadır.
+
+### Etiket (`RETAIL_LOT_LABEL`, birebir)
+
+> Tahmini bireysel lot (hesaplanan): sağlayıcı retail_pct × aynı saklama
+> tarihindeki toplam saklama lotu / 100. Bireysel/kurumsal sınıflaması
+> sağlayıcıya aittir; yöntem belgesi doğrulanmadı.
+
+### Doğrulama durumu
+
+`validation_status = "provider_method_consistent_single_symbol_study"`
+
+Bu durum, çevrimdışı bir araştırma notuna işaret eder:
+`data/interim/research/retail_pct_validation.md` (`RETAIL_LOT_VALIDATION_STUDY_FILE`
+sabitinde dosya adı olarak tutulur; notun sayıları bu koda veya bu belgeye
+kopyalanmamıştır -- yalnızca dosya adı referans olarak taşınır). Notun
+yöntem bölümüne göre, sağlayıcının `retail_pct` alanı aynı saklama tarihinin
+(gecikme 0) toplamına göre bir pay olarak tutarlı bulunmuştur, ama:
+
+- **Yalnızca tek sembol ve tek capture dönemi** üzerinde test edilmiştir;
+  başka sembol/dönem için genel bir garanti değildir.
+- Saklama lot ölçeğindeki bir değişiklik (örn. bir kurumsal aksiyon/bölünme)
+  mutlak lot seviyelerini değiştirir ama -- bu nota göre -- bireysel/kurumsal
+  **oranını** kendiliğinden değiştirmez, çünkü tahmin toplamın bir yüzdesidir
+  (pay da payda da aynı ölçekle büyür/küçülür).
+
+### Geçici (provisional) işaretleme
+
+`provisional_last_custody_days` (varsayılan `1`, `fintr.features.period`
+ile aynı politika ve varsayılan): capture'ın en son bu kadar server-tarihi
+`provisional=True` işaretlenir, çünkü bu tarihlerin saklama bakiyeleri daha
+sonra revize edilebiliyor (period report'taki `check_custodian_diff` ile aynı
+kural). `0` verilirse hiçbir tarih işaretlenmez. Kullanılan değer sonuçta ve
+CLI çıktısında (`provisional_last_custody_days`) açıkça taşınır.
+
+CLI: `scripts/custody_flow.py` çıktısı bu seriyi her zaman
+`estimated_retail_lots` anahtarı altında içerir (ek bir dosya gerekmediği
+için code-set'in aksine opsiyonel değildir); `--provisional-last-custody-days`
+bayrağıyla eşik değiştirilebilir.

@@ -18,13 +18,18 @@ from fintr.data.period_capture import (
     CodeValue,
     DatedCodeValues,
     PeriodCapture,
+    PeriodMetadataDay,
 )
 from fintr.features.custody_flow import (
     CodeSet,
     DEFAULT_MISSING_AKD_POLICY,
     FORMULA_VERSION,
+    RETAIL_LOT_LABEL,
+    RETAIL_LOT_VALIDATION_STATUS,
+    RETAIL_LOT_VALIDATION_STUDY_FILE,
     compute_code_set_series,
     compute_custody_residual,
+    compute_estimated_retail_lots,
     find_same_day_pairs,
     load_code_set,
 )
@@ -35,7 +40,9 @@ D1, D2, D3, D4, D5 = (
 )
 
 
-def _capture(daily_custody_lots, daily_akd_net, server_dates=(D1, D2, D3, D4, D5)) -> PeriodCapture:
+def _capture(
+    daily_custody_lots, daily_akd_net, server_dates=(D1, D2, D3, D4, D5), metadata=(),
+) -> PeriodCapture:
     return PeriodCapture(
         symbol="TEST", start=server_dates[0], end=server_dates[-1],
         captured_at_utc="2026-05-09T00:00:00Z", packet_sha256="deadbeef",
@@ -43,7 +50,7 @@ def _capture(daily_custody_lots, daily_akd_net, server_dates=(D1, D2, D3, D4, D5
         daily_akd_net=daily_akd_net, daily_akd_market=(),
         daily_custody_lots=daily_custody_lots,
         custodian_diff_start=server_dates[0], custodian_diff_end=server_dates[-1],
-        custodian_diff=(), metadata=(),
+        custodian_diff=(), metadata=metadata,
         brokerage_directory=BrokerageDirectoryInfo(present=False, row_count=0, index=None),
     )
 
@@ -291,6 +298,115 @@ class CodeSetSeriesTests(unittest.TestCase):
         capture = self._capture_for_code_set()
         with self.assertRaises(TypeError):
             compute_code_set_series(capture, ["MDS", "ZRY"])  # type: ignore[arg-type]
+
+
+class EstimatedRetailLotsTests(unittest.TestCase):
+    def test_formula_and_metadata(self):
+        custody = (
+            DatedCodeValues(D1, (CodeValue("AAA", Decimal(60)), CodeValue("BBB", Decimal(40)))),
+            DatedCodeValues(D2, (CodeValue("AAA", Decimal(70)), CodeValue("BBB", Decimal(30)))),
+        )
+        metadata = (
+            PeriodMetadataDay(D1, Decimal("40.00"), Decimal("60.00"), ()),
+            PeriodMetadataDay(D2, Decimal("50.00"), Decimal("50.00"), ()),
+        )
+        capture = _capture(custody, (), server_dates=(D1, D2), metadata=metadata)
+        result = compute_estimated_retail_lots(capture, provisional_last_custody_days=0)
+        self.assertEqual(result.formula_version, FORMULA_VERSION)
+        self.assertEqual(result.label, RETAIL_LOT_LABEL)
+        self.assertEqual(result.validation_status, RETAIL_LOT_VALIDATION_STATUS)
+        self.assertEqual(result.validation_study_file, RETAIL_LOT_VALIDATION_STUDY_FILE)
+        self.assertEqual(result.provisional_last_custody_days, 0)
+        d1, d2 = result.days
+        self.assertEqual(d1.total_custody_lots, Decimal(100))
+        # 40/100 * 100 = 40; 60/100 * 100 = 60
+        self.assertEqual(d1.estimated_retail_lots, Decimal(40))
+        self.assertEqual(d1.estimated_institutional_lots, Decimal(60))
+        self.assertEqual(d2.total_custody_lots, Decimal(100))
+        self.assertEqual(d2.estimated_retail_lots, Decimal(50))
+        self.assertEqual(d2.estimated_institutional_lots, Decimal(50))
+        self.assertFalse(d1.provisional)
+        self.assertFalse(d2.provisional)
+
+    def test_null_retail_pct_gives_none_no_forward_fill(self):
+        custody = (
+            DatedCodeValues(D1, (CodeValue("AAA", Decimal(100)),)),
+            DatedCodeValues(D2, (CodeValue("AAA", Decimal(120)),)),
+        )
+        metadata = (
+            PeriodMetadataDay(D1, Decimal("40.00"), Decimal("60.00"), ()),
+            PeriodMetadataDay(D2, None, None, ("retail_pct", "institutional_pct")),
+        )
+        capture = _capture(custody, (), server_dates=(D1, D2), metadata=metadata)
+        result = compute_estimated_retail_lots(capture, provisional_last_custody_days=0)
+        d1, d2 = result.days
+        self.assertEqual(d1.estimated_retail_lots, Decimal(40))
+        # D2's null retail_pct is NOT forward-filled from D1.
+        self.assertIsNone(d2.estimated_retail_lots)
+        self.assertIsNone(d2.estimated_institutional_lots)
+        self.assertIsNone(d2.retail_pct)
+        # D2's own custody total is still computed even though pct is null.
+        self.assertEqual(d2.total_custody_lots, Decimal(120))
+
+    def test_missing_custody_panel_gives_none_even_with_pct_present(self):
+        custody = (
+            DatedCodeValues(D1, (CodeValue("AAA", Decimal(100)),)),
+            # D2: no custody panel at all.
+        )
+        metadata = (
+            PeriodMetadataDay(D1, Decimal("40.00"), Decimal("60.00"), ()),
+            PeriodMetadataDay(D2, Decimal("45.00"), Decimal("55.00"), ()),
+        )
+        capture = _capture(custody, (), server_dates=(D1, D2), metadata=metadata)
+        result = compute_estimated_retail_lots(capture, provisional_last_custody_days=0)
+        d2 = result.days[1]
+        self.assertIsNone(d2.total_custody_lots)
+        self.assertIsNone(d2.estimated_retail_lots)
+        self.assertIsNone(d2.estimated_institutional_lots)
+        # The percentage itself is still recorded even though total is undefined.
+        self.assertEqual(d2.retail_pct, Decimal("45.00"))
+
+    def test_provisional_marking_default_marks_last_date_only(self):
+        custody = (
+            DatedCodeValues(D1, (CodeValue("AAA", Decimal(100)),)),
+            DatedCodeValues(D2, (CodeValue("AAA", Decimal(110)),)),
+            DatedCodeValues(D3, (CodeValue("AAA", Decimal(120)),)),
+        )
+        metadata = tuple(
+            PeriodMetadataDay(d, Decimal("40.00"), Decimal("60.00"), ()) for d in (D1, D2, D3)
+        )
+        capture = _capture(custody, (), server_dates=(D1, D2, D3), metadata=metadata)
+        result = compute_estimated_retail_lots(capture)  # default provisional_last_custody_days=1
+        self.assertEqual(result.provisional_last_custody_days, 1)
+        d1, d2, d3 = result.days
+        self.assertFalse(d1.provisional)
+        self.assertFalse(d2.provisional)
+        self.assertTrue(d3.provisional)
+
+    def test_provisional_last_custody_days_widens_marking(self):
+        custody = (
+            DatedCodeValues(D1, (CodeValue("AAA", Decimal(100)),)),
+            DatedCodeValues(D2, (CodeValue("AAA", Decimal(110)),)),
+            DatedCodeValues(D3, (CodeValue("AAA", Decimal(120)),)),
+        )
+        metadata = tuple(
+            PeriodMetadataDay(d, Decimal("40.00"), Decimal("60.00"), ()) for d in (D1, D2, D3)
+        )
+        capture = _capture(custody, (), server_dates=(D1, D2, D3), metadata=metadata)
+        result = compute_estimated_retail_lots(capture, provisional_last_custody_days=2)
+        d1, d2, d3 = result.days
+        self.assertFalse(d1.provisional)
+        self.assertTrue(d2.provisional)
+        self.assertTrue(d3.provisional)
+
+    def test_rejects_negative_provisional_days(self):
+        capture = _capture((), (), server_dates=(D1,))
+        with self.assertRaises(ValueError):
+            compute_estimated_retail_lots(capture, provisional_last_custody_days=-1)
+
+    def test_rejects_non_capture_input(self):
+        with self.assertRaises(TypeError):
+            compute_estimated_retail_lots("not a capture")  # type: ignore[arg-type]
 
 
 class LoadCodeSetTests(unittest.TestCase):

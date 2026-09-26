@@ -14,6 +14,11 @@ were previously computed ad hoc against a saved
   -supplied, named and versioned code set (e.g. a three-brokerage grouping
   the caller defines). There is no built-in "retail" or similar code set;
   the caller must pass one in explicitly (see ``CodeSet``/``load_code_set``).
+* ``compute_estimated_retail_lots`` -- an estimated retail (bireysel) and
+  institutional (kurumsal) lot series computed from the provider's own
+  ``retail_pct``/``institutional_pct`` metadata field applied to that same
+  server date's total custody lots (see ``RETAIL_LOT_LABEL`` and
+  ``RETAIL_LOT_VALIDATION_NOTE`` for the caveats and provenance).
 
 Custody-lot inputs are never defaulted: a residual whose custody lot or
 previous custody lot is missing for that code/date is ``None``, not ``0``.
@@ -38,6 +43,22 @@ produced it and the ``formula_version`` (``FORMULA_VERSION``); every
 ``CodeResidual`` row records whether its AKD input was defaulted to 0 under
 the "zero" policy (``akd_defaulted``).
 
+``compute_estimated_retail_lots`` derives a lot-scale estimate of the
+provider's percentage split; it never invents the split itself. The label
+(``RETAIL_LOT_LABEL``, Turkish, carried verbatim on every result) makes clear
+this is a computed value, not a reported one, and that the underlying
+bireysel/kurumsal classification is the provider's, with an unverified
+method. It carries a validation status (``RETAIL_LOT_VALIDATION_STATUS``)
+pointing at an offline single-symbol study
+(``RETAIL_LOT_VALIDATION_STUDY_FILE``, name only -- see
+``docs/custody_flow.md``); a custody lot-scale change (e.g. a corporate
+action) changes lot *levels* but, per that study, not the retail/institutional
+*ratio*, since the estimate is a percentage of the same date's total, not an
+absolute count. The series also carries the ``provisional_last_custody_days``
+policy (same meaning as ``fintr.features.period``): the most recent that many
+server dates are flagged ``provisional`` because custody balances there have
+been observed to be revised later.
+
 See ``FORMULAS`` for exact definitions and ``FORMULA_VERSION`` for the
 version tag carried on every result.
 """
@@ -53,9 +74,10 @@ from pathlib import Path
 from typing import Any
 
 from fintr.data.period_capture import PeriodCapture
+from fintr.features.period import DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS
 
 
-FORMULA_VERSION = "custody_flow_v2"
+FORMULA_VERSION = "custody_flow_v3"
 
 # Exact-equality by default: the scratch script this reproduces used exact
 # cancellation (v2 == -v1). Exposed as a parameter, never a hidden default,
@@ -77,6 +99,30 @@ MISSING_AKD_ZERO_EVIDENCE = (
     "traded zero net that day. This does not extend to a server date whose "
     "AKD panel is missing entirely from the capture; that stays None under "
     "either policy."
+)
+
+RETAIL_LOT_LABEL = (
+    "Tahmini bireysel lot (hesaplanan): sağlayıcı retail_pct × aynı saklama "
+    "tarihindeki toplam saklama lotu / 100. Bireysel/kurumsal sınıflaması "
+    "sağlayıcıya aittir; yöntem belgesi doğrulanmadı."
+)
+
+RETAIL_LOT_VALIDATION_STATUS = "provider_method_consistent_single_symbol_study"
+
+# Name only, per project policy: the study's numbers are not reproduced here.
+RETAIL_LOT_VALIDATION_STUDY_FILE = "data/interim/research/retail_pct_validation.md"
+
+RETAIL_LOT_VALIDATION_NOTE = (
+    "Validation status 'provider_method_consistent_single_symbol_study': an "
+    "offline research study (see RETAIL_LOT_VALIDATION_STUDY_FILE for the "
+    "file name, not reproduced here) found this lag-0, same-server-date "
+    "percentage-of-total-custody construction consistent with the "
+    "provider's own retail_pct series, but tested on ONE symbol and one "
+    "capture period only -- not a general guarantee for other symbols or "
+    "periods. A custody lot-scale change (e.g. a corporate action / split) "
+    "changes the absolute lot levels used here but, per that study, does "
+    "not by itself change the retail/institutional ratio, since both the "
+    "numerator and denominator scale together."
 )
 
 FORMULAS: dict[str, str] = {
@@ -113,6 +159,16 @@ FORMULAS: dict[str, str] = {
         "listed_count/missing_count partition the code set for that date; "
         "change(t) = total_lots(t) - total_lots(previous server date), "
         "None on the first server date."
+    ),
+    "estimated_retail_lots": (
+        "For each server date t, with total(t) = sum of custody_lots(c, t) "
+        "over ALL codes listed in the custody panel for t (no lag, no "
+        "forward-fill): estimated_retail_lots(t) = retail_pct(t) / 100 * "
+        "total(t), and estimated_institutional_lots(t) = "
+        "institutional_pct(t) / 100 * total(t). Both are None if the "
+        "corresponding percentage is null for t OR the day's custody panel "
+        "is absent from the capture (total(t) is then undefined). See "
+        "RETAIL_LOT_LABEL and RETAIL_LOT_VALIDATION_NOTE."
     ),
 }
 
@@ -332,4 +388,82 @@ def compute_code_set_series(capture: PeriodCapture, code_set: CodeSet) -> CodeSe
     return CodeSetSeriesResult(
         formula_version=FORMULA_VERSION, code_set_name=code_set.name,
         code_set_version=code_set.version, codes=code_set.codes, days=tuple(days),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RetailLotDay:
+    """See ``FORMULAS['estimated_retail_lots']``."""
+
+    date: date
+    total_custody_lots: Decimal | None
+    retail_pct: Decimal | None
+    institutional_pct: Decimal | None
+    estimated_retail_lots: Decimal | None
+    estimated_institutional_lots: Decimal | None
+    provisional: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RetailLotSeriesResult:
+    formula_version: str
+    label: str
+    validation_status: str
+    validation_study_file: str
+    validation_note: str
+    provisional_last_custody_days: int
+    days: tuple[RetailLotDay, ...]
+
+
+def compute_estimated_retail_lots(
+    capture: PeriodCapture,
+    *,
+    provisional_last_custody_days: int = DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS,
+) -> RetailLotSeriesResult:
+    """See ``FORMULAS['estimated_retail_lots']``.
+
+    ``provisional_last_custody_days`` marks the most recent that many server
+    dates as ``provisional`` (same policy as
+    ``fintr.features.period.check_custodian_diff``): 0 disables marking.
+    """
+    if not isinstance(capture, PeriodCapture):
+        raise TypeError("capture must be a PeriodCapture")
+    if type(provisional_last_custody_days) is not int or provisional_last_custody_days < 0:
+        raise ValueError("provisional_last_custody_days must be a non-negative integer")
+
+    custody_by_date = {day.date: day.by_code() for day in capture.daily_custody_lots}
+    metadata_by_date = {day.date: day for day in capture.metadata}
+    provisional_dates = set(
+        capture.server_dates[-provisional_last_custody_days:]
+        if provisional_last_custody_days else ()
+    )
+
+    days: list[RetailLotDay] = []
+    for t in capture.server_dates:
+        lots = custody_by_date.get(t)
+        total = sum(lots.values(), Decimal(0)) if lots is not None else None
+        meta = metadata_by_date.get(t)
+        retail_pct = meta.retail_pct if meta is not None else None
+        institutional_pct = meta.institutional_pct if meta is not None else None
+        estimated_retail = (
+            None if retail_pct is None or total is None else (retail_pct / Decimal(100)) * total
+        )
+        estimated_institutional = (
+            None if institutional_pct is None or total is None
+            else (institutional_pct / Decimal(100)) * total
+        )
+        days.append(RetailLotDay(
+            date=t, total_custody_lots=total, retail_pct=retail_pct,
+            institutional_pct=institutional_pct,
+            estimated_retail_lots=estimated_retail,
+            estimated_institutional_lots=estimated_institutional,
+            provisional=t in provisional_dates,
+        ))
+    return RetailLotSeriesResult(
+        formula_version=FORMULA_VERSION, label=RETAIL_LOT_LABEL,
+        validation_status=RETAIL_LOT_VALIDATION_STATUS,
+        validation_study_file=RETAIL_LOT_VALIDATION_STUDY_FILE,
+        validation_note=RETAIL_LOT_VALIDATION_NOTE,
+        provisional_last_custody_days=provisional_last_custody_days,
+        days=tuple(days),
     )

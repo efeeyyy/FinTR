@@ -10,6 +10,11 @@ code-set lot series, otherwise that section is omitted. ``--missing-akd-policy``
 controls how a code absent from an otherwise-present AKD day panel is
 treated for the residual (default ``zero``; see
 ``fintr.features.custody_flow`` module docstring and ``docs/custody_flow.md``).
+Also always prints an estimated retail/institutional lot series
+(``estimated_retail_lots``), a computed value derived from the provider's own
+percentage split -- see ``fintr.features.custody_flow.RETAIL_LOT_LABEL`` and
+``docs/custody_flow.md``; ``--provisional-last-custody-days`` controls how
+many of the most recent server dates it flags as provisional.
 """
 
 from __future__ import annotations
@@ -29,9 +34,11 @@ from fintr.features.custody_flow import (
     MISSING_AKD_ZERO_EVIDENCE,
     compute_code_set_series,
     compute_custody_residual,
+    compute_estimated_retail_lots,
     find_same_day_pairs,
     load_code_set,
 )
+from fintr.features.period import DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS
 
 
 def _num(value: Decimal | None) -> str | None:
@@ -49,6 +56,16 @@ def _positive_int(raw: str) -> int:
         raise argparse.ArgumentTypeError(f"invalid int: {raw!r}") from None
     if value < 1:
         raise argparse.ArgumentTypeError("must be a positive int")
+    return value
+
+
+def _non_negative_int(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid int: {raw!r}") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
     return value
 
 
@@ -92,6 +109,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--code-set", type=Path, default=None, metavar="CODE_SET_JSON",
         help="Optional path to a {'name','version','codes'} JSON file for the code-set lot series.",
+    )
+    parser.add_argument(
+        "--provisional-last-custody-days", type=_non_negative_int,
+        default=DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS,
+        help=(
+            "How many of the most recent server dates the estimated "
+            "retail/institutional lot series flags as provisional "
+            f"(default: {DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS}; 0 disables "
+            "marking); same policy as fintr.features.period."
+        ),
     )
     return parser
 
@@ -165,6 +192,30 @@ def _code_set_to_json(result) -> dict[str, Any]:
     }
 
 
+def _retail_lots_to_json(result) -> dict[str, Any]:
+    return {
+        "formula_version": result.formula_version,
+        "label": result.label,
+        "validation_status": result.validation_status,
+        "validation_study_file": result.validation_study_file,
+        "validation_note": result.validation_note,
+        "provisional_last_custody_days": result.provisional_last_custody_days,
+        "formula": FORMULAS["estimated_retail_lots"],
+        "days": [
+            {
+                "date": _day(day.date),
+                "total_custody_lots": _num(day.total_custody_lots),
+                "retail_pct": _num(day.retail_pct),
+                "institutional_pct": _num(day.institutional_pct),
+                "estimated_retail_lots": _num(day.estimated_retail_lots),
+                "estimated_institutional_lots": _num(day.estimated_institutional_lots),
+                "provisional": day.provisional,
+            }
+            for day in result.days
+        ],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -179,11 +230,15 @@ def main(argv: list[str] | None = None) -> int:
         capture, lag=args.lag, missing_akd_policy=args.missing_akd_policy,
     )
     pair_result = find_same_day_pairs(residual_result, tolerance=args.pair_tolerance)
+    retail_lots_result = compute_estimated_retail_lots(
+        capture, provisional_last_custody_days=args.provisional_last_custody_days,
+    )
 
     output: dict[str, Any] = {
         "symbol": capture.symbol,
         "custody_residual": _residual_to_json(residual_result),
         "same_day_pairs": _pairs_to_json(pair_result),
+        "estimated_retail_lots": _retail_lots_to_json(retail_lots_result),
     }
 
     if args.code_set is not None:
