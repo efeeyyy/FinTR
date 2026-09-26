@@ -1,0 +1,4 @@
+# Hash-verified artifacts must have identical bytes on every platform:
+# keep LF line endings regardless of core.autocrlf.
+configs/** text eol=lf
+*.json text eol=lf

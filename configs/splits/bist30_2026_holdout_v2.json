@@ -1,0 +1,65 @@
+{
+  "schema": "fintr_symbol_split_v1",
+  "split_id": "bist30_2026_holdout_v2",
+  "created_at_utc": "2026-09-26T20:50:23.091374Z",
+  "decided_by": "Efe (2026-09-26: random 10 holdout; DSTKF excluded entirely)",
+  "supersedes": "bist30_2026_holdout_v1 (invalidated before any universe analysis because DSTKF was excluded)",
+  "method": "random.Random(seed).sample(sorted(pool), 10), Python 3.12 stdlib; pool = union of source universes minus configs/exclusions/symbols.json",
+  "seed": 20260926,
+  "source_universes": [
+    {
+      "path": "configs/universe/bist30_2026-07-01_2026-09-30.json",
+      "sha256": "5e30521b7ff9ecfa6e586badf308e1009f0b70e3a7b8c5c4c75ccaec13673e4e"
+    },
+    {
+      "path": "configs/universe/bist30_2026-10-01_2026-12-31.json",
+      "sha256": "41c5decea89027fe83b74deaf34c93fefcafce09543e7a73ffc99def184f217b"
+    }
+  ],
+  "exclusions_file": {
+    "path": "configs/exclusions/symbols.json",
+    "sha256": "a11205c7708e6e3324307c41f01446400fb34ecf52cc61353438644b23715472"
+  },
+  "pool_size": 30,
+  "holdout_symbols": [
+    "AEFES",
+    "AKBNK",
+    "ASELS",
+    "ASTOR",
+    "EKGYO",
+    "EREGL",
+    "PGSUS",
+    "SASA",
+    "TAVHL",
+    "VAKBN"
+  ],
+  "development_symbols": [
+    "BIMAS",
+    "ENKAI",
+    "FROTO",
+    "GARAN",
+    "GUBRF",
+    "ISCTR",
+    "KCHOL",
+    "KRDMD",
+    "MGROS",
+    "PETKM",
+    "SAHOL",
+    "SISE",
+    "TCELL",
+    "THYAO",
+    "TOASO",
+    "TRALT",
+    "TRMET",
+    "TTKOM",
+    "TUPRS",
+    "YKBNK"
+  ],
+  "frozen": true,
+  "rules": [
+    "Held-out symbols may be collected but must not be used for analysis, rule development, prompt/model selection or threshold tuning.",
+    "A frozen study spec is evaluated on held-out symbols once; results are reported, not used to revise the spec.",
+    "Excluded symbols (configs/exclusions/symbols.json) are not collected, analysed or signalled.",
+    "AKFIS and any symbol in src/fintr/evaluation/dev_registry.json remain development-only."
+  ]
+}
