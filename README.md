@@ -4,25 +4,26 @@ FinTR-LLM, Türkiye/Borsa İstanbul piyasa mikroyapısı verilerini Türkçe aç
 ve analiz etmek üzere geliştirilen bir araştırma projesidir. Hedef; derinlik,
 aracı kurum dağılımı (AKD), takas/saklama, kurum ve fiyat-hacim verilerini katı
 şemalarla normalize etmek, açık formüllerle özellikler hesaplamak ve bunları
-yerel bir LLM'e kanıt sınırları belirgin bir bağlam olarak sunmaktır.
+kaynak ve provenance sınırları belirgin bir bağlamda incelemektir.
 
 Proje yatırım tavsiyesi, hedef fiyat veya doğrudan al/sat kararı üretmez.
 
-## Mevcut aşama
+## Mevcut hedef
 
-- Windows üzerinde saf PyTorch + CUDA ve bitsandbytes doğrulandı.
-- Quantized Qwen base-model inference baseline'ı kaydedildi.
-- Sanitize piyasa fixture'ları, stdlib veri modelleri, katı parser'lar ve
-  deterministik feature engine eklendi.
-- Authentication'dan ayrıştırılmış, kısa ömürlü WebSocket collector ve replay
-  transport eklendi; sürekli veri toplama henüz yoktur.
-- Training ve RAG henüz yoktur.
+- Güncel piyasa verisini toplamak, kaynak/zaman/istek provenance'ını doğrulamak
+  ve sınırlı bir analiz bağlamı hazırlamak.
+- Hazırlanan kanıtları Efe ile birlikte daha güçlü yönetici modelde incelemek;
+  bu repository doğrudan bir model API'si çağırmaz.
+- Yerel model inference'ı ve model eğitimi proje kapsamında değildir.
+- Sanitize piyasa fixture'ları, katı parser'lar, provenance modelleri ve
+  deterministik feature engine analiz hazırlık katmanını sağlar.
+- WebSocket collector kısa ömürlüdür; sürekli veri toplama henüz yoktur.
 
 ## Dizinler
 
 - `configs/`: ilerideki veri, inference ve evaluation yapılandırmaları
 - `data/`: Git dışında tutulan raw, interim, processed ve eval veri alanları
-- `docs/`: ortam, inference baseline, mimari ve feature belgeleri
+- `docs/`: mimari, veri toplama, context ve feature belgeleri
 - `eval/`: evaluation vakaları ve sürümlü rubric'ler
 - `experiments/`: tekrar üretilebilir deney kayıtları
 - `scripts/`: smoke test ve yardımcı komutlar
@@ -36,8 +37,10 @@ Proje yatırım tavsiyesi, hedef fiyat veya doğrudan al/sat kararı üretmez.
 - Feature formülleri: [`docs/features.md`](docs/features.md)
 - Context örneği: [`docs/context_example_v0.md`](docs/context_example_v0.md)
 - Collector: [`docs/collector.md`](docs/collector.md)
-- Ortam raporu: [`docs/environment.md`](docs/environment.md)
-- Inference baseline: [`docs/inference_baseline.md`](docs/inference_baseline.md)
+- Bellek içi canlı analiz bağlamı: [`docs/live_context.md`](docs/live_context.md)
+- Çevrimiçi test öncesi çevrimdışı kontrol: [`docs/offline_preflight.md`](docs/offline_preflight.md)
+- Değerlendirme protokolü: [`docs/evaluation_protocol.md`](docs/evaluation_protocol.md)
+- Python ortamı: [`docs/environment.md`](docs/environment.md)
 - Aktif rubric: [`eval/rubrics/market_microstructure_v0.md`](eval/rubrics/market_microstructure_v0.md)
 
 ## Test
@@ -50,3 +53,13 @@ $env:PYTHONPATH = "$PWD\src"
 ```
 
 Fixture'larda gerçek token, cookie, session veya kimlik bilgisi bulunmaz.
+
+## Kaydedilmiş dönem paketini analiz etme
+
+Ağ ve model çağrısı olmadan, deterministik formüllerle
+([`docs/features.md`](docs/features.md#dönem-paketi-kontrolleri-period_features_v1)):
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\analyze_period.py data\interim\period_analysis\AKFIS\2026-09-08_2026-09-25.json
+```

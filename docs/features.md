@@ -73,3 +73,42 @@ investor_count_change = latest_investor_count - earliest_investor_count
 
 İkiden az gözlem varsa değişim `None` olur. Yüzde serilerindeki sonuç yüzde puan,
 yatırımcı sayısındaki sonuç kişi/adet farkıdır.
+
+## Dönem paketi kontrolleri (`period_features_v1`)
+
+Kaydedilmiş `fintr_period_analysis_capture_v1` dosyası üzerinde çalışır
+(`fintr.data.period_capture`, `fintr.features.period`). Yükleyici paket
+hash'ini yeniden hesaplar; uyuşmazsa analiz yapılmaz. `t`, sunucu tarihlerinin
+artan sıradaki indeksidir; takvim günü değil işlem gözlemi adımıdır. Değerler
+sağlayıcının birimiyle kalır.
+
+```text
+akd_daily_sum[code]   = sum_t daily_akd.net_size[code, t]   (listelenen günler)
+akd_reconciliation    = match | mismatch | missing_in_daily | missing_in_period
+                        (akd_daily_sum[code] vs get_akd_period.net.size[code])
+diff_internal         = last_value - first_value == difference
+diff_vs_daily         = first_value vs lot_count[code, ilk sunucu tarihi]
+                        last_value  vs lot_count[code, son sunucu tarihi]
+                        (o gün listelenmeyen kod: absent_in_daily_panel, sıfır değil)
+flow_run              = aynı işaretli, ardışık listelenmiş günler; listelenmeyen gün
+                        diziyi keser
+custody_change[c,t+L] = lot_count[c, t+L] - lot_count[c, t+L-1]
+lag_exact(L)          = custody_change[c, t+L] == akd.net_size[c, t]
+lag_sign(L)           = sign(custody_change[c, t+L]) == sign(akd.net_size[c, t])
+```
+
+Gecikme eşleşmesi zamanlama gözlemidir; sağlayıcı yöntemini, nedenselliği veya
+nihai yatırımcıyı kanıtlamaz. `t + L` gözlemi pakette yoksa ilgili AKD günleri
+`akd_dates_without_later_custody` altında ayrıca listelenir.
+
+Çalıştırma (ağ ve model çağrısı yok):
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\analyze_period.py data\interim\period_analysis\<SYM>\<START>_<END>.json
+```
+
+`--format json` tam raporu, `--save` ise raporu `<START>_<END>.report.json`
+olarak üzerine yazmadan kaydeder. Rapor girdi dosyası SHA-256'sını, varsa kod
+commit'ini, Python sürümünü ve `--lags`, `--detail-lag`, `--top` parametrelerini
+taşır.
