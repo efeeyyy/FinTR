@@ -1,0 +1,36 @@
+{
+  "schema": "fintr_study_spec_v1",
+  "spec_id": "example_custody_change_vs_vwap_v1",
+  "description": "EXAMPLE ONLY -- illustrates the fintr_study_spec_v1 schema; not a recommendation and not a validated finding. Combines two conditions: a rise in the total custody lot count of an example named custodian-code set over a 5-server-date lag, AND the AKD-derived VWAP proxy sitting notably above that day's close. The custody_change feature measures only the named codes given in params; it does not itself verify any 'foreign custodian' classification -- that label would need an independently sourced, verified custodian directory, which this tooling does not have.",
+  "frozen": false,
+  "symbols": ["EXAMPLE_SYM"],
+  "symbol_holdout": [],
+  "train_test_cutoff": "2099-01-01",
+  "entry_timing": "next_open",
+  "horizons_trading_days": [1, 5, 10, 20],
+  "min_event_warning_threshold": 30,
+  "adjustment_boundary_policy": "drop",
+  "bootstrap": {
+    "seed": 20260926,
+    "resamples": 2000,
+    "confidence_level": "0.95"
+  },
+  "condition": {
+    "op": "and",
+    "terms": [
+      {
+        "op": "gt",
+        "left": {
+          "feature": "custody_change",
+          "params": {"codes": ["EXAMPLE_CUSTODIAN_X"], "lag_days": 5}
+        },
+        "right": {"const": "0"}
+      },
+      {
+        "op": "gt",
+        "left": {"feature": "vwap_proxy_vs_close"},
+        "right": {"const": "0.02"}
+      }
+    ]
+  }
+}

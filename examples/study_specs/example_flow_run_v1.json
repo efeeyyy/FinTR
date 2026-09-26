@@ -1,0 +1,23 @@
+{
+  "schema": "fintr_study_spec_v1",
+  "spec_id": "example_flow_run_v1",
+  "description": "EXAMPLE ONLY -- illustrates the fintr_study_spec_v1 schema; not a recommendation and not a validated finding. Tests whether a 5-or-more-day same-sign AKD flow run, summed over an example named-code set, is followed by a different forward return than the baseline. The codes below are placeholders (EXAMPLE_BROKER_A/B), not real brokerage codes; a real spec must supply codes that actually appear in the loaded capture's daily_akd_flow_in_provider_order.",
+  "frozen": false,
+  "symbols": ["EXAMPLE_SYM"],
+  "symbol_holdout": ["EXAMPLE_HOLDOUT_SYM"],
+  "train_test_cutoff": "2099-01-01",
+  "entry_timing": "next_close",
+  "horizons_trading_days": [1, 5, 10, 20],
+  "min_event_warning_threshold": 30,
+  "adjustment_boundary_policy": "use_adjusted",
+  "bootstrap": {
+    "seed": 20260926,
+    "resamples": 2000,
+    "confidence_level": "0.95"
+  },
+  "condition": {
+    "op": "ge",
+    "left": {"feature": "flow_run_length", "params": {"codes": ["EXAMPLE_BROKER_A", "EXAMPLE_BROKER_B"]}},
+    "right": {"const": "5"}
+  }
+}

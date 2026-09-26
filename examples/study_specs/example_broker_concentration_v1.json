@@ -1,0 +1,23 @@
+{
+  "schema": "fintr_study_spec_v1",
+  "spec_id": "example_broker_concentration_v1",
+  "description": "EXAMPLE ONLY -- illustrates the fintr_study_spec_v1 schema; not a recommendation and not a validated finding. Tests whether a day where the single largest-magnitude broker's AKD net is a large share of that day's implied AKD volume proxy is followed by a different forward return than the baseline. top1_akd_net_share_of_volume itself rests on the unverified daily_market_proxy hypothesis documented in fintr.features.period (label derived_proxy_not_official_ohlc).",
+  "frozen": false,
+  "symbols": ["EXAMPLE_SYM"],
+  "symbol_holdout": [],
+  "train_test_cutoff": "2099-01-01",
+  "entry_timing": "next_open",
+  "horizons_trading_days": [1, 5, 10, 20],
+  "min_event_warning_threshold": 30,
+  "adjustment_boundary_policy": "use_adjusted",
+  "bootstrap": {
+    "seed": 20260926,
+    "resamples": 2000,
+    "confidence_level": "0.95"
+  },
+  "condition": {
+    "op": "gt",
+    "left": {"feature": "top1_akd_net_share_of_volume"},
+    "right": {"const": "0.30"}
+  }
+}

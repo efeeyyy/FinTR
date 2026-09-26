@@ -368,3 +368,59 @@ değildir. İsteğe bağlı capture `data/interim/pilot/` altında kaynak, izin
 beyanı, dönüşüm soyu ve checksum metadata'sıyla saklanır; ham frame ve session
 bilgisi kaydedilmez. Bağımsız lisans doğrulaması yapılmamıştır. Canlı toplama
 ve pilot sınırları [canlı context belgesindedir](live_context.md).
+
+### Offline event-study/backtest engine
+
+Problem: Kaydedilmiş AKD/takas/fiyat verisi üzerinde "bu koşul geçmişte
+farklı bir ileri getiriyle mi ilişkiliydi" sorusu elle, tekrar üretilemez ve
+lookahead riskiyle sorulabiliyordu; ayrıca bir tahmin/tavsiye aracına
+kayabilirdi.
+
+Alternatifler: (a) hesapları model sohbetinde/manuel not defterinde
+sürdürmek -- deterministik değil, seed/versiyon kaydı yok; (b) koşulları
+serbest metin/model çağrısıyla ifade etmek -- AGENTS.md'nin "no free-text,
+no model calls" kısıtını ihlal eder ve tekrar üretilemez; (c) sinyal/koşul
+tarihinden sonraki günün fiyat barını (veya "adjusted" seri sınırını
+belirsiz tutarak) doğrudan kullanmak -- lookahead riski taşır; (d) koşullu
+olay kümesini baseline'ın ayrık tümleyeni olarak tanımlamak yerine "tüm
+günler" (üst küme) olarak tanımlamak -- görevin "baseline (all days same
+symbols)" ifadesiyle daha doğrudan örtüşüyor, ayrık tümleyen alternatif
+olarak değerlendirildi ve reddedildi (istenmedikçe ekstra bir varsayım
+eklerdi); (e) sembol/dosya keşfini `scripts/analyze_period.py`'daki gibi
+otomatik "kapsayan dosya" aramasıyla yapmak yerine CLI'da açık
+`SEMBOL=capture,price` eşlemesi istemek -- ilk sürüm için daha küçük,
+gözden geçirilebilir ve hangi dosyanın kullanıldığını belirsiz bırakmayan
+bir arayüz.
+
+Karar: `fintr.research` paketi (`study_spec.py`, `conditions.py`,
+`features.py`, `engine.py`, `report.py`) ve `scripts/run_study.py` eklendi.
+Koşul, kapalı bir JSON gramerinde (karşılaştırma + and/or/not + sabit +
+sabit dört özellik adı) tanımlanır; serbest metin veya model çağrısı yoktur.
+Her özellik, `t` gününe kırpılmış bir `PeriodCapture` kopyası
+(`truncate_period_capture`) üzerinde çalışır -- `t+1` verisi çağrılan
+fonksiyonun elinde hiç bulunmaz, bu yüzden bir koşulun `t+1` verisini
+kullanması yapısal olarak imkânsızdır (parametre hatası değil, veri yokluğu).
+Giriş, sinyal gününden sonraki ilk işlem gören (placeholder tatil barı
+hariç) barın açılışı/kapanışıdır; çıkış `horizon` işlem günü sonrasıdır.
+Tutma penceresinde bir düzeltme sınırı (`price_join.
+adjustment_boundary_dates`, tüm fiyat serisi üzerinden) varsa ham
+açılış/kapanış karşılaştırılabilir değildir; spec'in
+`adjustment_boundary_policy`'sine göre her iki uçta `adjusted_close`
+kullanılır ya da olay düşürülür -- ikisi de açıkça sayılır. Takas paneli
+toplamında ölçek sıçraması (`detect_custody_scale_jumps`) tespit edilirse ve
+bir koşulun girdisi bu sıçramayı kapsıyorsa olay düşürülür/sayılır.
+Train/test ayrımı zaman kesimi (`train_test_cutoff`) ve isteğe bağlı sembol
+hold-out listesiyle yapılır; hold-out semboller train'de hiç kullanılmaz,
+test yalnızca spec `frozen: true` iken üretilir (`report.run_study`
+aksi halde hata verir). Sonuç JSON'u spec SHA-256'sını, girdi dosya
+hash'lerini, bootstrap seed'ini, kod commit'ini ve Python sürümünü taşır.
+
+Sonuç: Araç yalnızca geçmiş istatistik üretir (olay sayısı, ortalama/medyan,
+hit rate, baseline farkı, seed'li bootstrap güven aralığı, uygulanan işlem
+maliyeti); al/sat önerisi veya kanıtsız manipülasyon/niyet iddiası
+üretmez. `examples/study_specs/` altındaki üç örnek spec açıkça örnek
+olarak işaretlidir, öneri değildir. Bootstrap güven aralığı float ile
+hesaplanır (istatistiksel tahmin) ve kaynak Decimal getirilerden ayrı
+tutulur. `custody_change` özelliği "yabancı takas" gibi bir sınıflandırmayı
+doğrulamaz; yalnız spec'in verdiği kod kümesini toplar -- bağımsız
+doğrulanmış bir takas sınıflandırması bu repo'da yoktur.

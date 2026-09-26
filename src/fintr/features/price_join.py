@@ -43,12 +43,13 @@ DEFAULT_ADJUSTMENT_RATIO_EPSILON = Decimal("0.0005")
 
 FORMULAS: dict[str, str] = {
     "price_only_classification": (
-        "a price-only date (a bar with no matching period-capture server "
-        "date) is 'placeholder' when volume is 0 or None and "
-        "open == high == low == close (all four present and equal) -- the "
-        "documented shape of an exchange-holiday marker bar; 'no_data_bar' "
-        "when open, high, low and close are all None; otherwise "
-        "'unexpected_trading_bar'"
+        "classify_price_bar applies to any bar, not only a price-only date: "
+        "'placeholder' when volume is 0 or None and open == high == low == "
+        "close (all four present and equal) -- the documented shape of an "
+        "exchange-holiday marker bar; 'no_data_bar' when open, high, low "
+        "and close are all None; otherwise 'unexpected_trading_bar'. For "
+        "price-only days (no matching period-capture server date) this "
+        "classification is also exposed as PriceOnlyDay.classification"
     ),
     "vwap_within_bar_range": (
         "vwap_within_bar_range[date] = bar.low <= vwap_proxy[date] <= "
@@ -136,7 +137,7 @@ class PriceJoinResult:
         )
 
 
-def _classify_price_only(bar: DailyBar) -> str:
+def classify_price_bar(bar: DailyBar) -> str:
     ohlc = (bar.open, bar.high, bar.low, bar.close)
     volume_zero_or_none = bar.volume is None or bar.volume == 0
     if all(value is None for value in ohlc) and volume_zero_or_none:
@@ -229,7 +230,7 @@ def join_price_history(
 
     price_only_days = tuple(
         PriceOnlyDay(
-            date=bar.trade_date, classification=_classify_price_only(bar),
+            date=bar.trade_date, classification=classify_price_bar(bar),
             close=bar.close, volume=bar.volume,
         )
         for bar in price.bars
