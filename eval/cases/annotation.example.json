@@ -1,0 +1,124 @@
+{
+  "schema": "fintr_eval_annotation_v1",
+  "case_id": "synthetic_case_0001",
+  "annotator_id": "ann_synthetic_1",
+  "created_at": "2030-01-03T09:00:00+03:00",
+  "rubric_version": "market_microstructure_v0",
+  "dimensions": [
+    {
+      "dimension": "numerical_faithfulness",
+      "applicable": true,
+      "gold_facts": [
+        "Sentetik altin gercek: ornek olgu metni."
+      ],
+      "allowed_calculations": [
+        "Sentetik izinli hesap: ornek formul aciklamasi."
+      ],
+      "critical_errors": []
+    },
+    {
+      "dimension": "akd_custody_distinction",
+      "applicable": true,
+      "gold_facts": [
+        "Sentetik altin gercek: ornek olgu metni."
+      ],
+      "allowed_calculations": [
+        "Sentetik izinli hesap: ornek formul aciklamasi."
+      ],
+      "critical_errors": []
+    },
+    {
+      "dimension": "multi_horizon_reasoning",
+      "applicable": true,
+      "gold_facts": [
+        "Sentetik altin gercek: ornek olgu metni."
+      ],
+      "allowed_calculations": [
+        "Sentetik izinli hesap: ornek formul aciklamasi."
+      ],
+      "critical_errors": []
+    },
+    {
+      "dimension": "contradiction_detection",
+      "applicable": true,
+      "gold_facts": [
+        "Sentetik altin gercek: ornek olgu metni."
+      ],
+      "allowed_calculations": [
+        "Sentetik izinli hesap: ornek formul aciklamasi."
+      ],
+      "critical_errors": []
+    },
+    {
+      "dimension": "missing_data_detection",
+      "applicable": true,
+      "gold_facts": [
+        "Sentetik altin gercek: ornek olgu metni."
+      ],
+      "allowed_calculations": [
+        "Sentetik izinli hesap: ornek formul aciklamasi."
+      ],
+      "critical_errors": []
+    },
+    {
+      "dimension": "unnecessary_data_request",
+      "applicable": true,
+      "gold_facts": [
+        "Sentetik altin gercek: ornek olgu metni."
+      ],
+      "allowed_calculations": [
+        "Sentetik izinli hesap: ornek formul aciklamasi."
+      ],
+      "critical_errors": []
+    },
+    {
+      "dimension": "causal_overclaim",
+      "applicable": true,
+      "gold_facts": [
+        "Sentetik altin gercek: ornek olgu metni."
+      ],
+      "allowed_calculations": [
+        "Sentetik izinli hesap: ornek formul aciklamasi."
+      ],
+      "critical_errors": []
+    },
+    {
+      "dimension": "hallucination",
+      "applicable": true,
+      "gold_facts": [
+        "Sentetik altin gercek: ornek olgu metni."
+      ],
+      "allowed_calculations": [
+        "Sentetik izinli hesap: ornek formul aciklamasi."
+      ],
+      "critical_errors": []
+    },
+    {
+      "dimension": "uncertainty_calibration",
+      "applicable": true,
+      "gold_facts": [
+        "Sentetik altin gercek: ornek olgu metni."
+      ],
+      "allowed_calculations": [
+        "Sentetik izinli hesap: ornek formul aciklamasi."
+      ],
+      "critical_errors": []
+    },
+    {
+      "dimension": "unsupported_price_prediction",
+      "applicable": false,
+      "gold_facts": [],
+      "allowed_calculations": [],
+      "critical_errors": []
+    }
+  ],
+  "second_review": {
+    "reviewer_id": "ann_synthetic_2",
+    "reviewed_at": "2030-01-04T09:00:00+03:00",
+    "agreement": true,
+    "disagreement_notes": null,
+    "resolution": null
+  },
+  "frozen": true,
+  "checksum": "f98957a593d7eda8a5dfdb21e042137790f0ab9690a341106287b7453775cd28"
+}

@@ -29,7 +29,49 @@ fiyat tahmini boyutlarını toplar. F1 için hiç pozitif/prediction yoksa sonu�
 `null`; gold pozitif olup tahmin yoksa F1 sıfırdır. Vaka başına kritik failure
 kodları ortalamadan ayrı kalır.
 
-Henüz eksik: gerçek bağımsız gold vakaları, bunlara bağlı veri manifesti,
-annotation kayıt biçimi, rubric'in zorunlu aile/ufuk kırılımları, baseline
-yanıtları ve sürümlü metric artefact'ı. Bu dosya veya sentetik testlerin
-başarısı eğitim kapısının geçtiği anlamına gelmez.
+Henüz eksik: gerçek bağımsız gold vakaları, baseline yanıtları ve sürümlü
+metric artefact'ı. Bu dosya veya sentetik testlerin başarısı eğitim
+kapısının geçtiği anlamına gelmez.
+
+## Manifest, annotation ve leakage guard (araç, veri değil)
+
+`src/fintr/evaluation/manifest.py` vaka manifesti (`fintr_eval_manifest_v1`)
+ve annotation kaydı (`fintr_eval_annotation_v1`) biçimlerini strict tip
+kontrolüyle tanımlar ve ayrıştırır. Vaka alanları: `case_id`, `split`
+(yalnız `"eval"`), `symbol`, `data_families`, `observation_period`
+(start/end), `horizons`, `source` (yol + SHA-256 + capture zamanı),
+`permission` (kullanıcı beyanlı; `independently_verified` her zaman
+`false` olmalı — bu araç izin/lisans doğrulaması yapmaz), `leakage_group`
+(`symbol|start|end`, yeniden hesaplanıp doğrulanır) ve `notes`. Annotation
+kaydı `market_microstructure_v0` rubric'inin 10 boyutunun tümünü kapsamalı;
+her boyut `applicable` bayrağı taşır (N/A boyut içerik taşımaz, uygulanabilir
+boyut en az bir gold fact içerir), ikinci gözden geçirme/anlaşmazlık çözümü
+alanları vardır ve `frozen=true` iken `checksum`
+(`compute_annotation_checksum`) içeriğin değişmediğini doğrular.
+
+`src/fintr/evaluation/leakage_guard.py`, `src/fintr/evaluation/dev_registry.json`
+içindeki (sembol + tarih aralığı, mali değer taşımayan) geliştirme-amaçlı
+kayıtlara karşı manifesti denetler. Sembol kontrolü şirket seviyesindedir:
+registry'de AKFIS 2026-09-23 pilotu (`data/interim/pilot/`) ve AKFIS
+2026-09-08..2026-09-25 period capture'ı (`data/interim/period_analysis/AKFIS/`)
+kayıtlı olduğu için, tarihi ne olursa olsun AKFIS sembolündeki her vaka
+`development_symbol` nedeniyle reddedilir; registry'nin `start`/`end`
+alanları yalnızca hangi materyalin kullanıldığını belgeler, tarih sınırı
+olarak kullanılmaz. Bu, AGENTS.md'nin sızıntı kurallarıyla (doküman ailesi,
+şirket, rapor dönemi, olay bazında ayır; yalnız satır bazlı split yapma)
+ve takas/saklama verisinin T+2 ile hafta sonuna yayılan mutabakatıyla
+uyumludur: kayıtlı bir geliştirme döneminden birkaç gün sonraki aynı
+sembol vakası da o dönemin bilgisini taşıyabilir. Ayrıca bilinen geliştirme
+yolu (`data/interim/pilot/`, `data/interim/period_analysis/`), yinelenen
+`case_id`, yinelenen capture checksum'ı veya yinelenen `leakage_group`
+vakayı sabit, payload'suz bir nedenle reddeder.
+
+`scripts/validate_eval_manifest.py` bir manifesti (+ opsiyonel annotation
+dizinini) bu biçimlere ve leakage guard'a karşı doğrulayıp kısa bir rapor
+basar; ihlalde çıkış kodu sıfırdan farklıdır. Gerçek eval verisi git-ignore'lu
+`data/eval/` altında yaşar; `eval/cases/` yalnızca sentetik, açıkça örnek
+değerler taşıyan bir şablon çifti içerir (bkz. `eval/cases/README.md`).
+
+Bu araçların geçmesi insan işini bitirmez: gerçek gold vakaların bağımsız
+insan annotation'ı, ikinci gözden geçirme, baseline yanıtları ve sürümlü
+metric artefact'ı hâlâ insan tarafından üretilmelidir.
