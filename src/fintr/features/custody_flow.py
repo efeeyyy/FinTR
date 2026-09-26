@@ -15,14 +15,28 @@ were previously computed ad hoc against a saved
   the caller defines). There is no built-in "retail" or similar code set;
   the caller must pass one in explicitly (see ``CodeSet``/``load_code_set``).
 
-All three treat "code not listed for this date" as an unknown, never as
-zero: a residual whose custody lot, previous custody lot, or AKD net input
-is missing for that code/date is ``None``, not ``0``. This differs from an
-earlier ad hoc scratch script that computed the same residual over the same
-capture (AKFIS, 2026-06-29..2026-09-25) with a missing-AKD-code treated as
-0 net for that date -- documented here as a deliberate correction, not
-adopted, per this project's rule against filling a missing financial input
-with an invented value.
+Custody-lot inputs are never defaulted: a residual whose custody lot or
+previous custody lot is missing for that code/date is ``None``, not ``0``.
+
+AKD-net inputs follow an explicit, caller-visible ``missing_akd_policy`` on
+``compute_custody_residual`` (see ``MISSING_AKD_POLICIES``):
+
+* ``"zero"`` (default) -- if the AKD panel for the anchor server date exists
+  at all but a given code is not listed in it, that code's AKD net is
+  treated as 0 for that date. This is a recorded decision by the project
+  owner (Efe), dated 2026-09-26: see ``MISSING_AKD_ZERO_EVIDENCE`` for the
+  evidence and ``docs/custody_flow.md`` for the full writeup. It does NOT
+  apply when the whole day's AKD panel is absent from the capture -- that
+  case is always ``None``, under either policy, because there is then no
+  panel to have omitted the code from.
+* ``"unknown"`` -- the previous behaviour: any AKD-net input that is not
+  listed for that code/date, whether or not the day's panel exists, is
+  ``None``.
+
+Every ``CustodyResidualResult`` carries the ``missing_akd_policy`` that
+produced it and the ``formula_version`` (``FORMULA_VERSION``); every
+``CodeResidual`` row records whether its AKD input was defaulted to 0 under
+the "zero" policy (``akd_defaulted``).
 
 See ``FORMULAS`` for exact definitions and ``FORMULA_VERSION`` for the
 version tag carried on every result.
@@ -41,21 +55,45 @@ from typing import Any
 from fintr.data.period_capture import PeriodCapture
 
 
-FORMULA_VERSION = "custody_flow_v1"
+FORMULA_VERSION = "custody_flow_v2"
 
 # Exact-equality by default: the scratch script this reproduces used exact
 # cancellation (v2 == -v1). Exposed as a parameter, never a hidden default,
 # for callers whose lot values carry float-ish noise.
 DEFAULT_PAIR_TOLERANCE = Decimal(0)
 
+MISSING_AKD_POLICIES = ("zero", "unknown")
+DEFAULT_MISSING_AKD_POLICY = "zero"
+
+MISSING_AKD_ZERO_EVIDENCE = (
+    "Decision by Efe (project owner), recorded 2026-09-26: a broker/code "
+    "absent from a server date's AKD list is treated as net 0 for that "
+    "date, when the AKD panel for that date is itself present in the "
+    "capture. Evidence: in both saved AKFIS captures, the listed brokers' "
+    "daily net_size sums to exactly 0 on every server date (the "
+    "period_features 'net_sum_zero' check passed on all days) -- a result "
+    "inconsistent with the list being truncated/partial, and consistent "
+    "with the list being exhaustive so that an unlisted code genuinely "
+    "traded zero net that day. This does not extend to a server date whose "
+    "AKD panel is missing entirely from the capture; that stays None under "
+    "either policy."
+)
+
 FORMULAS: dict[str, str] = {
     "custody_residual": (
         "For server-date index i >= lag, with t = server_dates[i], "
         "p = server_dates[i-1], a = server_dates[i-lag]: "
-        "residual(code, t) = (lot[code, t] - lot[code, p]) - akd_net[code, a]. "
-        "residual(code, t) is None (never 0) if lot[code, t], lot[code, p], "
-        "or akd_net[code, a] is not listed for that code on that date. "
-        "Computed for the union of codes listed in custody at t or at p."
+        "residual(code, t) = (lot[code, t] - lot[code, p]) - akd_net(code, a). "
+        "residual(code, t) is None if lot[code, t] or lot[code, p] is not "
+        "listed for that code on that date (custody inputs are never "
+        "defaulted). akd_net(code, a) depends on missing_akd_policy: if the "
+        "AKD panel for date a is entirely absent from the capture, "
+        "akd_net(code, a) is undefined and residual is None regardless of "
+        "policy; if the panel for a exists but code is not listed in it, "
+        "akd_net(code, a) is 0 under policy='zero' (default; see "
+        "MISSING_AKD_ZERO_EVIDENCE) or undefined (residual is None) under "
+        "policy='unknown'. Computed for the union of codes listed in "
+        "custody at t or at p."
     ),
     "same_day_pairs": (
         "For one custody date t, over codes with a non-None, non-zero "
@@ -83,6 +121,9 @@ FORMULAS: dict[str, str] = {
 class CodeResidual:
     code: str
     residual: Decimal | None
+    # True only when this row's AKD-net input was missing from an otherwise
+    # present AKD panel and defaulted to 0 under missing_akd_policy='zero'.
+    akd_defaulted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,15 +143,30 @@ class CustodyResidualDay:
 class CustodyResidualResult:
     formula_version: str
     lag: int
+    missing_akd_policy: str
     days: tuple[CustodyResidualDay, ...]
 
 
-def compute_custody_residual(capture: PeriodCapture, *, lag: int = 2) -> CustodyResidualResult:
-    """See ``FORMULAS['custody_residual']``. ``lag`` counts server-date steps."""
+def compute_custody_residual(
+    capture: PeriodCapture,
+    *,
+    lag: int = 2,
+    missing_akd_policy: str = DEFAULT_MISSING_AKD_POLICY,
+) -> CustodyResidualResult:
+    """See ``FORMULAS['custody_residual']``. ``lag`` counts server-date steps.
+
+    ``missing_akd_policy`` must be one of ``MISSING_AKD_POLICIES``
+    (``"zero"`` default, or ``"unknown"``); see the module docstring and
+    ``MISSING_AKD_ZERO_EVIDENCE``.
+    """
     if not isinstance(capture, PeriodCapture):
         raise TypeError("capture must be a PeriodCapture")
     if not isinstance(lag, int) or isinstance(lag, bool) or lag < 1:
         raise ValueError("lag must be a positive int")
+    if missing_akd_policy not in MISSING_AKD_POLICIES:
+        raise ValueError(
+            f"missing_akd_policy must be one of {MISSING_AKD_POLICIES}, got {missing_akd_policy!r}"
+        )
 
     dates = capture.server_dates
     custody_by_date = {day.date: day.by_code() for day in capture.daily_custody_lots}
@@ -121,17 +177,29 @@ def compute_custody_residual(capture: PeriodCapture, *, lag: int = 2) -> Custody
         t, p, a = dates[i], dates[i - 1], dates[i - lag]
         lot_t = custody_by_date.get(t, {})
         lot_p = custody_by_date.get(p, {})
+        akd_panel_present = a in akd_by_date
         net_a = akd_by_date.get(a, {})
-        rows = tuple(
-            CodeResidual(
-                code,
-                None if code not in lot_t or code not in lot_p or code not in net_a
-                else (lot_t[code] - lot_p[code]) - net_a[code],
+
+        rows_list: list[CodeResidual] = []
+        for code in sorted(set(lot_t) | set(lot_p)):
+            if code not in lot_t or code not in lot_p:
+                rows_list.append(CodeResidual(code, None))
+                continue
+            if code in net_a:
+                akd_value, akd_defaulted = net_a[code], False
+            elif akd_panel_present and missing_akd_policy == "zero":
+                akd_value, akd_defaulted = Decimal(0), True
+            else:
+                rows_list.append(CodeResidual(code, None))
+                continue
+            rows_list.append(
+                CodeResidual(code, (lot_t[code] - lot_p[code]) - akd_value, akd_defaulted)
             )
-            for code in sorted(set(lot_t) | set(lot_p))
-        )
-        days.append(CustodyResidualDay(date=t, previous_date=p, akd_date=a, rows=rows))
-    return CustodyResidualResult(formula_version=FORMULA_VERSION, lag=lag, days=tuple(days))
+        days.append(CustodyResidualDay(date=t, previous_date=p, akd_date=a, rows=tuple(rows_list)))
+    return CustodyResidualResult(
+        formula_version=FORMULA_VERSION, lag=lag,
+        missing_akd_policy=missing_akd_policy, days=tuple(days),
+    )
 
 
 @dataclass(frozen=True, slots=True)

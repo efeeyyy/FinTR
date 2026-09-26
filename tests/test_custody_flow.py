@@ -21,6 +21,7 @@ from fintr.data.period_capture import (
 )
 from fintr.features.custody_flow import (
     CodeSet,
+    DEFAULT_MISSING_AKD_POLICY,
     FORMULA_VERSION,
     compute_code_set_series,
     compute_custody_residual,
@@ -67,17 +68,73 @@ class CustodyResidualTests(unittest.TestCase):
         # (150 - 120) - 25 = 5
         self.assertEqual(day.by_code(), {"AAA": Decimal(5)})
 
-    def test_residual_none_when_akd_code_not_listed(self):
-        """A code missing from AKD at the anchor date is None, never 0."""
+    def test_residual_none_when_akd_code_not_listed_under_unknown_policy(self):
+        """Under missing_akd_policy='unknown' (previous default), a code
+        missing from AKD at the anchor date is None, never 0."""
         custody = (
             DatedCodeValues(D1, (CodeValue("BBB", Decimal(10)),)),
             DatedCodeValues(D2, (CodeValue("BBB", Decimal(20)),)),
             DatedCodeValues(D3, (CodeValue("BBB", Decimal(35)),)),
         )
-        akd = (DatedCodeValues(D1, ()),)  # BBB not listed in AKD on D1
+        akd = (DatedCodeValues(D1, ()),)  # AKD panel exists on D1, BBB not listed in it
+        capture = _capture(custody, akd, server_dates=(D1, D2, D3))
+        result = compute_custody_residual(capture, lag=2, missing_akd_policy="unknown")
+        self.assertEqual(result.missing_akd_policy, "unknown")
+        self.assertIsNone(result.days[0].by_code()["BBB"])
+        self.assertFalse(result.days[0].rows[0].akd_defaulted)
+
+    def test_residual_defaults_akd_to_zero_under_default_zero_policy(self):
+        """Default policy is 'zero': a code missing from an otherwise-present
+        AKD panel is treated as net 0 for that date, per the 2026-09-26
+        decision. The result records the policy and the akd_defaulted flag."""
+        custody = (
+            DatedCodeValues(D1, (CodeValue("BBB", Decimal(10)),)),
+            DatedCodeValues(D2, (CodeValue("BBB", Decimal(20)),)),
+            DatedCodeValues(D3, (CodeValue("BBB", Decimal(35)),)),
+        )
+        akd = (DatedCodeValues(D1, ()),)  # AKD panel exists on D1, BBB not listed in it
         capture = _capture(custody, akd, server_dates=(D1, D2, D3))
         result = compute_custody_residual(capture, lag=2)
-        self.assertIsNone(result.days[0].by_code()["BBB"])
+        self.assertEqual(result.missing_akd_policy, DEFAULT_MISSING_AKD_POLICY)
+        self.assertEqual(DEFAULT_MISSING_AKD_POLICY, "zero")
+        # (35 - 20) - 0 = 15
+        self.assertEqual(result.days[0].by_code()["BBB"], Decimal(15))
+        self.assertTrue(result.days[0].rows[0].akd_defaulted)
+
+    def test_residual_none_when_whole_day_akd_panel_missing_under_either_policy(self):
+        """If the AKD panel for the anchor date is absent from the capture
+        entirely (no DatedCodeValues for it), the residual stays None under
+        BOTH policies -- 'zero' fills a missing code within a present panel,
+        never a missing panel."""
+        custody = (
+            DatedCodeValues(D1, (CodeValue("CCC", Decimal(10)),)),
+            DatedCodeValues(D2, (CodeValue("CCC", Decimal(20)),)),
+            DatedCodeValues(D3, (CodeValue("CCC", Decimal(35)),)),
+        )
+        akd = ()  # no AKD panel at all for D1 (or any date)
+        capture = _capture(custody, akd, server_dates=(D1, D2, D3))
+        for policy in ("zero", "unknown"):
+            result = compute_custody_residual(capture, lag=2, missing_akd_policy=policy)
+            self.assertIsNone(result.days[0].by_code()["CCC"])
+            self.assertFalse(result.days[0].rows[0].akd_defaulted)
+
+    def test_residual_none_when_custody_missing_even_under_zero_policy(self):
+        """Custody-lot inputs are never defaulted, regardless of missing_akd_policy."""
+        custody = (
+            DatedCodeValues(D1, ()),
+            DatedCodeValues(D2, (CodeValue("DDD", Decimal(20)),)),
+            DatedCodeValues(D3, (CodeValue("DDD", Decimal(35)),)),
+        )
+        akd = (DatedCodeValues(D1, (CodeValue("DDD", Decimal(5)),)),)
+        capture = _capture(custody, akd, server_dates=(D1, D2, D3))
+        result = compute_custody_residual(capture, lag=1, missing_akd_policy="zero")
+        d2_day = next(d for d in result.days if d.date == D2)
+        self.assertIsNone(d2_day.by_code()["DDD"])
+
+    def test_missing_akd_policy_must_be_valid(self):
+        capture = _capture((), (), server_dates=(D1,))
+        with self.assertRaises(ValueError):
+            compute_custody_residual(capture, lag=1, missing_akd_policy="bogus")
 
     def test_residual_none_when_custody_code_not_listed_on_previous_day(self):
         """CCC is listed at D2 but has no custody row at D1 (the previous
@@ -133,7 +190,10 @@ class SameDayPairTests(unittest.TestCase):
             # DDD deliberately not listed here.
         )),)
         capture = _capture(custody, akd, server_dates=(D1, D2, D3))
-        return compute_custody_residual(capture, lag=2)
+        # This fixture is about same-day pairing, not the missing-AKD policy,
+        # so pin the previous ('unknown') behaviour: DDD stays None here
+        # rather than being defaulted to 0 under the new default policy.
+        return compute_custody_residual(capture, lag=2, missing_akd_policy="unknown")
 
     def test_exact_pair_found_and_zero_excluded(self):
         residuals = self._residual_result_for_pairs()

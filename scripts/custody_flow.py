@@ -6,7 +6,10 @@ call. Same-day pairs are printed as candidates only -- see
 ``fintr.features.custody_flow`` module docstring: a match is not evidence of
 a transfer/virman or of beneficial ownership. There is no built-in code set;
 pass ``--code-set`` with a JSON file ({"name", "version", "codes"}) to get a
-code-set lot series, otherwise that section is omitted.
+code-set lot series, otherwise that section is omitted. ``--missing-akd-policy``
+controls how a code absent from an otherwise-present AKD day panel is
+treated for the residual (default ``zero``; see
+``fintr.features.custody_flow`` module docstring and ``docs/custody_flow.md``).
 """
 
 from __future__ import annotations
@@ -19,8 +22,11 @@ from typing import Any
 
 from fintr.data.period_capture import PeriodCapture, PeriodCaptureError, load_period_capture
 from fintr.features.custody_flow import (
+    DEFAULT_MISSING_AKD_POLICY,
     DEFAULT_PAIR_TOLERANCE,
     FORMULAS,
+    MISSING_AKD_POLICIES,
+    MISSING_AKD_ZERO_EVIDENCE,
     compute_code_set_series,
     compute_custody_residual,
     find_same_day_pairs,
@@ -74,6 +80,16 @@ def _parser() -> argparse.ArgumentParser:
         help=f"Same-day pair cancellation tolerance, a non-negative Decimal (default: {DEFAULT_PAIR_TOLERANCE}).",
     )
     parser.add_argument(
+        "--missing-akd-policy", choices=MISSING_AKD_POLICIES, default=DEFAULT_MISSING_AKD_POLICY,
+        help=(
+            "How to treat a code absent from an otherwise-present AKD day panel: "
+            "'zero' (default; treat as net 0 for that day, per the 2026-09-26 "
+            "decision -- see fintr.features.custody_flow.MISSING_AKD_ZERO_EVIDENCE) "
+            "or 'unknown' (previous behaviour: treat as None). A day whose AKD "
+            "panel is entirely missing is always None under either policy."
+        ),
+    )
+    parser.add_argument(
         "--code-set", type=Path, default=None, metavar="CODE_SET_JSON",
         help="Optional path to a {'name','version','codes'} JSON file for the code-set lot series.",
     )
@@ -84,6 +100,10 @@ def _residual_to_json(result) -> dict[str, Any]:
     return {
         "formula_version": result.formula_version,
         "lag": result.lag,
+        "missing_akd_policy": result.missing_akd_policy,
+        "missing_akd_policy_evidence": (
+            MISSING_AKD_ZERO_EVIDENCE if result.missing_akd_policy == "zero" else None
+        ),
         "formula": FORMULAS["custody_residual"],
         "days": [
             {
@@ -91,7 +111,12 @@ def _residual_to_json(result) -> dict[str, Any]:
                 "previous_date": _day(day.previous_date),
                 "akd_date": _day(day.akd_date),
                 "residuals": [
-                    {"code": row.code, "residual": _num(row.residual)} for row in day.rows
+                    {
+                        "code": row.code,
+                        "residual": _num(row.residual),
+                        "akd_defaulted": row.akd_defaulted,
+                    }
+                    for row in day.rows
                 ],
             }
             for day in result.days
@@ -150,7 +175,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"invalid capture: {exc}")
         return 2
 
-    residual_result = compute_custody_residual(capture, lag=args.lag)
+    residual_result = compute_custody_residual(
+        capture, lag=args.lag, missing_akd_policy=args.missing_akd_policy,
+    )
     pair_result = find_same_day_pairs(residual_result, tolerance=args.pair_tolerance)
 
     output: dict[str, Any] = {
