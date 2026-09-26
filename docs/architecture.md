@@ -307,8 +307,34 @@ bunları sabit sınır metinleriyle JSON rapora çevirir. `scripts/analyze_perio
 ağ, model veya secret kullanmaz; kaydetme isteğe bağlıdır ve üzerine yazmaz.
 
 Sonuç: Aynı dosya ve parametreler aynı hesapları üretir. Model sohbeti sayıları
-yeniden hesaplamak yerine raporu yorumlar. Rapor fiyat/hacim serisi içermez;
-gecikme eşleşmesi nedensellik veya sağlayıcı yöntemi kanıtı değildir.
+yeniden hesaplamak yerine raporu yorumlar. Rapor resmi bir fiyat/hacim serisi
+içermez; gecikme eşleşmesi nedensellik veya sağlayıcı yöntemi kanıtı değildir.
+
+#### Ek: günlük piyasa proxy'si (`period_features_v2`)
+
+Problem: Kaydedilmiş dönem paketlerinde fiyat/hacim serisi yok, ama günlük AKD
+satırlarında kullanılmayan `total_size`/`total_cost` alanları taşınıyordu;
+bunların anlamı doğrulanmamıştı.
+
+Alternatifler: alanları hiç kullanmamak (mevcut durum), doğrulanmamış anlamını
+resmi bir fiyat serisiymiş gibi sunmak, veya doğrulanmamış bir hipotez olarak
+açıkça etiketleyip iç tutarlılık kontrolleriyle birlikte türetilmiş bir proxy
+sunmak. İkinci seçenek AGENTS.md'deki "kaynakta olmayan rakam üretme" kuralını
+ihlal eder.
+
+Karar: `fintr.data.period_capture` bu iki alanı da katı biçimde okur;
+`fintr.features.period` (`period_features_v2`) bunlardan `derived_proxy_
+not_official_ohlc` etiketli bir günlük proxy (`sum_total_size`,
+`implied_traded_lots`, `vwap_proxy`) ve dört semantik kontrol (net toplamı
+sıfır, toplam lot çift, |net| <= total_size, VWAP aralık içinde) üretir;
+eksik güne 0 değil `None` yazılır. `fintr.inference.period_report` bunu ayrı
+bir `daily_market_proxy` bölümünde, resmi seri olmadığını belirten bir
+kısıtla birlikte taşır.
+
+Sonuç: İki gerçek AKFIS kaydında dört kontrol de her gün geçti (bkz.
+`scripts/analyze_period.py --all` çıktısındaki `proxy_checks_passed`), ancak
+bu tek sembolün gözlemidir ve hipotezi kanıtlamaz; alan adları veya sağlayıcı
+davranışı değişirse kontroller yeniden çalıştırılıp doğrulanmalıdır.
 
 ## Veri bölgeleri
 

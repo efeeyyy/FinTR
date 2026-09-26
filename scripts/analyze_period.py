@@ -178,6 +178,11 @@ def render_text(report: dict) -> str:
         f"  gecikme {lag['detail_lag']} için takas karşılığı henüz olmayan AKD günleri: "
         + (", ".join(lag["akd_dates_without_later_custody"]) or "yok")
     )
+    proxy_summary = report["daily_market_proxy"]["check_summary"]
+    lines += ["", "Günlük piyasa proxy kontrolleri (resmi fiyat/hacim serisi değildir): " + ", ".join(
+        f"{name}={summary['passed_days']}/{summary['evaluated_days']} geçti"
+        for name, summary in proxy_summary.items()
+    )]
     days = report["provider_metadata"]["days"]
     if days:
         lines += ["", "Sağlayıcı retail_pct (yöntemi doğrulanmamış): " + ", ".join(
@@ -242,6 +247,7 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
         "custodian_diff_exception_count": None,
         "lag_summaries": None,
         "brokerage_directory_present": None,
+        "proxy_checks_passed": None,
         "report": None,
     }
     try:
@@ -264,6 +270,10 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
         "custodian_diff_exception_count": len(report["custodian_diff_check"]["exceptions"]),
         "lag_summaries": report["lagged_akd_custody_match"]["summaries"],
         "brokerage_directory_present": capture.brokerage_directory.present,
+        "proxy_checks_passed": all(
+            summary["all_evaluated_days_passed"]
+            for summary in report["daily_market_proxy"]["check_summary"].values()
+        ),
     })
 
     if not args.save:
@@ -341,7 +351,9 @@ def render_index_text(index: dict) -> str:
             f"({entry['schema_version']}, {entry['server_date_count']} gözlem, "
             f"kurum dizini={'var' if entry['brokerage_directory_present'] else 'yok'}): "
             f"AKD mutabakatı[{akd}], takas farkı istisna={entry['custodian_diff_exception_count']}, "
-            f"gecikme[{lag}], rapor={_REPORT_STATUS_TR[entry['report']]}"
+            f"gecikme[{lag}], "
+            f"piyasa proxy kontrolleri geçti={'evet' if entry['proxy_checks_passed'] else 'hayır'}, "
+            f"rapor={_REPORT_STATUS_TR[entry['report']]}"
         )
     return "\n".join(lines) + "\n"
 

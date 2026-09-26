@@ -17,14 +17,22 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fintr.data.period_capture import (
+    BrokerageDirectoryInfo,
+    DailyMarketProxyRow,
+    DatedMarketProxyValues,
+    PeriodCapture,
     PeriodCaptureError,
     canonical_json,
     load_period_capture,
     parse_period_capture,
 )
 from fintr.features.period import (
+    DAILY_MARKET_PROXY_LABEL,
+    FORMULA_VERSION,
+    FORMULAS,
     broker_flow_series,
     check_custodian_diff,
+    daily_market_proxy,
     daily_panel_coverage,
     lagged_akd_custody_match,
     reconcile_daily_akd,
@@ -51,6 +59,12 @@ AKD = {  # daily AKD net_size
     D2: {"AAA": 50, "BBB": -10},
     D3: {"AAA": -30, "CCC": 5, "GGG": 2},
     D4: {"AAA": 20},
+}
+TOTAL = {  # daily AKD total_size, total_cost (unverified derived-proxy fields)
+    D1: {"AAA": ("300", "10.0"), "BBB": ("80", "12.0"), "GGG": ("2", "5.0")},
+    D2: {"AAA": ("120", "10.5"), "BBB": ("20", "12.5")},
+    D3: {"AAA": ("60", "9.5"), "CCC": ("10", "8.0"), "GGG": ("4", "5.5")},
+    D4: {"AAA": ("40", "11.0")},
 }
 CUSTODY = {  # daily custody lot_count; CCC is not listed on D2
     D1: {"AAA": "1000.0", "BBB": "500.0", "CCC": "10.0"},
@@ -85,7 +99,10 @@ def _packet() -> dict:
             }},
             "daily_akd_flow_in_provider_order": [
                 {"date": day.isoformat(), "rows": [
-                    {"broker_code": code, "net_size": value} for code, value in AKD[day].items()
+                    {"broker_code": code, "net_size": value,
+                     "total_size": Decimal(TOTAL[day][code][0]),
+                     "total_cost": Decimal(TOTAL[day][code][1])}
+                    for code, value in AKD[day].items()
                 ]}
                 for day in descending
             ],
@@ -177,6 +194,17 @@ class PeriodCaptureLoaderTests(unittest.TestCase):
         self.assertEqual([day.date for day in capture.daily_akd_net], [D1, D2, D3, D4])
         self.assertEqual(capture.custodian_diff_end, D4)
         self.assertIsNone(capture.metadata[-1].retail_pct)
+        self.assertEqual([day.date for day in capture.daily_akd_market], [D1, D2, D3, D4])
+        d1_market = capture.daily_akd_market[0].by_code()
+        self.assertEqual(d1_market["AAA"].total_size, Decimal("300"))
+        self.assertEqual(d1_market["AAA"].total_cost, Decimal("10.0"))
+
+    def test_daily_akd_row_missing_total_size_is_rejected(self):
+        packet = _packet()
+        row = packet["custody_analysis_daily"]["daily_akd_flow_in_provider_order"][0]["rows"][0]
+        del row["total_size"]
+        with self.assertRaisesRegex(PeriodCaptureError, "invalid_capture_field"):
+            parse_period_capture(_capture(packet))
 
     def test_tampered_packet_is_rejected(self):
         document = _capture()
@@ -262,6 +290,144 @@ class PeriodFeatureTests(unittest.TestCase):
         self.assertEqual(coverage["AAA"].akd_missing_dates, ())
 
 
+def _build_capture(
+    server_dates: tuple,
+    net_days: dict,
+    market_days: dict,
+) -> PeriodCapture:
+    """Minimal direct-construction PeriodCapture for testing daily_market_proxy
+    in isolation; fields unrelated to the proxy are filled with placeholders."""
+    from fintr.data.period_capture import DatedCodeValues
+
+    daily_akd_net = tuple(
+        DatedCodeValues(day, tuple(net_days[day])) for day in sorted(net_days)
+    )
+    daily_akd_market = tuple(
+        DatedMarketProxyValues(day, tuple(market_days[day])) for day in sorted(market_days)
+    )
+    return PeriodCapture(
+        symbol="TEST", start=server_dates[0], end=server_dates[-1],
+        captured_at_utc="2026-01-01T00:00:00Z", packet_sha256="deadbeef",
+        server_dates=server_dates, period_akd_net=(),
+        daily_akd_net=daily_akd_net, daily_akd_market=daily_akd_market,
+        daily_custody_lots=(), custodian_diff_start=server_dates[0],
+        custodian_diff_end=server_dates[-1], custodian_diff=(), metadata=(),
+        brokerage_directory=BrokerageDirectoryInfo(present=False, row_count=0, index=None),
+    )
+
+
+class DailyMarketProxyTests(unittest.TestCase):
+    """Synthetic-only: checks passing, failing, and None handling for a
+    missing server date. Real market data is never used in tests."""
+
+    def setUp(self):
+        from fintr.data.period_capture import CodeValue
+
+        # D1: both checks pass, VWAP within [5, 7].
+        d1_net = [CodeValue("AAA", Decimal(10)), CodeValue("BBB", Decimal(-10))]
+        d1_market = [
+            DailyMarketProxyRow("AAA", Decimal(20), Decimal(5)),
+            DailyMarketProxyRow("BBB", Decimal(20), Decimal(7)),
+        ]
+        # D2: net_sum_zero fails, total_size_even fails (odd sum=39),
+        # net_within_total fails (AAA net 25 > total_size 20); VWAP stays
+        # within [5, 9] since weights are non-negative.
+        d2_net = [CodeValue("AAA", Decimal(25)), CodeValue("BBB", Decimal(-5))]
+        d2_market = [
+            DailyMarketProxyRow("AAA", Decimal(20), Decimal(5)),
+            DailyMarketProxyRow("BBB", Decimal(19), Decimal(9)),
+        ]
+        # D4 (D3 is deliberately absent -> missing day): net_sum_zero passes,
+        # total_size_even passes (sum=40), net_within_total fails (0 <= -10 is
+        # False), vwap_within_range fails (weighted average pulled outside the
+        # priced range by the negative-size row).
+        d4_net = [CodeValue("AAA", Decimal(0)), CodeValue("BBB", Decimal(0))]
+        d4_market = [
+            DailyMarketProxyRow("AAA", Decimal(-10), Decimal(100)),
+            DailyMarketProxyRow("BBB", Decimal(50), Decimal(2)),
+        ]
+        self.d1, self.d2, self.d3, self.d4 = (date(2026, 2, day) for day in (1, 2, 3, 4))
+        self.capture = _build_capture(
+            (self.d1, self.d2, self.d3, self.d4),
+            {self.d1: d1_net, self.d2: d2_net, self.d4: d4_net},
+            {self.d1: d1_market, self.d2: d2_market, self.d4: d4_market},
+        )
+        self.proxy = daily_market_proxy(self.capture)
+
+    def test_label_is_unverified_derived_proxy(self):
+        self.assertEqual(self.proxy.label, "derived_proxy_not_official_ohlc")
+        self.assertEqual(self.proxy.label, DAILY_MARKET_PROXY_LABEL)
+
+    def test_missing_server_date_yields_none_never_zero(self):
+        days = {day.date: day for day in self.proxy.days}
+        missing = days[self.d3]
+        self.assertFalse(missing.has_rows)
+        self.assertIsNone(missing.sum_total_size)
+        self.assertIsNone(missing.implied_traded_lots)
+        self.assertIsNone(missing.vwap_proxy)
+        self.assertEqual(
+            (missing.checks.net_sum_zero, missing.checks.total_size_even,
+             missing.checks.net_within_total, missing.checks.vwap_within_range),
+            (None, None, None, None),
+        )
+
+    def test_all_checks_pass_on_a_clean_day(self):
+        days = {day.date: day for day in self.proxy.days}
+        clean = days[self.d1]
+        self.assertTrue(clean.has_rows)
+        self.assertEqual(clean.sum_total_size, Decimal(40))
+        self.assertEqual(clean.implied_traded_lots, Decimal(20))
+        self.assertEqual(clean.vwap_proxy, Decimal(6))
+        self.assertEqual(
+            (clean.checks.net_sum_zero, clean.checks.total_size_even,
+             clean.checks.net_within_total, clean.checks.vwap_within_range),
+            (True, True, True, True),
+        )
+
+    def test_checks_fail_as_expected_on_dirty_days(self):
+        days = {day.date: day for day in self.proxy.days}
+        d2 = days[self.d2]
+        self.assertEqual(
+            (d2.checks.net_sum_zero, d2.checks.total_size_even,
+             d2.checks.net_within_total, d2.checks.vwap_within_range),
+            (False, False, False, True),
+        )
+        d4 = days[self.d4]
+        self.assertEqual(
+            (d4.checks.net_sum_zero, d4.checks.total_size_even,
+             d4.checks.net_within_total, d4.checks.vwap_within_range),
+            (True, True, False, False),
+        )
+
+    def test_period_summaries_exclude_missing_days_from_denominator(self):
+        self.assertEqual(
+            (self.proxy.net_sum_zero.evaluated_days, self.proxy.net_sum_zero.passed_days,
+             self.proxy.net_sum_zero.failing_days, self.proxy.net_sum_zero.all_evaluated_days_passed),
+            (3, 2, 1, False),
+        )
+        self.assertEqual(
+            (self.proxy.total_size_even.evaluated_days, self.proxy.total_size_even.passed_days,
+             self.proxy.total_size_even.failing_days),
+            (3, 2, 1),
+        )
+        self.assertEqual(
+            (self.proxy.net_within_total.evaluated_days, self.proxy.net_within_total.passed_days,
+             self.proxy.net_within_total.failing_days),
+            (3, 1, 2),
+        )
+        self.assertEqual(
+            (self.proxy.vwap_within_range.evaluated_days, self.proxy.vwap_within_range.passed_days,
+             self.proxy.vwap_within_range.failing_days),
+            (3, 2, 1),
+        )
+
+    def test_formula_version_is_v2_and_documents_proxy_formulas(self):
+        self.assertEqual(FORMULA_VERSION, "period_features_v2")
+        self.assertIn("daily_market_proxy_assumptions", FORMULAS)
+        self.assertIn("daily_market_proxy_values", FORMULAS)
+        self.assertIn("daily_market_proxy_checks", FORMULAS)
+
+
 class PeriodReportTests(unittest.TestCase):
     def setUp(self):
         self.capture = parse_period_capture(_capture())
@@ -280,6 +446,29 @@ class PeriodReportTests(unittest.TestCase):
         self.assertIs(report["provider_metadata"]["method_verified"], False)
         with self.assertRaises(ValueError):
             build_period_report(self.capture, lags=(2,), detail_lag=2, top_n=0)
+
+    def test_daily_market_proxy_section_is_labelled_and_not_a_price_series(self):
+        report = build_period_report(self.capture, lags=(0,), detail_lag=0, top_n=5)
+        proxy = report["daily_market_proxy"]
+        self.assertEqual(proxy["label"], "derived_proxy_not_official_ohlc")
+        self.assertIn("not an official price/volume series", proxy["constraint"])
+        self.assertEqual(len(proxy["days"]), 4)
+        summary = proxy["check_summary"]
+        self.assertEqual(
+            summary["net_sum_zero"],
+            {"evaluated_days": 4, "passed_days": 0, "failing_days": 4,
+             "all_evaluated_days_passed": False},
+        )
+        for name in ("total_size_even", "net_within_total", "vwap_within_range"):
+            self.assertEqual(
+                summary[name],
+                {"evaluated_days": 4, "passed_days": 4, "failing_days": 0,
+                 "all_evaluated_days_passed": True},
+            )
+        self.assertTrue(any(
+            "official" in constraint and "not" in constraint.lower()
+            for constraint in report["constraints"]
+        ))
 
 
 class BrokerageDirectoryLabelTests(unittest.TestCase):
@@ -376,6 +565,9 @@ class AnalyzePeriodScriptTests(unittest.TestCase):
             text = stdout.getvalue().decode("utf-8")
             self.assertIn("gecikme 2: 3/4 birebir", text)
             self.assertIn("EEE", text)
+            self.assertIn("Günlük piyasa proxy kontrolleri", text)
+            self.assertIn("net_sum_zero=0/4 geçti", text)
+            self.assertIn("total_size_even=4/4 geçti", text)
             saved = path.with_name("2026-01-05_2026-01-08.report.json")
             report = json.loads(saved.read_text(encoding="utf-8"))
             self.assertEqual(report["run"]["parameters"]["detail_lag"], 2)
@@ -452,6 +644,10 @@ class AnalyzePeriodBatchTests(unittest.TestCase):
             self.assertEqual(by_symbol["AAA"]["custodian_diff_exception_count"], 1)
             lag2 = next(r for r in by_symbol["AAA"]["lag_summaries"] if r["lag"] == 2)
             self.assertEqual((lag2["comparable"], lag2["exact_matches"]), (4, 3))
+            # Fixture AKD rows don't net to zero per day, so this flag is False
+            # even though the fixture validates and loads cleanly.
+            self.assertFalse(by_symbol["AAA"]["proxy_checks_passed"])
+            self.assertIsNone(by_symbol["CCC"]["proxy_checks_passed"])
 
     def test_save_writes_reports_and_index_then_skips_existing_on_rerun(self):
         with tempfile.TemporaryDirectory() as directory:

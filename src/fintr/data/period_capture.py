@@ -52,6 +52,30 @@ class DatedCodeValues:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyMarketProxyRow:
+    """One broker's daily AKD ``total_size``/``total_cost``, unverified semantics.
+
+    These are additional fields on the same ``daily_akd_flow_in_provider_order``
+    rows that ``daily_akd_net`` reads ``net_size`` from; every code present for
+    a date in one series is present in the other, since both are read from the
+    same row objects.
+    """
+
+    code: str
+    total_size: Decimal
+    total_cost: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class DatedMarketProxyValues:
+    date: date
+    rows: tuple[DailyMarketProxyRow, ...]
+
+    def by_code(self) -> dict[str, DailyMarketProxyRow]:
+        return {row.code: row for row in self.rows}
+
+
+@dataclass(frozen=True, slots=True)
 class CustodianDiffRow:
     code: str
     first_value: Decimal
@@ -96,6 +120,7 @@ class PeriodCapture:
     server_dates: tuple[date, ...]
     period_akd_net: tuple[CodeValue, ...]
     daily_akd_net: tuple[DatedCodeValues, ...]
+    daily_akd_market: tuple[DatedMarketProxyValues, ...]
     daily_custody_lots: tuple[DatedCodeValues, ...]
     custodian_diff_start: date
     custodian_diff_end: date
@@ -157,6 +182,38 @@ def _dated_series(
             require_date(require_field(day, "date", day_path), f"{day_path}.date"),
             _code_values(require_field(day, "rows", day_path), f"{day_path}.rows",
                          code_key, value_key),
+        ))
+    if len({day.date for day in days}) != len(days):
+        raise PeriodCaptureError(f"duplicate_date: {path}")
+    return tuple(sorted(days, key=lambda day: day.date))
+
+
+def _dated_market_proxy_rows(
+    raw_days: Any, path: str, code_key: str, size_key: str, cost_key: str,
+) -> tuple[DatedMarketProxyValues, ...]:
+    days: list[DatedMarketProxyValues] = []
+    for index, raw in enumerate(require_list(raw_days, path)):
+        day_path = f"{path}[{index}]"
+        day = require_mapping(raw, day_path)
+        rows: list[DailyMarketProxyRow] = []
+        seen: set[str] = set()
+        rows_path = f"{day_path}.rows"
+        for row_index, raw_row in enumerate(require_list(require_field(day, "rows", day_path),
+                                                          rows_path)):
+            row_path = f"{rows_path}[{row_index}]"
+            row = require_mapping(raw_row, row_path)
+            code = require_string(require_field(row, code_key, row_path), f"{row_path}.{code_key}")
+            if code in seen:
+                raise PeriodCaptureError(f"duplicate_code: {path}")
+            seen.add(code)
+            rows.append(DailyMarketProxyRow(
+                code,
+                require_decimal(require_field(row, size_key, row_path), f"{row_path}.{size_key}"),
+                require_decimal(require_field(row, cost_key, row_path), f"{row_path}.{cost_key}"),
+            ))
+        days.append(DatedMarketProxyValues(
+            require_date(require_field(day, "date", day_path), f"{day_path}.date"),
+            tuple(rows),
         ))
     if len({day.date for day in days}) != len(days):
         raise PeriodCaptureError(f"duplicate_date: {path}")
@@ -320,6 +377,11 @@ def parse_period_capture(document: Any) -> PeriodCapture:
             daily_akd_net=_dated_series(
                 require_field(daily, "daily_akd_flow_in_provider_order", "daily"),
                 "daily.daily_akd_flow_in_provider_order", "broker_code", "net_size",
+            ),
+            daily_akd_market=_dated_market_proxy_rows(
+                require_field(daily, "daily_akd_flow_in_provider_order", "daily"),
+                "daily.daily_akd_flow_in_provider_order", "broker_code",
+                "total_size", "total_cost",
             ),
             daily_custody_lots=_dated_series(
                 require_field(daily, "daily_custody_balance_in_provider_order", "daily"),

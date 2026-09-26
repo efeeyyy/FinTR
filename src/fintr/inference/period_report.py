@@ -13,6 +13,7 @@ from fintr.features.period import (
     FORMULAS,
     broker_flow_series,
     check_custodian_diff,
+    daily_market_proxy,
     daily_panel_coverage,
     lagged_akd_custody_match,
     reconcile_daily_akd,
@@ -27,7 +28,10 @@ REPORT_CONSTRAINTS: tuple[str, ...] = (
     "Lag agreement is a timing observation; it does not prove provider method or causality.",
     "A code not listed on a date is missing data, not zero.",
     "Provider metadata percentages have an unverified calculation method.",
-    "No price or volume series is included; no price direction can be inferred.",
+    "No official price or volume series is included; the daily_market_proxy "
+    "section is a derived, unverified proxy from daily AKD rows, not an "
+    "official OHLC/volume series, and cannot replace one; no price direction "
+    "can be inferred from it.",
     "Brokerage/custodian labels are resolved by exact code only, from an "
     "undated directory snapshot; unresolved or ambiguous codes are never "
     "guessed, and a label never identifies an ultimate investor.",
@@ -58,6 +62,7 @@ def build_period_report(
     flows = broker_flow_series(capture)
     lag = lagged_akd_custody_match(capture, lags=lags, detail_lag=detail_lag)
     coverage = daily_panel_coverage(capture)
+    proxy = daily_market_proxy(capture)
 
     period_net = sorted(capture.period_akd_net, key=lambda row: (-row.value, row.code))
     diffs = sorted(capture.custodian_diff, key=lambda row: (-row.difference, row.code))
@@ -185,6 +190,44 @@ def build_period_report(
             for item in coverage
             if item.akd_missing_dates or item.custody_missing_dates
         ],
+        "daily_market_proxy": {
+            "label": proxy.label,
+            "constraint": (
+                "Derived from daily AKD total_size/total_cost under an unverified "
+                "semantics hypothesis (see formulas.daily_market_proxy_assumptions); "
+                "this is not an official price/volume series and cannot replace one."
+            ),
+            "days": [
+                {
+                    "date": day.date.isoformat(),
+                    "has_rows": day.has_rows,
+                    "sum_total_size": _num(day.sum_total_size),
+                    "implied_traded_lots": _num(day.implied_traded_lots),
+                    "vwap_proxy": _num(day.vwap_proxy),
+                    "checks": {
+                        "net_sum_zero": day.checks.net_sum_zero,
+                        "total_size_even": day.checks.total_size_even,
+                        "net_within_total": day.checks.net_within_total,
+                        "vwap_within_range": day.checks.vwap_within_range,
+                    },
+                }
+                for day in proxy.days
+            ],
+            "check_summary": {
+                name: {
+                    "evaluated_days": summary.evaluated_days,
+                    "passed_days": summary.passed_days,
+                    "failing_days": summary.failing_days,
+                    "all_evaluated_days_passed": summary.all_evaluated_days_passed,
+                }
+                for name, summary in (
+                    ("net_sum_zero", proxy.net_sum_zero),
+                    ("total_size_even", proxy.total_size_even),
+                    ("net_within_total", proxy.net_within_total),
+                    ("vwap_within_range", proxy.vwap_within_range),
+                )
+            },
+        },
         "provider_metadata": {
             "method_verified": False,
             "days": [

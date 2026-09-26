@@ -120,7 +120,7 @@ Bu formüller `formula_version="live_features_v1"` ile etiketlenir ve
 `computed_features.formulas` altında context'e aynen kopyalanır; LLM sonucu
 yeniden hesaplamak yerine bu değerleri kullanmalıdır.
 
-## Dönem paketi kontrolleri (`period_features_v1`)
+## Dönem paketi kontrolleri (`period_features_v2`)
 
 Kaydedilmiş `fintr_period_analysis_capture_v1` dosyası üzerinde çalışır
 (`fintr.data.period_capture`, `fintr.features.period`). Yükleyici paket
@@ -146,6 +146,47 @@ lag_sign(L)           = sign(custody_change[c, t+L]) == sign(akd.net_size[c, t])
 Gecikme eşleşmesi zamanlama gözlemidir; sağlayıcı yöntemini, nedenselliği veya
 nihai yatırımcıyı kanıtlamaz. `t + L` gözlemi pakette yoksa ilgili AKD günleri
 `akd_dates_without_later_custody` altında ayrıca listelenir.
+
+### Günlük piyasa proxy'si (`daily_market_proxy`, doğrulanmamış varsayım)
+
+Kaydedilmiş dönem paketlerinde resmi bir fiyat/hacim serisi yoktur. Bu bölüm,
+her günün AKD satırlarındaki `total_size` ve `total_cost` alanlarından
+türetilmiş, **doğrulanmamış bir hipoteze dayanan proxy**'dir; etiketi
+`derived_proxy_not_official_ohlc`'dır ve resmi bir OHLC/hacim serisinin yerini
+tutmaz.
+
+Varsayım (doğrulanmamış): bir kurumun günlük AKD satırındaki `total_size`
+alanı o kurumun o günkü alış+satış lot toplamı, `total_cost` ise o kurumun o
+günkü ortalama işlem fiyatıdır; dolayısıyla `Σ_kurum total_size = 2 × işlem
+gören lot`. `total_size` ve `total_cost`, `net_size`'ın geldiği aynı
+`daily_akd_flow_in_provider_order` satırından okunur; bir kod o gün biri için
+listelenmişse üçü için de listelenmiştir.
+
+```text
+sum_total_size[t]        = sum_code total_size[code, t]
+implied_traded_lots[t]   = sum_total_size[t] / 2
+                            (yalnızca net_within_total ve total_size_even o
+                            gün geçtiyse anlamlıdır)
+vwap_proxy[t]             = sum_code(total_size[code, t] * total_cost[code, t])
+                            / sum_total_size[t]
+                            (sum_total_size[t] == 0 veya o gün satır yoksa None)
+
+net_sum_zero[t]          = sum_code net_size[code, t] == 0
+total_size_even[t]       = sum_total_size[t] çift mi
+net_within_total[t]      = o gün listelenen her kod için |net_size| <= total_size
+vwap_within_range[t]     = min(total_cost o gün) <= vwap_proxy[t] <= max(total_cost o gün)
+                            (total_size > 0 olan kodlar üzerinden)
+```
+
+Bir sunucu tarihi `daily_akd_flow_in_provider_order`'da hiç yoksa o tarihin
+tüm proxy değerleri ve kontrolleri `None`'dır (sıfır uydurulmaz, kontrol
+"geçmedi" de sayılmaz — değerlendirilmemiş olarak işaretlenir). Rapor, her
+kontrol için değerlendirilen gün sayısı, geçen gün sayısı ve başarısız gün
+sayısını `daily_market_proxy.check_summary` altında taşır. `scripts/
+analyze_period.py` metin çıktısı yalnızca bu geçti/toplam sayılarını gösterir;
+tek tek `total_size`/`total_cost` değerlerini listelemez. Toplu mod indeksi
+(`--all`) her kayıt için dört kontrolün tamamının geçip geçmediğini tek bir
+`proxy_checks_passed` bayrağıyla özetler.
 
 `fintr_period_analysis_handoff_v2` paketi (`get_brokerages` dahil dörtlü
 profil) `brokerage_directory` bölümünde o anki, tarihsiz ve yalnız tam kod

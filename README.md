@@ -57,7 +57,7 @@ Fixture'larda gerçek token, cookie, session veya kimlik bilgisi bulunmaz.
 ## Kaydedilmiş dönem paketini analiz etme
 
 Ağ ve model çağrısı olmadan, deterministik formüllerle
-([`docs/features.md`](docs/features.md#dönem-paketi-kontrolleri-period_features_v1)):
+([`docs/features.md`](docs/features.md#dönem-paketi-kontrolleri-period_features_v2)):
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src"

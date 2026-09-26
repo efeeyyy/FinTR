@@ -12,10 +12,12 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from fintr.data.period_capture import PeriodCapture
+from fintr.data.period_capture import DailyMarketProxyRow, PeriodCapture
 
 
-FORMULA_VERSION = "period_features_v1"
+FORMULA_VERSION = "period_features_v2"
+
+DAILY_MARKET_PROXY_LABEL = "derived_proxy_not_official_ohlc"
 
 FORMULAS: dict[str, str] = {
     "akd_reconciliation": (
@@ -38,6 +40,34 @@ FORMULAS: dict[str, str] = {
         "custody_change[code, t+lag] = lot_count[code, t+lag] - lot_count[code, t+lag-1]; "
         "comparable when both balances and akd net_size[code, t] are listed; "
         "exact when custody_change == net_size; sign when both signs are equal"
+    ),
+    "daily_market_proxy_assumptions": (
+        "UNVERIFIED provider-field hypothesis, labelled "
+        f"'{DAILY_MARKET_PROXY_LABEL}': for a broker's daily AKD row, "
+        "total_size is hypothesized to be that broker's buy+sell lots for the "
+        "day and total_cost its average traded price for the day; a day's "
+        "total_size and total_cost come from the same "
+        "daily_akd_flow_in_provider_order row as its net_size, so a code "
+        "present for one is present for all three on that day"
+    ),
+    "daily_market_proxy_values": (
+        "sum_total_size[t] = sum_code total_size[code, t]; "
+        "implied_traded_lots[t] = sum_total_size[t] / 2 (meaningful only when "
+        "net_within_total and total_size_even both pass that day); "
+        "vwap_proxy[t] = sum_code(total_size[code, t] * total_cost[code, t]) "
+        "/ sum_total_size[t] (None when sum_total_size[t] is 0 or the day has "
+        "no rows); a server date with no daily_akd_flow rows yields None for "
+        "every value on that date, never 0"
+    ),
+    "daily_market_proxy_checks": (
+        "net_sum_zero[t]: sum_code net_size[code, t] == 0; "
+        "total_size_even[t]: sum_total_size[t] is an even integer; "
+        "net_within_total[t]: |net_size[code, t]| <= total_size[code, t] for "
+        "every code listed that day; "
+        "vwap_within_range[t]: min(total_cost[*, t]) <= vwap_proxy[t] <= "
+        "max(total_cost[*, t]) over codes with total_size[code, t] > 0; "
+        "a check is None (not evaluated, not a failure) on a date with no rows "
+        "or when its inputs cannot be computed (e.g. vwap_proxy is None)"
     ),
 }
 
@@ -259,6 +289,114 @@ class CodeCoverage:
     code: str
     akd_missing_dates: tuple[date, ...]
     custody_missing_dates: tuple[date, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DailyMarketProxyChecks:
+    """Each field is True/False when evaluated, or None when not evaluated
+    (no rows that date, or an input the check needs is itself None)."""
+
+    net_sum_zero: bool | None
+    total_size_even: bool | None
+    net_within_total: bool | None
+    vwap_within_range: bool | None
+
+
+@dataclass(frozen=True, slots=True)
+class DailyMarketProxy:
+    date: date
+    has_rows: bool
+    sum_total_size: Decimal | None
+    implied_traded_lots: Decimal | None
+    vwap_proxy: Decimal | None
+    checks: DailyMarketProxyChecks
+
+
+@dataclass(frozen=True, slots=True)
+class MarketProxyCheckSummary:
+    evaluated_days: int
+    passed_days: int
+    failing_days: int
+    all_evaluated_days_passed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PeriodMarketProxy:
+    label: str
+    days: tuple[DailyMarketProxy, ...]
+    net_sum_zero: MarketProxyCheckSummary
+    total_size_even: MarketProxyCheckSummary
+    net_within_total: MarketProxyCheckSummary
+    vwap_within_range: MarketProxyCheckSummary
+
+
+def _day_market_proxy(day_date: date, net_by_code: dict[str, Decimal] | None,
+                       market_by_code: dict[str, DailyMarketProxyRow] | None) -> DailyMarketProxy:
+    if market_by_code is None:
+        return DailyMarketProxy(
+            day_date, False, None, None, None,
+            DailyMarketProxyChecks(None, None, None, None),
+        )
+    net_by_code = net_by_code or {}
+    sum_total_size = sum((row.total_size for row in market_by_code.values()), Decimal(0))
+    net_sum = sum(net_by_code.values(), Decimal(0)) if net_by_code else Decimal(0)
+    net_sum_zero = net_sum == 0
+    total_size_even = sum_total_size % 2 == 0
+    net_within_total = all(
+        abs(net_by_code[code]) <= row.total_size
+        for code, row in market_by_code.items()
+        if code in net_by_code
+    )
+    implied_traded_lots = sum_total_size / 2
+    if sum_total_size > 0:
+        vwap_proxy = sum(
+            (row.total_size * row.total_cost for row in market_by_code.values()), Decimal(0),
+        ) / sum_total_size
+        priced_codes = [row.total_cost for row in market_by_code.values() if row.total_size > 0]
+        vwap_within_range = (
+            min(priced_codes) <= vwap_proxy <= max(priced_codes) if priced_codes else None
+        )
+    else:
+        vwap_proxy = None
+        vwap_within_range = None
+    return DailyMarketProxy(
+        day_date, True, sum_total_size, implied_traded_lots, vwap_proxy,
+        DailyMarketProxyChecks(net_sum_zero, total_size_even, net_within_total, vwap_within_range),
+    )
+
+
+def _summarize_check(days: tuple[DailyMarketProxy, ...], field: str) -> MarketProxyCheckSummary:
+    values = [getattr(day.checks, field) for day in days]
+    evaluated = [value for value in values if value is not None]
+    passed = sum(1 for value in evaluated if value)
+    failing = len(evaluated) - passed
+    return MarketProxyCheckSummary(
+        evaluated_days=len(evaluated), passed_days=passed, failing_days=failing,
+        all_evaluated_days_passed=(failing == 0),
+    )
+
+
+def daily_market_proxy(capture: PeriodCapture) -> PeriodMarketProxy:
+    """Derived, UNVERIFIED daily size/price proxy from the daily AKD rows.
+
+    This is not an official OHLC/volume series; see FORMULAS for the
+    hypothesis it rests on. A server date absent from the daily AKD panel
+    gets None values and unevaluated (None) checks, never a fabricated zero.
+    """
+    net = {day.date: day.by_code() for day in capture.daily_akd_net}
+    market = {day.date: day.by_code() for day in capture.daily_akd_market}
+    days = tuple(
+        _day_market_proxy(day_date, net.get(day_date), market.get(day_date))
+        for day_date in capture.server_dates
+    )
+    return PeriodMarketProxy(
+        label=DAILY_MARKET_PROXY_LABEL,
+        days=days,
+        net_sum_zero=_summarize_check(days, "net_sum_zero"),
+        total_size_even=_summarize_check(days, "total_size_even"),
+        net_within_total=_summarize_check(days, "net_within_total"),
+        vwap_within_range=_summarize_check(days, "vwap_within_range"),
+    )
 
 
 def daily_panel_coverage(capture: PeriodCapture) -> tuple[CodeCoverage, ...]:
