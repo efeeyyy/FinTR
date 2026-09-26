@@ -6,7 +6,8 @@
       "decided_by": "Efe",
       "decided_on": "2026-09-26",
       "scope": "all collection, analysis, studies, evaluation and signals",
-      "reason": "user_decision; user's own assessment of the stock's price behaviour, not independently verified and not a finding of this project"
+      "reason": "user_decision; user's own assessment of the stock's price behaviour, not independently verified and not a finding of this project",
+      "retained_data": "Already-collected local data (e.g. data/interim/price_history/DSTKF/) is kept on purpose as a reference for comparison if a similar case appears; it may be used only on Efe's explicit instruction for that comparison, never in routine analysis, studies, evaluation or signals (user decision 2026-09-26)."
     }
   }
 }
