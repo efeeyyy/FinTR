@@ -15,16 +15,20 @@ import subprocess
 import sys
 import tempfile
 
+from fintr.data.corporate_actions import CorporateActionsError, load_corporate_action_registry
 from fintr.data.period_capture import PeriodCaptureError, load_period_capture
 from fintr.data.price_history import PriceHistoryCaptureError, load_price_history_capture
 from fintr.features.period import (
     DEFAULT_CUSTODY_FLOAT_TOLERANCE,
     DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS,
+    FORMULA_VERSION as PERIOD_FEATURES_VERSION,
 )
+from fintr.features.period_adjusted import DEFAULT_CONSISTENCY_LAG
 from fintr.features.price_join import (
     DEFAULT_ADJUSTMENT_RATIO_EPSILON,
     DEFAULT_RATIO_REGIME_TOLERANCE,
     DEFAULT_VOLUME_RATIO_TOLERANCE,
+    FORMULA_VERSION as PRICE_JOIN_VERSION,
 )
 from fintr.inference.period_report import build_period_report
 
@@ -36,7 +40,7 @@ DEFAULT_TOP_N = 10
 DEFAULT_BATCH_ROOT = Path("data/interim/period_analysis")
 DEFAULT_PRICE_HISTORY_ROOT = Path("data/interim/price_history")
 
-# <SYMBOL>/<YYYY-MM-DD>_<YYYY-MM-DD>.json only; *.report.json, temp files
+# <SYMBOL>/<YYYY-MM-DD>_<YYYY-MM-DD>.json only; *.report.<...>.json, temp files
 # (e.g. the ".period-report-*.tmp" files _save() briefly creates) and any
 # other name are ignored by discovery.
 _CAPTURE_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.json$")
@@ -109,6 +113,21 @@ def _parser() -> argparse.ArgumentParser:
              f"auto-discovered (default: {DEFAULT_PRICE_HISTORY_ROOT})",
     )
     parser.add_argument(
+        "--corporate-actions", type=Path, default=None, metavar="REGISTRY_JSON",
+        help="single-capture mode only: a saved fintr_corporate_actions_v1 "
+             "registry (see configs/corporate_actions/<SYMBOL>.json and "
+             "docs/corporate_actions.md) for the report's adjusted_view "
+             "section. Never auto-loaded and never defaulted; omit it and "
+             "the section reports status 'not_available'. Not supported in "
+             "--all mode (one registry is symbol-specific).",
+    )
+    parser.add_argument(
+        "--consistency-lag", type=_positive_int, default=DEFAULT_CONSISTENCY_LAG,
+        help="adjusted_view: server-date steps between a registered action's "
+             "custody_effective_date and the AKD trade date its consistency "
+             f"check compares against (default: {DEFAULT_CONSISTENCY_LAG})",
+    )
+    parser.add_argument(
         "--volume-ratio-tolerance", type=_non_negative_decimal,
         default=DEFAULT_VOLUME_RATIO_TOLERANCE,
         help="price_volume: allowed relative deviation of "
@@ -144,10 +163,36 @@ def _parser() -> argparse.ArgumentParser:
              f"{DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS})",
     )
     parser.add_argument("--format", choices=("text", "json"), default="text")
-    parser.add_argument("--save", action="store_true",
-                        help="also write <capture>.report.json next to each capture; never "
-                             "overwrites. In --all mode also (over)writes <root>/index.json.")
+    parser.add_argument(
+        "--save", action="store_true",
+        help="also write a versioned <capture-stem>.report.<period_features_version>"
+             "[.<price_join_version>][.adj-<registry_sha8>].json next to each capture; "
+             "never overwrites (a new formula/registry version writes a new file; "
+             "old unversioned *.report.json files are left untouched). In --all mode "
+             "also (over)writes <root>/index.json.",
+    )
     return parser
+
+
+def report_filename(
+    capture_path: Path, *, price_join_version: str | None, registry_sha8: str | None,
+) -> Path:
+    """Versioned report filename: see the --save help text for the rule.
+
+    ``price_join_version`` is included only when a price-history capture was
+    actually joined (report['price_volume']['status'] == 'joined');
+    ``registry_sha8`` (first 8 hex chars of the corporate-actions registry
+    file's sha256) only when an adjusted_view was actually computed. This
+    keeps a later change to either formula version, or to the registry
+    content, from silently colliding with an older report for the same
+    capture.
+    """
+    parts = [capture_path.stem, "report", PERIOD_FEATURES_VERSION]
+    if price_join_version is not None:
+        parts.append(price_join_version)
+    if registry_sha8 is not None:
+        parts.append(f"adj-{registry_sha8}")
+    return capture_path.with_name(".".join(parts) + ".json")
 
 
 def _code_commit() -> str | None:
@@ -172,7 +217,9 @@ def _run_metadata(
     capture_path: Path, capture_bytes: bytes, *, lags: tuple[int, ...], detail_lag: int, top: int,
     volume_ratio_tolerance: Decimal, adjustment_ratio_epsilon: Decimal,
     ratio_regime_tolerance: Decimal, custody_float_tolerance: Decimal,
-    provisional_last_custody_days: int,
+    provisional_last_custody_days: int, consistency_lag: int,
+    corporate_actions_path: Path | None = None,
+    corporate_actions_sha256: str | None = None,
 ) -> dict[str, object]:
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -187,7 +234,14 @@ def _run_metadata(
             "ratio_regime_tolerance": str(ratio_regime_tolerance),
             "custody_float_tolerance": str(custody_float_tolerance),
             "provisional_last_custody_days": provisional_last_custody_days,
+            "consistency_lag": consistency_lag,
         },
+        "corporate_actions_registry": (
+            None if corporate_actions_path is None else {
+                "path": _display_path(corporate_actions_path),
+                "sha256": corporate_actions_sha256,
+            }
+        ),
     }
 
 
@@ -300,12 +354,30 @@ def render_text(report: dict) -> str:
         lines += ["", "Fiyat/hacim verisi: bulunan dosya yüklenemedi"]
     else:
         lines += ["", "Fiyat/hacim verisi: mevcut değil"]
+    adjusted = report["adjusted_view"]
+    if adjusted["status"] == "computed":
+        lines += ["", f"Kurumsal aksiyon düzeltmesi (adj view, {len(adjusted['actions'])} aksiyon,"
+                  f" mixed_unit_period={'evet' if adjusted['mixed_unit_period'] else 'hayır'}):"]
+        for row in adjusted["consistency_checks"]:
+            lines.append(
+                f"  {row['action_id']} tutarlılık: değerlendirildi={'evet' if row['evaluated'] else 'hayır'}, "
+                f"geçti={row['pass_count']}, başarısız={row['fail_count']}, "
+                f"değerlendirilmedi={row['not_evaluated_code_count']}"
+            )
+    elif adjusted["status"] == "no_actions":
+        lines += ["", "Kurumsal aksiyon düzeltmesi: kayıt boş (aksiyon yok)"]
+    elif adjusted["status"] == "symbol_mismatch":
+        lines += ["", "Kurumsal aksiyon düzeltmesi: sembol uyuşmazlığı, hesaplanmadı"]
+    else:
+        lines += ["", "Kurumsal aksiyon düzeltmesi: mevcut değil"]
     lines += ["", "Sınırlar:"] + [f"  - {text}" for text in report["constraints"]]
     return "\n".join(lines) + "\n"
 
 
-def _save(capture_path: Path, payload: bytes) -> Path:
-    target = capture_path.with_name(capture_path.stem + ".report.json")
+def _save(target: Path, payload: bytes) -> Path:
+    """Write ``payload`` to ``target``; raises ``FileExistsError`` if it
+    already exists (``os.link`` never overwrites), so an old report -- for a
+    stale formula/registry version or otherwise -- is never touched."""
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -395,6 +467,7 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
         "price_history_found": False,
         "price_volume_checks_passed": None,
         "report": None,
+        "report_path": None,
     }
     try:
         capture_bytes = path.read_bytes()
@@ -414,11 +487,15 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
         report = build_period_report(
             capture, lags=args.lags, detail_lag=args.detail_lag, top_n=args.top,
             price=price_capture,
+            # --corporate-actions is single-capture-mode only (a registry is
+            # symbol-specific; see the CLI help), so --all never passes one.
+            corporate_actions=None,
             volume_ratio_tolerance=args.volume_ratio_tolerance,
             adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
             ratio_regime_tolerance=args.ratio_regime_tolerance,
             custody_float_tolerance=args.custody_float_tolerance,
             provisional_last_custody_days=args.provisional_last_custody_days,
+            consistency_lag=args.consistency_lag,
         )
     except (OSError, PeriodCaptureError, ValueError) as exc:
         entry["error"] = str(exc)
@@ -449,6 +526,11 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
             )
             if report["price_volume"]["status"] == "joined" else None
         ),
+        "period_features_version": PERIOD_FEATURES_VERSION,
+        "price_join_version": (
+            report["price_volume"].get("formula_version")
+            if report["price_volume"]["status"] == "joined" else None
+        ),
     })
 
     if not args.save:
@@ -462,10 +544,14 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
         ratio_regime_tolerance=args.ratio_regime_tolerance,
         custody_float_tolerance=args.custody_float_tolerance,
         provisional_last_custody_days=args.provisional_last_custody_days,
+        consistency_lag=args.consistency_lag,
     )
     payload = (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    target = report_filename(
+        path, price_join_version=entry["price_join_version"], registry_sha8=None,
+    )
     try:
-        _save(path, payload)
+        _save(target, payload)
         entry["report"] = "saved"
     except FileExistsError:
         entry["report"] = "skipped"
@@ -474,6 +560,7 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
         # (e.g. permissions), so "status" stays "ok" and only "report" flags it.
         entry["report"] = "failed"
         entry["error"] = "report_could_not_be_saved"
+    entry["report_path"] = _display_path(target)
     return entry
 
 
@@ -499,6 +586,7 @@ def build_batch_index(root: Path, entries: list[dict[str, object]], args: argpar
             "ratio_regime_tolerance": str(args.ratio_regime_tolerance),
             "custody_float_tolerance": str(args.custody_float_tolerance),
             "provisional_last_custody_days": args.provisional_last_custody_days,
+            "consistency_lag": args.consistency_lag,
         },
         "captures": entries,
         "totals": {
@@ -590,28 +678,45 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
+        if args.corporate_actions is not None:
+            print(
+                "Analysis failed: --corporate-actions is single-capture mode only "
+                "(a registry is symbol-specific)",
+                file=sys.stderr,
+            )
+            return 1
         return run_batch(args)
     if args.capture is None:
         _parser().error("the following arguments are required: capture (or use --all)")
 
+    corporate_actions_bytes: bytes | None = None
     try:
         capture_bytes = args.capture.read_bytes()
         capture = load_period_capture(args.capture)
         price_capture = (
             None if args.price_history is None else load_price_history_capture(args.price_history)
         )
+        registry = None
+        if args.corporate_actions is not None:
+            corporate_actions_bytes = args.corporate_actions.read_bytes()
+            registry = load_corporate_action_registry(args.corporate_actions)
         report = build_period_report(
             capture, lags=args.lags, detail_lag=args.detail_lag, top_n=args.top,
-            price=price_capture,
+            price=price_capture, corporate_actions=registry,
             volume_ratio_tolerance=args.volume_ratio_tolerance,
             adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
             ratio_regime_tolerance=args.ratio_regime_tolerance,
             custody_float_tolerance=args.custody_float_tolerance,
             provisional_last_custody_days=args.provisional_last_custody_days,
+            consistency_lag=args.consistency_lag,
         )
-    except (OSError, PeriodCaptureError, PriceHistoryCaptureError, ValueError) as exc:
+    except (OSError, PeriodCaptureError, PriceHistoryCaptureError, CorporateActionsError,
+            ValueError) as exc:
         print(f"Analysis failed: {exc}", file=sys.stderr)
         return 1
+    registry_sha256 = (
+        None if corporate_actions_bytes is None else hashlib.sha256(corporate_actions_bytes).hexdigest()
+    )
     report["run"] = _run_metadata(
         args.capture, capture_bytes, lags=args.lags, detail_lag=args.detail_lag, top=args.top,
         volume_ratio_tolerance=args.volume_ratio_tolerance,
@@ -619,11 +724,22 @@ def main(argv: list[str] | None = None) -> int:
         ratio_regime_tolerance=args.ratio_regime_tolerance,
         custody_float_tolerance=args.custody_float_tolerance,
         provisional_last_custody_days=args.provisional_last_custody_days,
+        consistency_lag=args.consistency_lag,
+        corporate_actions_path=args.corporate_actions,
+        corporate_actions_sha256=registry_sha256,
     )
     payload = (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     if args.save:
+        price_join_version = (
+            report["price_volume"].get("formula_version")
+            if report["price_volume"]["status"] == "joined" else None
+        )
+        registry_sha8 = None if registry_sha256 is None else registry_sha256[:8]
+        target = report_filename(
+            args.capture, price_join_version=price_join_version, registry_sha8=registry_sha8,
+        )
         try:
-            saved = _save(args.capture, payload)
+            saved = _save(target, payload)
         except FileExistsError:
             print("Analysis failed: report already exists (no overwrite)", file=sys.stderr)
             return 1

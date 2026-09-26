@@ -8,6 +8,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from fintr.data.corporate_actions import CorporateActionRegistry
 from fintr.data.period_capture import PeriodCapture, resolve_brokerage_label
 from fintr.data.price_history import PriceHistoryCapture
 from fintr.features.period import (
@@ -23,6 +24,13 @@ from fintr.features.period import (
     lagged_akd_custody_match,
     metadata_field_coverage,
     reconcile_daily_akd,
+)
+from fintr.features.period_adjusted import (
+    DEFAULT_CONSISTENCY_LAG,
+    FORMULA_VERSION as ADJUSTED_FORMULA_VERSION,
+    FORMULAS as ADJUSTED_FORMULAS,
+    build_adjusted_capture,
+    check_corporate_action_consistency,
 )
 from fintr.features.price_join import (
     DEFAULT_ADJUSTMENT_RATIO_EPSILON,
@@ -65,6 +73,25 @@ PRICE_VOLUME_CONSTRAINTS: tuple[str, ...] = (
     "A placeholder bar (an exchange-holiday marker: zero/None volume, "
     "open == high == low == close) is excluded from trading-day "
     "classification and never treated as a real trading observation.",
+)
+
+
+ADJUSTED_VIEW_CONSTRAINTS: tuple[str, ...] = (
+    "Every number in this section is DERIVED by applying one or more "
+    "user-entered corporate-action facts (see configs/corporate_actions/ "
+    "and docs/corporate_actions.md) to the raw sections above; the raw "
+    "sections are never modified.",
+    "A corporate-action fact is a user assertion from a primary source the "
+    "user read themselves; this project never fetches kap.org.tr or any "
+    "other network source for it, and a passing consistency_checks row is "
+    "not independent proof the fact is correct -- only that it agrees with "
+    "the captured data under this formula.",
+    "ex_date governs the AKD/price family; custody_effective_date governs "
+    "the custody family. They are kept separate per this project's "
+    "AKD/custody data-family rule and are never derived from each other.",
+    "period_akd_net_adjusted is a recomputation (sum of adjusted daily "
+    "nets), not the provider's own period-level figure, which is "
+    "mixed-unit whenever the requested period spans an action's ex_date.",
 )
 
 
@@ -183,14 +210,169 @@ def build_price_volume_report(
     }
 
 
+def build_adjusted_view_report(
+    capture: PeriodCapture, registry: CorporateActionRegistry | None, *,
+    lags: tuple[int, ...], detail_lag: int, top_n: int,
+    custody_float_tolerance: Decimal, provisional_last_custody_days: int,
+    consistency_lag: int = DEFAULT_CONSISTENCY_LAG,
+) -> dict[str, Any]:
+    """The optional 'adjusted_view' report section; a SEPARATE section from
+    every raw section above, which stay byte-for-byte unaffected. ``registry``
+    is None when no ``--corporate-actions`` file was given (single-capture
+    mode only; see scripts/analyze_period.py), in which case the section is
+    ``{"status": "not_available"}``. A registry with an empty ``actions``
+    list is reported as ``{"status": "no_actions", "symbol": ...}`` rather
+    than silently doing nothing."""
+    if registry is None:
+        return {"status": "not_available"}
+    if registry.symbol != capture.symbol:
+        return {
+            "status": "symbol_mismatch",
+            "registry_symbol": registry.symbol,
+            "capture_symbol": capture.symbol,
+        }
+    if not registry.actions:
+        return {"status": "no_actions", "symbol": registry.symbol}
+
+    bundle = build_adjusted_capture(capture, registry.actions)
+    adjusted = bundle.capture
+    flows = broker_flow_series(adjusted)
+    flow_order = sorted(flows, key=lambda item: (-abs(item.listed_sum), item.code))
+    lag = lagged_akd_custody_match(
+        adjusted, lags=lags, detail_lag=detail_lag,
+        custody_float_tolerance=custody_float_tolerance,
+        provisional_last_custody_days=provisional_last_custody_days,
+    )
+    diff_check = check_custodian_diff(
+        adjusted, custody_float_tolerance=custody_float_tolerance,
+        provisional_last_custody_days=provisional_last_custody_days,
+    )
+    consistency = check_corporate_action_consistency(
+        capture, registry.actions, lag=consistency_lag,
+        custody_float_tolerance=custody_float_tolerance,
+    )
+    period_net = sorted(adjusted.period_akd_net, key=lambda row: (-row.value, row.code))
+    diffs = sorted(adjusted.custodian_diff, key=lambda row: (-row.difference, row.code))
+
+    return {
+        "status": "computed",
+        "formula_version": ADJUSTED_FORMULA_VERSION,
+        "formulas": dict(ADJUSTED_FORMULAS),
+        "actions": [
+            {
+                "action_id": action.action_id, "type": action.type,
+                "lot_multiplier": _num(action.lot_multiplier),
+                "ex_date": action.ex_date.isoformat(),
+                "custody_effective_date": action.custody_effective_date.isoformat(),
+                "verification": action.verification, "entered_by": action.entered_by,
+                "entered_at_utc": action.entered_at_utc,
+            }
+            for action in registry.actions
+        ],
+        "mixed_unit_period": bundle.mixed_unit_period,
+        "akd_multiplier_by_date": [
+            {"date": factor.date.isoformat(), "multiplier": _num(factor.multiplier),
+             "action_ids": list(factor.action_ids)}
+            for factor in bundle.akd_factors
+        ],
+        "custody_multiplier_by_date": [
+            {"date": factor.date.isoformat(), "multiplier": _num(factor.multiplier),
+             "action_ids": list(factor.action_ids)}
+            for factor in bundle.custody_factors
+        ],
+        "period_akd_net_adjusted": {
+            "code_count": len(period_net),
+            "top_positive": [
+                {"code": row.code, "net": _num(row.value), "label": _label(capture, row.code)}
+                for row in period_net[:top_n] if row.value > 0
+            ],
+            "top_negative": [
+                {"code": row.code, "net": _num(row.value), "label": _label(capture, row.code)}
+                for row in reversed(period_net[-top_n:]) if row.value < 0
+            ],
+        },
+        "custodian_diff_adjusted": {
+            "diff_restated": bundle.diff_restated,
+            "diff_start_multiplier": _num(bundle.diff_start_multiplier),
+            "largest_increases": [
+                {"code": row.code, "difference": _num(row.difference),
+                 "first_value": _num(row.first_value), "last_value": _num(row.last_value),
+                 "label": _label(capture, row.code)}
+                for row in diffs[:top_n] if row.difference > 0
+            ],
+            "largest_decreases": [
+                {"code": row.code, "difference": _num(row.difference),
+                 "first_value": _num(row.first_value), "last_value": _num(row.last_value),
+                 "label": _label(capture, row.code)}
+                for row in reversed(diffs[-top_n:]) if row.difference < 0
+            ],
+            "internally_inconsistent_codes": [
+                {"code": row.code, "label": _label(capture, row.code)}
+                for row in diff_check.rows if not row.internally_consistent
+            ],
+        },
+        "broker_flow_runs_adjusted": {
+            "order": "absolute listed_sum descending, then code",
+            "included_codes": min(top_n, len(flow_order)),
+            "total_codes": len(flow_order),
+            "codes": [
+                {
+                    "code": item.code, "label": _label(capture, item.code),
+                    "listed_sum": _num(item.listed_sum),
+                    "runs": [
+                        {"start": run.start.isoformat(), "end": run.end.isoformat(),
+                         "days": run.days, "direction": run.direction,
+                         "net_sum": _num(run.net_sum)}
+                        for run in item.runs
+                    ],
+                }
+                for item in flow_order[:top_n]
+            ],
+        },
+        "lagged_akd_custody_match_adjusted": {
+            "summaries": [
+                {"lag": item.lag, "comparable": item.comparable,
+                 "exact_matches": item.exact_matches, "sign_matches": item.sign_matches,
+                 "float_artifact_matches": item.float_artifact_matches,
+                 "excluded_provisional_count": item.excluded_provisional_count}
+                for item in lag.summaries
+            ],
+            "detail_lag": lag.detail_lag,
+            "unmatched_count": len(lag.unmatched),
+        },
+        "consistency_checks": [
+            {
+                "action_id": row.action_id,
+                "custody_effective_date": row.custody_effective_date.isoformat(),
+                "evaluated": row.evaluated,
+                "previous_custody_date": _day(row.previous_custody_date),
+                "trade_date": _day(row.trade_date),
+                "lag": row.lag,
+                "custody_float_tolerance": _num(row.custody_float_tolerance),
+                "pass_count": row.pass_count,
+                "fail_count": row.fail_count,
+                "not_evaluated_code_count": row.not_evaluated_code_count,
+                "failing_codes": [
+                    {"code": item.code, "predicted": _num(item.predicted), "actual": _num(item.actual)}
+                    for item in row.rows if item.status == "fail"
+                ],
+            }
+            for row in consistency
+        ],
+        "constraints": list(ADJUSTED_VIEW_CONSTRAINTS),
+    }
+
+
 def build_period_report(
     capture: PeriodCapture, *, lags: tuple[int, ...], detail_lag: int, top_n: int,
     price: PriceHistoryCapture | None = None,
+    corporate_actions: CorporateActionRegistry | None = None,
     volume_ratio_tolerance: Decimal = DEFAULT_VOLUME_RATIO_TOLERANCE,
     adjustment_ratio_epsilon: Decimal = DEFAULT_ADJUSTMENT_RATIO_EPSILON,
     ratio_regime_tolerance: Decimal = DEFAULT_RATIO_REGIME_TOLERANCE,
     custody_float_tolerance: Decimal = DEFAULT_CUSTODY_FLOAT_TOLERANCE,
     provisional_last_custody_days: int = DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS,
+    consistency_lag: int = DEFAULT_CONSISTENCY_LAG,
 ) -> dict[str, Any]:
     """Build the report; every number is computed here, not by a model."""
     if type(top_n) is not int or top_n < 1:
@@ -400,6 +582,12 @@ def build_period_report(
             volume_ratio_tolerance=volume_ratio_tolerance,
             adjustment_ratio_epsilon=adjustment_ratio_epsilon,
             ratio_regime_tolerance=ratio_regime_tolerance,
+        ),
+        "adjusted_view": build_adjusted_view_report(
+            capture, corporate_actions, lags=lags, detail_lag=detail_lag, top_n=top_n,
+            custody_float_tolerance=custody_float_tolerance,
+            provisional_last_custody_days=provisional_last_custody_days,
+            consistency_lag=consistency_lag,
         ),
         "provider_metadata": {
             "method_verified": False,

@@ -727,7 +727,11 @@ class AnalyzePeriodScriptTests(unittest.TestCase):
             self.assertIn("Günlük piyasa proxy kontrolleri", text)
             self.assertIn("net_sum_zero=0/4 geçti", text)
             self.assertIn("total_size_even=4/4 geçti", text)
-            saved = path.with_name("2026-01-05_2026-01-08.report.json")
+            saved = analyze.report_filename(path, price_join_version=None, registry_sha8=None)
+            self.assertEqual(
+                saved.name,
+                f"2026-01-05_2026-01-08.report.{analyze.PERIOD_FEATURES_VERSION}.json",
+            )
             report = json.loads(saved.read_text(encoding="utf-8"))
             self.assertEqual(report["run"]["parameters"]["detail_lag"], 2)
             self.assertEqual(len(report["run"]["input_file_sha256"]), 64)
@@ -819,8 +823,12 @@ class AnalyzePeriodBatchTests(unittest.TestCase):
             code, index = self._run(["--all", str(root), "--save", "--format", "json"])
             self.assertEqual(code, 0)
             self.assertEqual(index["totals"]["reports_saved"], 1)
-            report_path = root / "AAA" / "2026-01-05_2026-01-08.report.json"
+            report_path = analyze.report_filename(
+                root / "AAA" / "2026-01-05_2026-01-08.json",
+                price_join_version=None, registry_sha8=None,
+            )
             self.assertTrue(report_path.exists())
+            self.assertEqual(index["captures"][0]["report_path"], analyze._display_path(report_path))
             index_path = root / "index.json"
             self.assertTrue(index_path.exists())
             self.assertEqual(json.loads(index_path.read_text(encoding="utf-8")), index)
@@ -1081,6 +1089,125 @@ class PriceVolumeBatchModeTests(unittest.TestCase):
             text = analyze.render_index_text(index)
             self.assertIn("fiyat verisi bulundu=evet", text)
             self.assertIn("fiyat verisi bulundu=hayır", text)
+
+
+def _corporate_action(action_id="TEST-2026-bonus-1", ex_date="2026-01-06",
+                       custody_effective_date="2026-01-07", lot_multiplier="2"):
+    return {
+        "action_id": action_id, "type": "bonus_issue", "lot_multiplier": lot_multiplier,
+        "ex_date": ex_date, "custody_effective_date": custody_effective_date,
+        "source_url": "https://example.test/kap-notice", "source_published_date": "2026-01-01",
+        "source_file_sha256": None, "entered_by": "user",
+        "entered_at_utc": "2026-01-01T00:00:00Z",
+        "verification": "user_asserted_from_primary_source", "notes": "synthetic fixture",
+    }
+
+
+def _write_registry(path: Path, symbol: str, *actions) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema": "fintr_corporate_actions_v1", "symbol": symbol, "actions": list(actions),
+    }), encoding="utf-8")
+    return path
+
+
+class AdjustedViewSingleModeTests(unittest.TestCase):
+    """CLI wiring for ``--corporate-actions`` in single-capture mode."""
+
+    def _run(self, argv: list[str]) -> tuple[int, dict]:
+        stdout, stderr = io.BytesIO(), io.StringIO()
+        with redirect_stderr(stderr), patch.object(
+            analyze.sys, "stdout", io.TextIOWrapper(stdout, encoding="utf-8"),
+        ) as wrapped:
+            code = analyze.main(argv)
+            wrapped.flush()
+        return code, json.loads(stdout.getvalue().decode("utf-8"))
+
+    def test_without_flag_section_is_not_available(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "2026-01-05_2026-01-08.json"
+            path.write_text(smoke._compact_json(_capture()), encoding="utf-8")
+            code, report = self._run([str(path), "--format", "json"])
+            self.assertEqual(code, 0)
+            self.assertEqual(report["adjusted_view"], {"status": "not_available"})
+
+    def test_computed_section_and_versioned_filename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture_path = root / "2026-01-05_2026-01-08.json"
+            capture_path.write_text(smoke._compact_json(_capture()), encoding="utf-8")
+            registry_path = _write_registry(root / "TEST.json", "TEST", _corporate_action())
+
+            code, report = self._run([
+                str(capture_path), "--corporate-actions", str(registry_path),
+                "--save", "--format", "json",
+            ])
+            self.assertEqual(code, 0)
+            adjusted = report["adjusted_view"]
+            self.assertEqual(adjusted["status"], "computed")
+            self.assertEqual(adjusted["formula_version"], "period_adjusted_v1")
+            self.assertEqual(len(adjusted["actions"]), 1)
+            self.assertIn("period_akd_net_adjusted", adjusted)
+            self.assertIn("consistency_checks", adjusted)
+            self.assertEqual(len(adjusted["consistency_checks"]), 1)
+
+            full_sha256 = hashlib.sha256(registry_path.read_bytes()).hexdigest()
+            expected = analyze.report_filename(
+                capture_path, price_join_version=None, registry_sha8=full_sha256[:8],
+            )
+            self.assertTrue(expected.exists())
+            self.assertIn(f"adj-{full_sha256[:8]}", expected.name)
+            # The registry's own full sha256 and path are echoed in run metadata.
+            saved_report = json.loads(expected.read_text(encoding="utf-8"))
+            self.assertEqual(saved_report["run"]["corporate_actions_registry"]["sha256"], full_sha256)
+
+    def test_symbol_mismatch_is_reported_not_raised(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture_path = root / "2026-01-05_2026-01-08.json"
+            capture_path.write_text(smoke._compact_json(_capture()), encoding="utf-8")
+            registry_path = _write_registry(root / "OTHER.json", "OTHER", _corporate_action())
+
+            code, report = self._run([
+                str(capture_path), "--corporate-actions", str(registry_path), "--format", "json",
+            ])
+            self.assertEqual(code, 0)
+            self.assertEqual(report["adjusted_view"]["status"], "symbol_mismatch")
+
+    def test_empty_actions_registry_is_reported_distinctly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture_path = root / "2026-01-05_2026-01-08.json"
+            capture_path.write_text(smoke._compact_json(_capture()), encoding="utf-8")
+            registry_path = _write_registry(root / "TEST.json", "TEST")
+
+            code, report = self._run([
+                str(capture_path), "--corporate-actions", str(registry_path), "--format", "json",
+            ])
+            self.assertEqual(code, 0)
+            self.assertEqual(report["adjusted_view"], {"status": "no_actions", "symbol": "TEST"})
+
+    def test_corporate_actions_with_all_mode_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = _write_capture(root, "AAA", "2026-01-05", "2026-01-08", _capture())
+            registry_path = _write_registry(root / "AAA.json", "AAA", _corporate_action())
+            with redirect_stderr(io.StringIO()) as errors, redirect_stdout(io.StringIO()):
+                code = analyze.main(["--all", str(root), "--corporate-actions", str(registry_path)])
+            self.assertEqual(code, 1)
+            self.assertIn("single-capture mode only", errors.getvalue())
+
+    def test_invalid_registry_fails_the_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture_path = root / "2026-01-05_2026-01-08.json"
+            capture_path.write_text(smoke._compact_json(_capture()), encoding="utf-8")
+            broken = root / "broken.json"
+            broken.write_text("{not json", encoding="utf-8")
+            with redirect_stderr(io.StringIO()) as errors, redirect_stdout(io.StringIO()):
+                code = analyze.main([str(capture_path), "--corporate-actions", str(broken)])
+            self.assertEqual(code, 1)
+            self.assertIn("Analysis failed", errors.getvalue())
 
 
 if __name__ == "__main__":

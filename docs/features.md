@@ -392,3 +392,46 @@ $env:PYTHONPATH = "$PWD\src"
 ```
 
 `--code-set` verilmezse çıktıda `code_set_series` bölümü yer almaz.
+
+## Kurumsal aksiyon düzeltmesi (`period_adjusted_v1`)
+
+`fintr.features.period_adjusted`, bir kullanıcı tarafından girilen kurumsal
+aksiyon kaydını (`configs/corporate_actions/<SEMBOL>.json`,
+`fintr_corporate_actions_v1`) bir `PeriodCapture`'a uygulayıp lot
+miktarlarını post-action birimlere yeniden ifade eder. Bu, ham bölümlerden
+tamamen ayrı, `period_report.py`'daki `adjusted_view` bölümüdür ve her sayı
+formül + `action_id` + çarpanla etiketlenir. Ayrıntılı formüller, şema ve
+`register_corporate_action.py` CLI'ı için [`docs/corporate_actions.md`](corporate_actions.md)'e
+bakın; bu proje kap.org.tr veya başka bir ağ kaynağını kurumsal aksiyon
+olguları için **hiçbir zaman** kullanmaz -- olgu Efe tarafından birincil
+kaynaktan girilir.
+
+`scripts/analyze_period.py --corporate-actions PATH` yalnızca tek kayıt
+modunda desteklenir (bir kayıt sembole özgüdür); `--all` ile birlikte
+verilirse çalıştırma başarısız olur. Verilmezse `adjusted_view.status`
+`"not_available"` olur.
+
+## Sürümlü rapor adlandırması (`--save`)
+
+`scripts/analyze_period.py --save`, raporu şu kuralla adlandırır:
+
+```text
+<capture-stem>.report.<period_features_version>[.<price_join_version>][.adj-<kayıt_sha8>].json
+```
+
+- `<period_features_version>` (`fintr.features.period.FORMULA_VERSION`,
+  örn. `period_features_v3`) her zaman eklenir.
+- `<price_join_version>` (`fintr.features.price_join.FORMULA_VERSION`, örn.
+  `price_join_v2`) yalnızca `price_volume.status == "joined"` olduğunda
+  eklenir.
+- `adj-<kayıt_sha8>` (kurumsal aksiyon kaydı dosyasının SHA-256'sının ilk 8
+  hex karakteri) yalnızca `--corporate-actions` verildiğinde eklenir.
+
+Bu kural, formül sürümü veya kayıt içeriği değiştiğinde yeni bir raporun
+eskisiyle **asla çakışmamasını** sağlar: `_save` (`os.link` ile) hedef dosya
+zaten varsa yazmayı reddeder, eski (sürümsüz `*.report.json` dahil) bir
+rapor dosyasına asla dokunmaz. `analyze_period.report_filename()` bu adı
+üretir; `--all` modunda toplu indeks (`index.json`, her zaman üzerine
+yazılır) her kaydın hangi sürümlerle üretildiğini (`period_features_version`,
+`price_join_version`) ve son yazılan rapor dosyasının yolunu
+(`report_path`) taşır.

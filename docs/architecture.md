@@ -424,3 +424,56 @@ hesaplanır (istatistiksel tahmin) ve kaynak Decimal getirilerden ayrı
 tutulur. `custody_change` özelliği "yabancı takas" gibi bir sınıflandırmayı
 doğrulamaz; yalnız spec'in verdiği kod kümesini toplar -- bağımsız
 doğrulanmış bir takas sınıflandırması bu repo'da yoktur.
+
+### Kurumsal aksiyon kaydı, düzeltilmiş görünüm ve sürümlü rapor adlandırması
+
+Problem: Bir bedelsiz/split gibi kurumsal aksiyon geçmiş AKD/takas
+serilerinin birimini (lot sayısını) değiştirir; bunu görmezden gelen bir
+analiz, aksiyon öncesi/sonrası günleri karışık birimde karşılaştırır. Olgu
+kap.org.tr'den bu oturumda ağ erişimi engellendiği için otomatik çekilemez;
+elle girilen bir olgunun da provenance'sız, sessizce mevcut rapor
+formülüne karışmaması gerekir. Ayrıca yeni bir formül sürümü veya kayıt
+içeriği değişikliği, eski bir raporu sessizce geçersiz kılmamalı.
+
+Alternatifler: (a) kurumsal aksiyonu `--price-history-root` gibi bir kökten
+sembole göre otomatik keşfetmek -- görev açıkça "no auto-loading, no hidden
+default" istedi ve bir kaydın sembole özgü olması `--all` toplu modunda
+belirsizlik yaratırdı; bunun yerine `--corporate-actions PATH` yalnızca tek
+kayıt modunda, `--price-history`'nin aynı kısıtlamasıyla eklendi. (b)
+düzeltilmiş değerleri ham bölümlerin üzerine yazmak -- AGENTS.md'nin
+"hesaplanan değerleri kaynak değerlerden ayır" kuralını ihlal eder; bunun
+yerine tamamen ayrı bir `adjusted_view` bölümü eklendi. (c) düzeltilmiş
+seriler için `broker_flow_series`/`lagged_akd_custody_match`/
+`check_custodian_diff`'i yeniden yazmak -- yerine, çarpanla ölçeklenmiş
+alanlarla yeni bir `PeriodCapture` (`dataclasses.replace`) inşa edip aynı
+`fintr.features.period` fonksiyonlarını bu üzerinde çağırmak seçildi:
+tekrarı önler ve iki yol arasında formül sürüklenmesi riskini ortadan
+kaldırır. (d) rapor dosyalarını sürümsüz `<stem>.report.json` olarak
+bırakmaya devam etmek -- yeni bir formül sürümü eski raporu sessizce
+geçersiz bırakırdı; bunun yerine dosya adına
+`period_features_version`/`price_join_version`/kayıt SHA-256'sının ilk 8
+hex karakteri eklendi (bkz. `docs/features.md`), eski dosyalara asla
+dokunulmaz.
+
+Karar: `src/fintr/data/corporate_actions.py` (şema
+`fintr_corporate_actions_v1`, katı yükleyici: pozitif olmayan çarpan,
+`custody_effective_date < ex_date`, tekrarlayan/çakışan aksiyon reddedilir)
+ve `scripts/register_corporate_action.py` (her alan zorunlu argüman, atomik
+ekleme, tekrarlayanı reddet, kaynak dosya yerel olarak hash'lenir, hiçbir
+zaman yüklenmez) eklendi. `src/fintr/features/period_adjusted.py`
+(`FORMULA_VERSION = "period_adjusted_v1"`) çarpanı `ex_date`/
+`custody_effective_date`'e göre kümülatif uygular ve
+`check_corporate_action_consistency` ile aksiyonu ham veriye karşı test
+eder (geçen/başarısız sayım). `period_report.py`'daki `adjusted_view`
+her sayıyı formül + `action_id` + çarpanla etiketler.
+`scripts/analyze_period.py`'ye `--corporate-actions PATH` (tek kayıt
+modu) ve `report_filename()` ile sürümlü adlandırma eklendi;
+`--all` modu bu bayrağı kabul etmez.
+
+Sonuç: Ham bölümler hiçbir zaman değişmez; `adjusted_view` yalnızca bir
+kayıt verildiğinde ve o kaydın sembolü capture'ınkiyle eşleştiğinde
+hesaplanır, aksi halde `not_available`/`symbol_mismatch`/`no_actions`
+durumlarından biriyle açıkça raporlanır. Geçen bir tutarlılık kontrolü,
+girilen aksiyonun doğruluğunun bağımsız kanıtı değildir -- yalnızca bu
+formülle uyumlu olduğunu gösterir; bu sınır hem kodda hem
+`docs/corporate_actions.md`'de tekrarlanır.
