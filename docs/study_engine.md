@@ -107,19 +107,131 @@ and the symbol exclusions before any data file is read:
 Every result carries `split_guard` (split file, its SHA-256, split id,
 exclusions file and its SHA-256) and `symbol_scope`.
 
+## Transaction cost (per side)
+
+`--cost-bps` is a **per-side** assumption charged once at entry and once at
+exit: `net_return = gross_return - 2 * cost_bps / 10000`, so the round trip
+is `2 x cost_bps` (e.g. `--cost-bps 10` = 20 bps round trip). The result
+records it as `parameters.transaction_cost_basis`. It is an assumption, not
+a sourced commission figure. Because the same cost is subtracted from
+conditioned and baseline events, it does not change `difference_mean`.
+
+## E1: moving block bootstrap by signal date (primary test)
+
+Same-day events across symbols share the market move, and 5-day holding
+windows of consecutive signal dates overlap, so the i.i.d. bootstrap below
+understates the variance of the difference. A spec may declare
+
+```json
+"block_bootstrap": {"method": "moving_block_by_signal_date",
+                    "block_length_signal_dates": 5, "resamples": 9999, "seed": 20261001}
+```
+
+There is no default: a spec without it gets `block_bootstrap_difference:
+null`. For each horizon of the pooled (`overall`) block:
+
+1. The date axis is the sorted distinct signal dates that carry at least one
+   kept (non-dropped) conditioned or baseline event (`N` dates).
+2. Each replicate draws `ceil(N / L)` block starts with replacement from
+   `0..N-L` (`random.Random(seed)`, never global random state), takes `L`
+   consecutive dates from each start and cuts the concatenation to `N`
+   dates (non-circular moving blocks, Künsch 1989). `N < L` reports
+   `status: too_few_signal_dates` instead of a statistic.
+3. **Every event of every symbol on a drawn date enters the replicate
+   together**, once per draw of that date. The replicate's conditioned mean
+   and baseline mean are event-weighted means over the **same drawn dates**;
+   `delta*_b = conditioned_mean - baseline_mean`. A replicate whose drawn
+   dates hold no conditioned event has no `delta*_b` and is counted in
+   `undefined_resamples`.
+4. One-sided p for the spec's pre-registered `predicted_direction` only
+   (never both tails): negative `p = (1 + #{delta*_b >= 0}) / (B + 1)`,
+   positive `p = (1 + #{delta*_b <= 0}) / (B + 1)`; an undefined replicate
+   counts as not supporting the prediction. Without a pre-registered
+   direction no p is reported.
+5. `percentile_05` / `percentile_95`: nearest-rank percentiles
+   (`sorted[ceil(q * n) - 1]`) of the defined `delta*_b`, used for the
+   SESOI falsification bound.
+
+The result block also records `method`, `block_length_signal_dates`,
+`resamples`, `seed`, `distinct_signal_dates`,
+`distinct_conditioned_signal_dates` and `observed_difference` (float);
+`reproducibility.block_bootstrap` repeats seed/resamples/block length.
+Per-symbol blocks carry only the i.i.d. diagnostic (E1 is defined on the
+pooled date panel). Formulas: `fintr.research.engine.FORMULAS`.
+
+## Pre-registered family and Holm (`preregistration` block)
+
+When a spec carries a `preregistration` block, the loader validates this
+subset of it (the whole block stays in `spec_sha256`): `hypothesis_id`,
+`family_id`, `family_role` (`primary` | `secondary_descriptive`),
+`primary_family_members`, `family_size` (= number of members),
+`multiple_comparison` (`holm`), `familywise_alpha`, `predicted_direction`,
+`primary_horizon_trading_days`, `min_events_primary`,
+`min_distinct_signal_dates_primary`, `sesoi_difference`. `family_role` is
+`primary` exactly when the hypothesis is a listed member, and a spec with a
+`preregistration` block must also declare `block_bootstrap`.
+
+`run_study` then adds `hypothesis_test` to the result: the primary-horizon
+difference, event and distinct-signal-date counts, whether the minimum-event
+rule is met, the E1 one-sided p, the one-sided bound and whether it
+excludes the SESOI, and `p_value_for_holm` -- the E1 p for a primary
+member, or 1 when the minimum-event rule fails (the family never shrinks);
+`null` for a `secondary_descriptive` hypothesis, which never enters Holm.
+
+`scripts/evaluate_study_family.py --result ... --result ...` reads the saved
+results of one family (same split and run parameters; every primary member
+exactly once, else it refuses) and applies Holm (1979) over the primary
+members only (`fintr.research.family`): sort ascending, reject while
+`p(i) <= alpha / (m - i + 1)`, stop at the first failure; comparisons are
+exact (`fractions.Fraction`). Primary members get an outcome class
+(`supported`, `falsified`, `inconclusive`,
+`inconclusive_insufficient_events`; confirmatory only for `--split test`);
+secondary hypotheses are listed as `descriptive_only` with their unadjusted
+p. For `configs/studies/prereg/` the family is H1 + H2 (m = 2, alpha 0.05);
+H3 and H4 are `secondary_descriptive` (see `docs/prereg/DECISIONS.md`).
+
+## E4: several period captures per symbol
+
+AKD/custody requests cover ~3 months, so `--data` may repeat a symbol with
+several period captures and the same price history path (a different price
+path for the same symbol is refused). `fintr.research.capture_merge.
+merge_period_captures` builds one timeline:
+
+- precedence: the later `captured_at_utc` wins; capture-time order must
+  equal requested-period order (`start`, `end`) and capture times must
+  differ, otherwise the merge is refused as ambiguous;
+- a date is owned as a whole by the highest-precedence capture carrying it:
+  all dated series for that date come from that capture only (this is how a
+  later capture replaces an earlier capture's provisional last custody day);
+- period aggregates (`period_akd_net`, `custodian_diff`) are not merged (the
+  merged capture carries none; no study feature reads them);
+- gaps are reported, never filled: per seam the calendar days between the
+  requested periods and the tradeable price dates that no capture covers.
+
+The result's `capture_merge[SYMBOL]` block lists every source (label, file
+SHA-256, packet SHA-256, capture time, requested period, owned/overridden
+date counts), the overlap dates with the series that differ from the owner,
+the seams and `any_seam_gap`. Input hashes are recorded as
+`SYMBOL:period_capture:<i>` (a single capture keeps `SYMBOL:period_capture`)
+and a single capture is used unchanged. Lag features (`custody_change`,
+`flow_run_length`) read across a seam gap as if the server dates were
+adjacent; check `any_seam_gap` before using them.
+
 ## Output
 
 Per horizon: event count, mean/median net return, hit rate, baseline (all
 days, same symbols -- a superset of the conditioned days, not a disjoint
 complement) comparison, the difference of means with a seeded two-sample
-percentile bootstrap confidence interval, the applied transaction-cost
-assumption (bps, a CLI parameter -- see `scripts/run_study.py --cost-bps`),
-and warnings when the event count is below `min_event_warning_threshold`.
-Per-symbol breakdown mirrors the overall block. The JSON artifact
-(`fintr_study_result_v1`) is written under `data/interim/studies/` without
-overwriting, and carries a reproducibility block: code commit, spec
-SHA-256, per-input-file SHA-256, the bootstrap seed, and the Python
-version.
+percentile bootstrap confidence interval (i.i.d.; secondary diagnostic
+only), the E1 block bootstrap (`block_bootstrap_difference`, see above),
+the number of distinct conditioned signal dates, the applied per-side
+transaction-cost assumption (bps, see above), and warnings when the event
+count is below `min_event_warning_threshold`. Per-symbol breakdown mirrors
+the overall block without E1. The JSON artifact
+(`fintr_study_result_v1`, `formula_version: study_engine_v2`) is written
+under `data/interim/studies/` without overwriting, and carries a
+reproducibility block: code commit, spec SHA-256, per-input-file SHA-256,
+the i.i.d. and block bootstrap seeds/resamples, and the Python version.
 
 A price-history capture's own `symbol` field is not compared against the
 period capture's symbol: the price source echoes its own ticker convention
@@ -145,7 +257,9 @@ the guard; a BIST 30 holdout symbol would not.
 
 ## Ön kayıtlı hipotez önerileri
 
-`docs/prereg/` (süreç, H1–H4, yeni feature/motor yeteneği listeleri) ve
-`configs/studies/prereg/` (eşleşen, `"frozen": false` spec'ler) Efe'nin
-onayını bekleyen önerilerdir; tavsiye veya doğrulanmış bulgu değildir.
-`tests/test_prereg_specs.py` bu spec'leri yükleyiciyle doğrular.
+`docs/prereg/` (süreç, H1–H4, yeni feature/motor yeteneği listeleri,
+`DECISIONS.md`) ve `configs/studies/prereg/` (eşleşen, `"frozen": false`
+spec'ler) henüz dondurulmamış ön kayıt tasarımıdır; tavsiye veya
+doğrulanmış bulgu değildir. `tests/test_prereg_specs.py` bu spec'leri
+yükleyiciyle, `tests/test_study_prereqs.py` E1/E4/Holm/maliyet
+ön koşullarını sentetik veriyle doğrular.
