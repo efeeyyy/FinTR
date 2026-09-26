@@ -6,12 +6,27 @@ istatistikleri. `build_live_collection_evidence` başarılı olmadan LLM bağlam
 oluşturulmaz. Bağlam ve prompt yalnız bellekte kurulur; model çağrısı ve diske
 kayıt bu doğrulama adımının parçası değildir.
 
-`live_evidence_context_v0` şeması aileleri ayrı tutar. AKD ve Takas için yerel
+`live_evidence_context_v1` şeması aileleri ayrı tutar. AKD ve Takas için yerel
 gönderilmiş sembol/tarih alanları sunucu verisi olarak sunulmaz. Takas yanıtının
 döndürdüğü tarih ayrıca tutulur; dağılımın dönemleri ve istatistik serilerinin
 tarihleri kendi kaynaklarıyla birlikte taşınır. Sağlayıcının sayı ve yüzde
 ölçeği çevrilmez. Kurum adları tarihsiz dizinden yalnız kesin kod eşleşmesiyle
 bağlanır; dağılım kodları kurum kodu kabul edilmez.
+
+Bağlam, sağlayıcının `as_received` alanlarına ek olarak ayrı bir
+`computed_features` bölümü taşır (`fintr.features.live`,
+`formula_version="live_features_v1"`; bkz. `docs/features.md`
+"Canlı modeller"). Bu bölüm AKD pozitif/negatif net sayım ve toplamlarını,
+üst-5 pozitif/negatif net payını, Takas toplam değerini ve üst-5 değer payını,
+Takas dağılımındaki en güncel döneme göre (tarihe göre bulunur, tuple sırasına
+göre değil) hesaplanan dönem farklarını ve yatırımcı istatistik serilerindeki
+ilk-son null-olmayan değişimi içerir; kullanılan formüller
+`computed_features.formulas` altında aynen kopyalanır. `computed_features` her
+zaman sağlayıcı yanıtındaki **tüm** satır/nokta kümesi üzerinden hesaplanır;
+yukarıdaki `row_selection` kırpma limitleri yalnız `as_received` satırlarını
+etkiler ve `computed_features` içindeki toplamları küçültmez. Bu alan modelin
+kendi aritmetiğini yapmasının yerine geçer; model rakamları yeniden
+hesaplamamalıdır.
 
 İstekte dört pozitif sınır açıkça verilir: AKD satırı, günlük Takas satırı,
 dağılım satırı ve her istatistik serisindeki nokta sayısı. Seçim sağlayıcı
@@ -126,7 +141,7 @@ yalnız beş aile, AKFIS ve 2026-09-23 kapsamı aynen doğrulandıktan; bounded
 context ve prompt kurulduktan sonra
 `data/interim/pilot/live_context_AKFIS_2026-09-23.json` dosyasını oluşturur. Başka sembol,
 tarih veya request profili sessizce bu dosyaya yönlendirilmez. Dosya mevcutsa
-yeni capture reddedilir. İçerik ham frame değil, `live_evidence_context_v0`
+yeni capture reddedilir. İçerik ham frame değil, `live_evidence_context_v1`
 bağlamı ve bağlam checksum'ı ile kaynak/aile, capture zamanı, context limitleri,
 dönüşüm soyu, `classification=pilot/development`, `split=pilot`,
 `heldout_eligible=false`, `training_allowed=false` ve `evaluation_allowed=false`

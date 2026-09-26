@@ -74,6 +74,52 @@ investor_count_change = latest_investor_count - earliest_investor_count
 İkiden az gözlem varsa değişim `None` olur. Yüzde serilerindeki sonuç yüzde puan,
 yatırımcı sayısındaki sonuç kişi/adet farkıdır.
 
+## Canlı modeller (`live_features_v1`)
+
+`fintr.features.live`, WebSocket `Live*` modelleri (`fintr.data.models`)
+üzerinde çalışır; yukarıdaki AKD/Takas/yatırımcı istatistiği bölümleri eski
+snapshot modelleri (`AKDSnapshot`, `CustodianSnapshot`,
+`CustodyDistributionSnapshot`, `CustodyStats`) için ayrı ve değişmeden kalır.
+Sonuçlar `fintr.inference.live_context.build_live_analysis_context` içinde
+`computed_features` altında, sağlayıcının `as_received` alanlarından ayrı bir
+bölümde taşınır; **her zaman kırpılmamış tüm satır/nokta kümesi** üzerinden
+hesaplanır (bağlamdaki `row_selection` limitleri yalnız `as_received`
+satırlarını kırpar).
+
+```text
+live_akd_positive_net_sum        = sum(net.size for net.size > 0)
+live_akd_negative_net_sum        = sum(net.size for net.size < 0)
+live_akd_net_sum_as_received     = sum(net.size for all rows)
+                                    (bütünlük gözlemi, sıfır uydurulmaz)
+live_akd_top5_positive_net_share = sum(en büyük 5 pozitif net.size)
+                                    / positive_net_sum
+                                    (positive_net_sum == 0 ise None)
+live_akd_top5_negative_net_share = sum(en büyük 5 |negatif net.size|)
+                                    / |negative_net_sum|
+                                    (negative_net_sum == 0 ise None)
+
+live_custodian_total_value                = sum(value)
+live_custodian_top5_value_share           = sum(en büyük 5 value) / total_value
+                                             (total_value == 0 ise None)
+live_custodian_percentage_sum_as_received = sum(percentage)
+                                             (bütünlük gözlemi, sıfır uydurulmaz)
+
+live_distribution_change = latest_period_value - other_period_value
+                            (en güncel dönem tarihe göre bulunur, tuple
+                            sırasına göre değil; iki taraftan biri None ise
+                            sonuç None; dönem sayısı ile değer sayısı
+                            uyuşmazsa ValueError)
+
+live_stats_series_change = son null-olmayan değer - ilk null-olmayan değer
+                            (noktalar tarihe göre sıralanır; 2'den az
+                            null-olmayan nokta varsa None; kullanılan ilk/son
+                            tarih ayrıca raporlanır)
+```
+
+Bu formüller `formula_version="live_features_v1"` ile etiketlenir ve
+`computed_features.formulas` altında context'e aynen kopyalanır; LLM sonucu
+yeniden hesaplamak yerine bu değerleri kullanmalıdır.
+
 ## Dönem paketi kontrolleri (`period_features_v1`)
 
 Kaydedilmiş `fintr_period_analysis_capture_v1` dosyası üzerinde çalışır

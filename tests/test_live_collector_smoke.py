@@ -382,7 +382,7 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(code, 0)
         self.assertEqual(lines.count(smoke.ANALYSIS_CONTEXT_BEGIN), 1)
         self.assertEqual(lines.count(smoke.ANALYSIS_CONTEXT_END), 1)
-        self.assertEqual(context["schema_version"], "live_evidence_context_v0")
+        self.assertEqual(context["schema_version"], "live_evidence_context_v1")
         self.assertEqual(context["symbol"], "AKFIS")
         self.assertFalse(context["akd"]["truncated"])
         self.assertEqual(context["akd"]["included_rows"], context["akd"]["total_rows"])

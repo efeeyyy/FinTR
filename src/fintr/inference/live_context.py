@@ -11,10 +11,22 @@ import json
 from fintr.collector.evidence import LiveCollectionEvidence
 from fintr.data.brokerage_index import BrokerageResolution
 from fintr.data.models import LiveCustodyStatsSeries
+from fintr.features.live import (
+    FORMULA_VERSION as LIVE_FEATURES_FORMULA_VERSION,
+    FORMULAS as LIVE_FEATURES_FORMULAS,
+    LiveAKDComputedFeatures,
+    LiveCustodianComputedFeatures,
+    LiveCustodyDistributionComputedFeatures,
+    LiveCustodyStatsComputedFeatures,
+    calculate_live_akd_features,
+    calculate_live_custodian_features,
+    calculate_live_distribution_features,
+    calculate_live_stats_features,
+)
 from fintr.inference.context import ANALYSIS_CONSTRAINTS
 
 
-LIVE_SCHEMA_VERSION = "live_evidence_context_v0"
+LIVE_SCHEMA_VERSION = "live_evidence_context_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +88,69 @@ def _series(series: LiveCustodyStatsSeries, limit: int) -> dict[str, object]:
             {"date": point.date.isoformat(), "value": _number(point.value)}
             for point in points
         ],
+    }
+
+
+def _akd_features_dict(features: LiveAKDComputedFeatures) -> dict[str, object]:
+    return {
+        "row_count": features.row_count,
+        "positive_net_count": features.positive_net_count,
+        "negative_net_count": features.negative_net_count,
+        "zero_net_count": features.zero_net_count,
+        "positive_net_sum": features.positive_net_sum,
+        "negative_net_sum": features.negative_net_sum,
+        "net_sum_as_received": features.net_sum_as_received,
+        "top5_positive_net_share": _number(features.top5_positive_net_share),
+        "top5_negative_net_share": _number(features.top5_negative_net_share),
+    }
+
+
+def _custodian_features_dict(features: LiveCustodianComputedFeatures) -> dict[str, object]:
+    return {
+        "row_count": features.row_count,
+        "total_value": _number(features.total_value),
+        "top5_value_share": _number(features.top5_value_share),
+        "percentage_sum_as_received": _number(features.percentage_sum_as_received),
+    }
+
+
+def _distribution_features_dict(
+    features: LiveCustodyDistributionComputedFeatures,
+) -> dict[str, object]:
+    return {
+        "row_count": features.row_count,
+        "period_count": features.period_count,
+        "latest_period": features.latest_period.isoformat(),
+        "rows": [
+            {
+                "code": row.code,
+                "changes": [
+                    {
+                        "period": change.period.isoformat(),
+                        "change": _number(change.change),
+                    }
+                    for change in row.changes
+                ],
+            }
+            for row in features.rows
+        ],
+    }
+
+
+def _stats_features_dict(features: LiveCustodyStatsComputedFeatures) -> dict[str, object]:
+    def _series_dict(name: str) -> dict[str, object]:
+        series = getattr(features, name)
+        return {
+            "change": _number(series.change),
+            "first_date": series.first_date.isoformat() if series.first_date else None,
+            "last_date": series.last_date.isoformat() if series.last_date else None,
+            "non_null_point_count": series.non_null_point_count,
+        }
+
+    return {
+        "retail_percentage": _series_dict("retail_percentage"),
+        "institution_percentage": _series_dict("institution_percentage"),
+        "investor_count": _series_dict("investor_count"),
     }
 
 
@@ -214,11 +289,28 @@ def build_live_analysis_context(
             ),
             "investor_count": _series(stats.investor_count, limits.stats_points_per_series),
         },
+        "computed_features": {
+            "formula_version": LIVE_FEATURES_FORMULA_VERSION,
+            "computed_over": (
+                "all_rows_and_points_from_the_provider_response; "
+                "not the truncated rows/points included above under row_selection limits"
+            ),
+            "formulas": dict(LIVE_FEATURES_FORMULAS),
+            "akd": _akd_features_dict(calculate_live_akd_features(akd)),
+            "custodian": _custodian_features_dict(calculate_live_custodian_features(custodian)),
+            "custody_distribution": _distribution_features_dict(
+                calculate_live_distribution_features(distribution)
+            ),
+            "custody_stats": _stats_features_dict(calculate_live_stats_features(stats)),
+        },
         "analysis_constraints": list(ANALYSIS_CONSTRAINTS) + [
             "Local request fields are not server-echoed proof of symbol or date.",
             "Brokerage labels have no as-of date and do not identify ultimate investors.",
             "Provider percentages and units are preserved without inferred conversion.",
             "Truncated or missing rows must not be treated as zero.",
+            "computed_features are locally derived from provider values (formula_version "
+            f"{LIVE_FEATURES_FORMULA_VERSION}); they are not provider-reported fields and "
+            "must not be confused with as_received values.",
         ],
     }
     return LiveAnalysisContext(data)

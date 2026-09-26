@@ -206,7 +206,7 @@ class LivePilotCaptureTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(artifact["captured_at"], "2026-09-24T12:30:00+00:00")
             self.assertEqual(artifact["source"]["event_families"], list(live_capture.EVENT_FAMILIES))
-            self.assertEqual(artifact["context_schema_version"], "live_evidence_context_v0")
+            self.assertEqual(artifact["context_schema_version"], "live_evidence_context_v1")
             self.assertEqual(artifact["context_limits"]["akd_rows"], LIMITS.akd_rows)
             self.assertEqual(artifact["permission_provenance"]["asserted_on"], "2026-09-24")
             self.assertFalse(artifact["permission_provenance"]["independent_license_verification"])
