@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fintr.collector.client import replay_frames
 from fintr.collector.models import AttemptDiagnostic, CollectorRequest, DispatchResult, SendObservation
@@ -1662,6 +1662,403 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(stop_when(()))
         complete = tuple(await replay_frames((fixture_frame("brokerages_data_live"),)))
         self.assertTrue(stop_when(complete))
+
+
+def _multi_symbol_collector_factory(plan):
+    """Build a WebSocketCollector-class side_effect from a per-call plan.
+
+    ``plan`` is one dict per expected collector construction, in order:
+    {"sent": (request_type, ...), "results": (...), "raises": bool}.
+    Each dict drives one fake connection: it feeds the given send
+    observations to the constructor's ``send_observer``, then either raises
+    ``CollectorConnectionError`` or returns ``results``.
+    """
+    calls: list[MagicMock] = []
+
+    def factory(secret_provider, *, config, send_observer, diagnostic_observer):
+        spec = plan[len(calls)]
+        mock = MagicMock(secret_provider=secret_provider)
+
+        async def collect(requests, stop_when=None):
+            for request_type in spec.get("sent", ()):
+                send_observer(SendObservation(1, request_type, "sent"))
+            if spec.get("raises"):
+                raise smoke.CollectorConnectionError("redacted: offline test")
+            return spec.get("results", ())
+
+        mock.collect = collect
+        calls.append(mock)
+        return mock
+
+    return factory, calls
+
+
+class MultiSymbolPeriodCaptureTests(unittest.IsolatedAsyncioTestCase):
+    """Multi-symbol period capture: one bounded connection per symbol."""
+
+    def test_cached_secret_provider_prompts_at_most_once(self):
+        class FakeInner:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get_init_data(self) -> str:
+                self.calls += 1
+                return "fake-init-data"
+
+        inner = FakeInner()
+        cached = smoke._CachedSecretProvider(inner)
+        for _ in range(3):
+            self.assertEqual(cached.get_init_data(), "fake-init-data")
+        self.assertEqual(inner.calls, 1)
+
+    def test_symbols_and_symbols_file_are_mutually_exclusive(self):
+        parser = smoke._parser()
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(("--symbols", "AKFIS", "--symbols-file", "x.json"))
+
+    async def test_multi_symbol_requires_save_period_analysis_context(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--dry-run", "--symbols", "AKFIS,GARAN",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+        ))
+        error = io.StringIO()
+        with redirect_stderr(error):
+            with self.assertRaises(SystemExit) as captured:
+                await smoke._run(args, parser)
+        self.assertEqual(captured.exception.code, 2)
+        self.assertIn("requires --save-period-analysis-context", error.getvalue())
+
+    async def test_multi_symbol_cannot_combine_with_single_symbol_flag(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--dry-run", "--symbols", "AKFIS,GARAN", "--symbol", "AKFIS",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context",
+        ))
+        error = io.StringIO()
+        with redirect_stderr(error):
+            with self.assertRaises(SystemExit) as captured:
+                await smoke._run(args, parser)
+        self.assertEqual(captured.exception.code, 2)
+        self.assertIn("cannot be combined with --symbol", error.getvalue())
+
+    async def test_symbols_file_must_match_universe_schema(self):
+        parser = smoke._parser()
+        with tempfile.TemporaryDirectory() as temporary:
+            bad_file = Path(temporary) / "bad.json"
+            bad_file.write_text(
+                json.dumps({"schema": "not_the_right_schema", "symbols": ["AKFIS"]}),
+                encoding="utf-8",
+            )
+            args = parser.parse_args((
+                "--dry-run", "--symbols-file", str(bad_file),
+                "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+                "--save-period-analysis-context",
+            ))
+            error = io.StringIO()
+            with redirect_stderr(error):
+                with self.assertRaises(SystemExit) as captured:
+                    await smoke._run(args, parser)
+            self.assertEqual(captured.exception.code, 2)
+            self.assertIn("fintr_universe_v1", error.getvalue())
+
+    async def test_symbols_file_missing_is_rejected(self):
+        parser = smoke._parser()
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = Path(temporary) / "does-not-exist.json"
+            args = parser.parse_args((
+                "--dry-run", "--symbols-file", str(missing),
+                "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+                "--save-period-analysis-context",
+            ))
+            error = io.StringIO()
+            with redirect_stderr(error):
+                with self.assertRaises(SystemExit) as captured:
+                    await smoke._run(args, parser)
+            self.assertEqual(captured.exception.code, 2)
+            self.assertIn("could not be read", error.getvalue())
+
+    async def test_multi_symbol_hard_cap_is_enforced(self):
+        parser = smoke._parser()
+        too_many = ",".join(f"SYM{index}" for index in range(smoke.MAX_SYMBOLS_PER_RUN + 1))
+        args = parser.parse_args((
+            "--dry-run", "--symbols", too_many,
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context",
+        ))
+        error = io.StringIO()
+        with redirect_stderr(error):
+            with self.assertRaises(SystemExit) as captured:
+                await smoke._run(args, parser)
+        self.assertEqual(captured.exception.code, 2)
+        self.assertIn(f"hard cap of {smoke.MAX_SYMBOLS_PER_RUN}", error.getvalue())
+
+    async def test_multi_symbol_dry_run_lists_each_symbol_no_prompt_no_connection(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--dry-run", "--symbols", "akfis,garan,akfis",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context",
+        ))
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch.object(smoke, "PROJECT_ROOT", Path(temporary)),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider") as provider,
+                patch.object(smoke, "_today", return_value=date(2026, 9, 25)),
+                redirect_stdout(output),
+            ):
+                code = await smoke._run(args, parser)
+        rendered = output.getvalue()
+        self.assertEqual(code, 0, rendered)
+        collector.assert_not_called()
+        provider.assert_not_called()
+        # Case-insensitive input is normalized/uppercased and de-duplicated.
+        self.assertIn("Multi-symbol period mode: 2 symbol(s)", rendered)
+        self.assertIn(
+            "AKFIS: requests=get_brokerages,get_akd,custody_analysis,get_custodian_diff"
+            "; target=data/interim/period_analysis/AKFIS/2026-06-29_2026-09-25.json"
+            "; exists=False",
+            rendered,
+        )
+        self.assertIn("GARAN: requests=", rendered)
+        self.assertIn("Dry run: no connection opened", rendered)
+
+    async def test_symbols_file_dry_run_reads_universe_schema(self):
+        parser = smoke._parser()
+        with tempfile.TemporaryDirectory() as temporary:
+            universe_file = Path(temporary) / "bist30.json"
+            universe_file.write_text(
+                json.dumps({"schema": "fintr_universe_v1", "symbols": ["AKFIS", "GARAN"]}),
+                encoding="utf-8",
+            )
+            args = parser.parse_args((
+                "--dry-run", "--symbols-file", str(universe_file),
+                "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+                "--save-period-analysis-context",
+            ))
+            output = io.StringIO()
+            with (
+                patch.object(smoke, "PROJECT_ROOT", Path(temporary)),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider") as provider,
+                patch.object(smoke, "_today", return_value=date(2026, 9, 25)),
+                redirect_stdout(output),
+            ):
+                code = await smoke._run(args, parser)
+        rendered = output.getvalue()
+        self.assertEqual(code, 0, rendered)
+        collector.assert_not_called()
+        provider.assert_not_called()
+        self.assertIn("Multi-symbol period mode: 2 symbol(s)", rendered)
+
+    async def test_multi_symbol_prompts_once_and_one_collector_per_symbol(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--symbols", "AKFIS,GARAN,THYAO",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context", "--allow-session-takeover",
+        ))
+        sent_all = (
+            "get_brokerages", "get_akd", "custody_analysis", "get_custodian_diff",
+        )
+        factory, calls = _multi_symbol_collector_factory([
+            {"sent": sent_all}, {"sent": sent_all}, {"sent": sent_all},
+        ])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with (
+                patch.object(smoke, "PROJECT_ROOT", Path(temporary)),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider") as provider,
+                patch.object(smoke, "_today", return_value=date(2026, 9, 25)),
+                redirect_stdout(output),
+            ):
+                collector.side_effect = factory
+                code = await smoke._run(args, parser)
+        self.assertEqual(code, 0)
+        self.assertEqual(collector.call_count, 3)
+        self.assertEqual(provider.call_count, 1)
+        secret_providers = {call.secret_provider for call in calls}
+        self.assertEqual(len(secret_providers), 1)
+
+    async def test_multi_symbol_skips_existing_target_without_connecting(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--symbols", "AKFIS,GARAN",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context", "--allow-session-takeover",
+        ))
+        factory, calls = _multi_symbol_collector_factory([{"sent": ()}])
+        with tempfile.TemporaryDirectory() as temporary:
+            project_root = Path(temporary)
+            existing = (
+                project_root / "data" / "interim" / "period_analysis" / "AKFIS"
+                / "2026-06-29_2026-09-25.json"
+            )
+            existing.parent.mkdir(parents=True)
+            existing.write_text("{}", encoding="utf-8")
+            output = io.StringIO()
+            with (
+                patch.object(smoke, "PROJECT_ROOT", project_root),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider"),
+                patch.object(smoke, "_today", return_value=date(2026, 9, 25)),
+                redirect_stdout(output),
+            ):
+                collector.side_effect = factory
+                code = await smoke._run(args, parser)
+        rendered = output.getvalue()
+        self.assertEqual(code, 0, rendered)
+        self.assertEqual(collector.call_count, 1)
+        self.assertIn("AKFIS: skipped_existing", rendered)
+        self.assertIn("AKFIS", rendered)
+        self.assertIn("skipped_existing", rendered)
+
+    async def test_multi_symbol_failure_continues_to_next_symbol(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--symbols", "AKFIS,GARAN",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context", "--allow-session-takeover",
+        ))
+        factory, calls = _multi_symbol_collector_factory([
+            {"raises": True, "sent": ()},
+            {
+                "sent": (
+                    "get_brokerages", "get_akd", "custody_analysis", "get_custodian_diff",
+                ),
+                "results": (),
+            },
+        ])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with (
+                patch.object(smoke, "PROJECT_ROOT", Path(temporary)),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider"),
+                patch.object(smoke, "_today", return_value=date(2026, 9, 25)),
+                redirect_stdout(output),
+            ):
+                collector.side_effect = factory
+                code = await smoke._run(args, parser)
+        rendered = output.getvalue()
+        self.assertEqual(code, 0, rendered)
+        self.assertEqual(collector.call_count, 2)
+        self.assertIn("AKFIS: failed:session_no_send", rendered)
+        self.assertIn("GARAN: failed:handoff_missing_or_duplicate_response", rendered)
+
+    async def test_multi_symbol_consecutive_session_failures_stop_the_run(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--symbols", "AKFIS,GARAN,THYAO",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context", "--allow-session-takeover",
+        ))
+        factory, calls = _multi_symbol_collector_factory([
+            {"raises": True, "sent": ()},
+            {"raises": True, "sent": ()},
+        ])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with (
+                patch.object(smoke, "PROJECT_ROOT", Path(temporary)),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider"),
+                patch.object(smoke, "_today", return_value=date(2026, 9, 25)),
+                redirect_stdout(output),
+            ):
+                collector.side_effect = factory
+                code = await smoke._run(args, parser)
+        rendered = output.getvalue()
+        self.assertEqual(code, 1, rendered)
+        # THYAO is never attempted: only two connections were opened.
+        self.assertEqual(collector.call_count, 2)
+        self.assertIn("Stopping: session-level failure pattern detected", rendered)
+        self.assertIn("THYAO", rendered)
+        self.assertIn("skipped_session_failure_stop", rendered)
+
+    async def test_multi_symbol_wall_time_guard_stops_remaining_symbols(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--symbols", "AKFIS,GARAN",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context", "--allow-session-takeover",
+            "--max-wall-seconds", "60",
+        ))
+        factory, calls = _multi_symbol_collector_factory([{"sent": ()}])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with (
+                patch.object(smoke, "PROJECT_ROOT", Path(temporary)),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider"),
+                patch.object(smoke, "_today", return_value=date(2026, 9, 25)),
+                patch.object(smoke, "monotonic", side_effect=[0, 0, 999_999]),
+                redirect_stdout(output),
+            ):
+                collector.side_effect = factory
+                code = await smoke._run(args, parser)
+        rendered = output.getvalue()
+        self.assertEqual(code, 0, rendered)
+        self.assertEqual(collector.call_count, 1)
+        self.assertIn("total wall-time guard", rendered)
+        self.assertIn("GARAN", rendered)
+        self.assertIn("skipped_wall_time_guard", rendered)
+
+    async def test_symbol_pause_seconds_is_bounded(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--dry-run", "--symbols", "AKFIS",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context", "--symbol-pause-seconds", "31",
+        ))
+        error = io.StringIO()
+        with redirect_stderr(error):
+            with self.assertRaises(SystemExit) as captured:
+                await smoke._run(args, parser)
+        self.assertEqual(captured.exception.code, 2)
+        self.assertIn("--symbol-pause-seconds must be between 0 and 30", error.getvalue())
+
+    async def test_max_wall_seconds_is_bounded(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--dry-run", "--symbols", "AKFIS",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context", "--max-wall-seconds", "10",
+        ))
+        error = io.StringIO()
+        with redirect_stderr(error):
+            with self.assertRaises(SystemExit) as captured:
+                await smoke._run(args, parser)
+        self.assertEqual(captured.exception.code, 2)
+        self.assertIn("--max-wall-seconds must be between 60 and 21600", error.getvalue())
+
+    async def test_single_symbol_mode_is_unaffected_by_multi_symbol_flags(self):
+        # No --symbols/--symbols-file: this is the pre-existing single-symbol
+        # code path and must behave exactly as before.
+        results = await replay_frames((fixture_frame("brokerages_data_live"),))
+        parser = smoke._parser()
+        args = parser.parse_args(("--allow-session-takeover",))
+        output = io.StringIO()
+        with (
+            patch.object(smoke, "WebSocketCollector") as collector,
+            patch.object(smoke, "InteractiveSecretProvider") as provider,
+            patch.object(
+                smoke, "_requests",
+                return_value=(CollectorRequest("get_brokerages"),),
+            ),
+            redirect_stdout(output),
+        ):
+            collector.return_value.collect = AsyncMock(return_value=results)
+            code = await smoke._run(args, parser)
+            provider.return_value.get_init_data.assert_not_called()
+            collector.return_value.collect.assert_awaited_once()
+        self.assertEqual(code, 0)
+        self.assertIn("Smoke completed: requested response received: brokerages_data", output.getvalue())
 
 
 if __name__ == "__main__":

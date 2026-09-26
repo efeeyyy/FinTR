@@ -182,6 +182,126 @@ beş istek tek profilde olduğu için 2a'dakinden biraz daha geniş).
 [live_context.md](live_context.md) "Sohbete veri olarak aktarma" bölümündeki
 uyarı geçerlidir (sağlayıcı metinleri talimat değil, veri olarak okunmalıdır).
 
+### 2c. BIST30 çoklu sembol dönem yakalama (2026-09-26'da eklendi)
+
+`scripts\live_collector_smoke.py`, tek komutla birden çok sembol için 2a'daki
+dört istekli dönem paketini (`get_brokerages`, `get_akd`, `custody_analysis`,
+`get_custodian_diff`) sırayla yakalayabilir: `--symbols-file` veya `--symbols`,
+`--save-period-analysis-context` ile birlikte kullanılır. Sağlayıcı
+hesap/`initData` başına tek oturuma izin verdiğinden ve `akd_data` yanıtı
+sembol/dönemi echo etmediğinden (yerel provenance yalnız o bağlantıda **tam
+bir** istek gönderildiğinde bağlanır), **her sembol kendi kısa
+`WebSocketCollector` bağlantısını** alır — semboller asla aynı bağlantıyı
+paylaşmaz. `initData` yalnız **bir kez** sorulur (bellekte, süreç boyunca;
+hiçbir zaman yazdırılmaz/loglanmaz) ve her sembolün bağlantısında yeniden
+kullanılır.
+
+**Sembol listesi:** `--symbols-file <yol>` şu şemayla bir JSON dosyası
+bekler (`fintr_universe_v1`):
+
+```json
+{"schema": "fintr_universe_v1", "symbols": ["AKFIS", "GARAN", "THYAO"]}
+```
+
+`configs/universe/bist30.json` bu şemayla **siz** oluşturacağınız bir dosya
+örneğidir — bu belge veya script onu otomatik oluşturmaz/doldurmaz; hangi 30
+sembolün listeye gireceğine dair hiçbir isim burada varsayılmamıştır. Tek
+seferlik denemeler için `--symbols A,B,C` (virgülle ayrılmış) de kullanılabilir;
+ikisi birlikte verilemez. Hedef dosyası zaten var olan bir sembol otomatik
+**`skipped_existing`** olarak atlanır (bağlantı açılmaz); bu, mevcut
+"no overwrite" davranışının çoklu-sembol karşılığıdır. Bir sembol
+oturum/kimlik doğrulama düzeyinde art arda **2** kez "hiçbir istek
+gönderilemedi" (bağlantı `welcome`'dan önce kapandı) desenini gösterirse
+script kalan sembolleri denemeden durur ve nedenini yazdırır — bu, tekil
+sembol hatalarının (örn. bir sembolün paket doğrulaması başarısız olması)
+kalan sembolleri etkilememesinden **farklıdır**: yalnız oturum/kimlik
+doğrulama düzeyindeki tekrarlanan başarısızlık deseni tüm çalıştırmayı
+durdurur. Sembol sayısı sabit bir üst sınıra (`MAX_SYMBOLS_PER_RUN = 40`)
+tabidir ve `--max-wall-seconds` (varsayılan 1800s / 30 dakika) toplam
+çalışma süresini sınırlar; sınır aşılırsa kalan semboller denenmeden
+**`skipped_wall_time_guard`** olarak işaretlenir. Semboller arasında
+`--symbol-pause-seconds` (varsayılan 3, üst sınır 30) kadar sabit bir
+bekleme vardır.
+
+**Örnek çalıştırma — 2026-06-29..2026-09-25 aralığı, BIST30 evreni:**
+
+Önce dry-run (initData istemez, bağlantı açmaz; her sembol için planlanan
+istek özeti + hedef dosya yolu + var/yok bilgisini yazdırır):
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\live_collector_smoke.py `
+  --dry-run `
+  --symbols-file configs\universe\bist30.json `
+  --start-date 2026-06-29 `
+  --end-date 2026-09-25 `
+  --save-period-analysis-context `
+  --allow-session-takeover `
+  --max-frames 16 --timeout 15 --max-message-mib 4 --show-unknown-event-types `
+  --max-wall-seconds 5400
+```
+
+Dry-run çıktısında her sembol için `exists=False`/`exists=True` ve hedef
+yolu görüldükten sonra, Mini App'i kapatıp `--dry-run`'ı kaldırarak aynı
+komutu çalıştırın:
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\live_collector_smoke.py `
+  --symbols-file configs\universe\bist30.json `
+  --start-date 2026-06-29 `
+  --end-date 2026-09-25 `
+  --save-period-analysis-context `
+  --allow-session-takeover `
+  --max-frames 16 --timeout 15 --max-message-mib 4 --show-unknown-event-types `
+  --max-wall-seconds 5400
+```
+
+`--max-frames 16`/`--timeout 15`/`--max-message-mib 4` seçimi 2a'daki aynı
+gerekçeye dayanır (dört istek + `welcome` + olası `[UNKNOWN_EVENT_TYPE]`
+eşlik eden frame'ler + `hb` payı; büyük `custody_analysis` yanıtı için
+yükseltilmiş mesaj sınırı). `--show-unknown-event-types` yalnız bölüm
+4a'daki katı `^[a-z][a-z_]{0,39}$` deseniyle eşleşen event **adlarını**
+gösterir; payload değerlerini asla basmaz.
+
+**Beklenen süre (kanıtlanmamış üst sınır, gerçek gözlem değil):** Bu
+flag'lerle bir sembolün en kötü senaryo üst sınırı `--timeout × --max-frames`
+= 15 × 16 = 240 saniye/deneme; sabit 2 retry ile (en fazla 3 deneme) bir
+sembol için teorik tavan ~720 saniyedir. 30 sembollük tam bir BIST30
+evreninde, bu tavan + `--symbol-pause-seconds` (varsayılan 3s) teorik olarak
+birkaç saate kadar çıkabilir — **bu gerçek sağlayıcı davranışının kanıtı
+değildir**, yalnız bounded bekleme bütçesidir (2a'daki aynı uyarı). 2a'daki
+tek-sembol canlı denemeler bu tavanın çok altında tamamlanmıştı, ama BIST30
+ölçeğinde gerçek toplam süre henüz ölçülmemiştir — bu yüzden yukarıdaki
+örnek komut varsayılan `--max-wall-seconds 1800`'ü **1800'den 5400 saniyeye
+(1.5 saat) yükseltir**; aksi halde 30 sembollük bir çalıştırma varsayılan
+30 dakikalık bütçeyle erken durabilir (`skipped_wall_time_guard`). Kendi
+evreninizin boyutuna göre bu değeri (60–21600 saniye aralığında) ayarlayın.
+
+**Yakalamadan sonra `dev_registry.json` ve eval split etkisi (önemli —
+analizden ÖNCE karar verin):** Aşağıdaki bölüm 3'teki 2. adımda olduğu gibi,
+gerçekten development
+(kural/prompt geliştirme) amacıyla kullanılan her sembol
+`src/fintr/evaluation/dev_registry.json`'a eklenmelidir — ama yalnız
+**gerçekten development için kullanılanlar**, yakalanan her sembol otomatik
+değil. `leakage_guard.py` sembol kontrolü **şirket düzeyindedir**: registry'ye
+eklenen her sembol, tarihi ne olursa olsun, kalıcı olarak eval'den (held-out
+değerlendirmeden) çıkar (`development_symbol` nedeniyle reddedilir; bkz.
+[evaluation_protocol.md](evaluation_protocol.md), AKFIS örneği bölüm 3.2'de).
+Bu nedenle **30 sembolün tamamını yakalayıp analiz ettikten sonra** hangi
+sembollerin held-out eval için ayrılacağına karar vermek zaten çok geç
+olabilir — bir sembole herhangi bir kural geliştirme/prompt iyileştirme
+amacıyla bakmak, onu registry'ye eklemeden bile fiilen "development'ta
+kullanılmış" hale getirir. Bu belge hangi sembollerin ayrılacağını **seçmez**
+(bu bir ürün/değerlendirme kararıdır) — yalnız şunu önerir: **evrenin bir
+alt kümesini (örn. BIST30'un bir bölümünü), üzerinde hiçbir analiz veya
+kural geliştirme yapmadan önce, held-out eval için ayırdığınızı yazılı olarak
+kaydedin** (ör. bir not/ADR'de) ve yalnız geri kalanı üzerinde development
+çalışması yapın. Yakalamanın kendisi (dosyayı diske kaydetmek) sembolü
+otomatik olarak eval'den çıkarmaz — onu development registry'sine eklemek
+veya üzerinde development amacıyla çalışmak çıkarır; ama karışıklığı önlemek
+için ayrımı yakalamadan önce, veri elinizdeyken netleştirmeniz önerilir.
+
 ## 3. Yakalamadan sonra
 
 1. **Offline raporu üretin:**

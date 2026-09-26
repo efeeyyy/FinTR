@@ -12,6 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 import re
 import tempfile
+from time import monotonic
 
 from fintr.collector import (
     CollectorConfig,
@@ -91,6 +92,12 @@ _FUTURE_DATE_FLAGS: tuple[tuple[str, str], ...] = (
     ("--to-date", "to_date"),
     ("--custody-date", "custody_date"),
 )
+
+# Multi-symbol period capture: one bounded connection per symbol, sequentially.
+MULTI_SYMBOL_UNIVERSE_SCHEMA = "fintr_universe_v1"
+MAX_SYMBOLS_PER_RUN = 40
+_MULTI_SYMBOL_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9]{1,16}$")
+_CONSECUTIVE_SESSION_FAILURES_TO_STOP = 2
 
 
 def _today() -> date:
@@ -279,6 +286,33 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--custody-stats-only", action="store_true",
         help="Send only one get_custody_stats request; requires --symbol.",
+    )
+    symbols_group = parser.add_mutually_exclusive_group()
+    symbols_group.add_argument(
+        "--symbols-file", type=Path,
+        help=(
+            "Path to a JSON file with schema fintr_universe_v1 "
+            '({"symbols": ["A", "B", ...]}) for multi-symbol period capture; '
+            "combine with --start-date/--end-date/--save-period-analysis-context."
+        ),
+    )
+    symbols_group.add_argument(
+        "--symbols", type=str,
+        help="Comma-separated symbols for multi-symbol period capture, e.g. A,B,C.",
+    )
+    parser.add_argument(
+        "--symbol-pause-seconds", type=float, default=3.0,
+        help=(
+            "Bounded pause between symbols in multi-symbol mode, in seconds "
+            "(default: 3; maximum: 30)."
+        ),
+    )
+    parser.add_argument(
+        "--max-wall-seconds", type=int, default=1800,
+        help=(
+            "Total wall-time guard for a multi-symbol run, in seconds "
+            "(default: 1800; maximum: 21600)."
+        ),
     )
     parser.add_argument("--start-date", type=_date)
     parser.add_argument("--end-date", type=_date)
@@ -526,6 +560,320 @@ def _period_analysis_requests(symbol: str, start: date, end: date):
         build_custody_analysis_request(symbol, start, end),
         build_custodian_diff_request(symbol, start, end),
     )
+
+
+class _CachedSecretProvider:
+    """Wrap a secret provider so initData is prompted for at most once per run.
+
+    The value is kept only in this process's memory for the run's duration
+    (never written to disk or logged) and reused across every per-symbol
+    ``WebSocketCollector`` connection.
+    """
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self._cached: str | None = None
+
+    def get_init_data(self) -> str:
+        if self._cached is None:
+            self._cached = self._inner.get_init_data()
+        return self._cached
+
+
+def _multi_symbol_period_target(symbol: str, start: date, end: date) -> Path:
+    return (
+        PROJECT_ROOT / "data" / "interim" / "period_analysis" / symbol
+        / f"{start.isoformat()}_{end.isoformat()}.json"
+    )
+
+
+def _normalize_multi_symbol(value: str, parser: argparse.ArgumentParser) -> str:
+    candidate = value.strip().upper()
+    if not _MULTI_SYMBOL_TOKEN_PATTERN.fullmatch(candidate):
+        parser.error(
+            f"invalid symbol in multi-symbol input: {value!r} (expected 1-16 "
+            "ASCII letters or digits)"
+        )
+    return candidate
+
+
+def _load_symbols_file(path: Path, parser: argparse.ArgumentParser) -> tuple[str, ...]:
+    """Read and validate a fintr_universe_v1 symbols file; never echoes its raw bytes."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        parser.error(f"--symbols-file could not be read: {path}")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        parser.error(f"--symbols-file is not valid JSON: {path}")
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != MULTI_SYMBOL_UNIVERSE_SCHEMA
+    ):
+        parser.error(
+            "--symbols-file must be a JSON object with "
+            f'"schema": "{MULTI_SYMBOL_UNIVERSE_SCHEMA}"'
+        )
+    symbols = payload.get("symbols")
+    if (
+        not isinstance(symbols, list)
+        or not symbols
+        or not all(isinstance(item, str) for item in symbols)
+    ):
+        parser.error('--symbols-file "symbols" must be a non-empty list of strings')
+    return tuple(symbols)
+
+
+def _load_multi_symbols(
+    args: argparse.Namespace, parser: argparse.ArgumentParser,
+) -> tuple[str, ...]:
+    if args.symbols_file is not None:
+        raw = _load_symbols_file(args.symbols_file, parser)
+    else:
+        raw = tuple(
+            part for part in (item.strip() for item in args.symbols.split(",")) if part
+        )
+        if not raw:
+            parser.error("--symbols must contain at least one non-empty symbol")
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        normalized = _normalize_multi_symbol(item, parser)
+        if normalized not in seen:
+            seen.add(normalized)
+            symbols.append(normalized)
+    if not symbols:
+        parser.error("no symbols found in multi-symbol input")
+    if len(symbols) > MAX_SYMBOLS_PER_RUN:
+        parser.error(
+            "multi-symbol run exceeds the hard cap of "
+            f"{MAX_SYMBOLS_PER_RUN} symbols per run (got {len(symbols)})"
+        )
+    return tuple(symbols)
+
+
+def _print_multi_symbol_dry_run(
+    args: argparse.Namespace, symbols: tuple[str, ...], start: date, end: date, today: date,
+) -> int:
+    """Print the multi-symbol plan; never prompts for initData or opens a connection."""
+    print("Dry run: argument validation passed; no initData prompt, no connection.")
+    print(
+        f"Multi-symbol period mode: {len(symbols)} symbol(s) "
+        f"(hard cap {MAX_SYMBOLS_PER_RUN} per run)"
+    )
+    print(
+        f"Limits: {args.max_events} total frames per attempt per symbol; "
+        f"{args.timeout:g}s per receive; {args.max_message_mib} MiB per message; "
+        f"at most 2 retries per symbol; {args.symbol_pause_seconds:g}s pause between "
+        f"symbols; {args.max_wall_seconds}s total wall-time guard"
+    )
+    for symbol in symbols:
+        requests = _period_analysis_requests(symbol, start, end)
+        target = _multi_symbol_period_target(symbol, start, end)
+        print(
+            f"  {symbol}: requests=" + ",".join(request.request_type for request in requests)
+            + f"; target={target.relative_to(PROJECT_ROOT).as_posix()}"
+            + f"; exists={target.exists()}"
+        )
+    note = _same_day_note(today, args)
+    if note is not None:
+        print(note)
+    print("Dry run: no connection opened")
+    return 0
+
+
+async def _collect_multi_symbol(
+    args: argparse.Namespace, symbols: tuple[str, ...], start: date, end: date, today: date,
+) -> int:
+    """Capture one period packet per symbol, sequentially, one connection each.
+
+    Prompts for initData once (cached only in memory for this run) and never
+    shares a connection between symbols, because akd_data responses carry no
+    server-echoed symbol/period: local provenance only binds a response when
+    exactly one request of that type was sent on that connection.
+    """
+    print(
+        f"Multi-symbol period mode: {len(symbols)} symbol(s) "
+        f"(hard cap {MAX_SYMBOLS_PER_RUN} per run)"
+    )
+    print(
+        f"Limits: {args.max_events} total frames per attempt per symbol; "
+        f"{args.timeout:g}s per receive; {args.max_message_mib} MiB per message; "
+        f"{args.symbol_pause_seconds:g}s pause between symbols; "
+        f"{args.max_wall_seconds}s total wall-time guard"
+    )
+    same_day_note = _same_day_note(today, args)
+    if same_day_note is not None:
+        print(same_day_note)
+
+    config = CollectorConfig(
+        receive_timeout_seconds=args.timeout,
+        max_events=args.max_events,
+        max_message_bytes=args.max_message_mib * 1_048_576,
+    )
+    period_expected_events = {
+        REQUEST_RESPONSE_EVENTS[request_type] for request_type in PERIOD_ANALYSIS_REQUEST_TYPES
+    }
+    secret_provider = _CachedSecretProvider(InteractiveSecretProvider())
+
+    rows: list[tuple[str, str, int]] = []
+    consecutive_session_failures = 0
+    run_started = monotonic()
+    remaining = list(symbols)
+    while remaining:
+        if monotonic() - run_started > args.max_wall_seconds:
+            print(
+                f"Stopping: total wall-time guard ({args.max_wall_seconds}s) reached; "
+                f"{len(remaining)} symbol(s) not attempted."
+            )
+            for symbol in remaining:
+                rows.append((symbol, "skipped_wall_time_guard", 0))
+            remaining = []
+            break
+
+        symbol = remaining.pop(0)
+        target = _multi_symbol_period_target(symbol, start, end)
+        if target.exists():
+            print(f"{symbol}: skipped_existing")
+            rows.append((symbol, "skipped_existing", 0))
+            if remaining:
+                await asyncio.sleep(args.symbol_pause_seconds)
+            continue
+
+        requests = _period_analysis_requests(symbol, start, end)
+        send_observations: list[SendObservation] = []
+
+        def report_send(observation: SendObservation) -> None:
+            send_observations.append(observation)
+            print(
+                f"{symbol} attempt {observation.attempt}: "
+                f"{observation.request_type} - {observation.status}"
+            )
+
+        def report_failure(diagnostic: AttemptDiagnostic) -> None:
+            print(
+                f"{symbol} attempt {diagnostic.attempt}: failure at "
+                f"{diagnostic.stage} ({diagnostic.category})"
+            )
+
+        def stop_when(observed: tuple, _requests=requests) -> bool:
+            return period_expected_events <= _matched_response_events(
+                observed, _requests, period_expected_events,
+            )
+
+        collector = WebSocketCollector(
+            secret_provider, config=config, send_observer=report_send,
+            diagnostic_observer=report_failure,
+        )
+        results: tuple | None
+        try:
+            results = await collector.collect(requests, stop_when=stop_when)
+        except CollectorConnectionError as exc:
+            print(f"{symbol}: {exc}")
+            results = None
+
+        any_sent = any(
+            observation.status == "sent" for observation in send_observations
+        )
+        frames_used = 0
+        if results is None or not any_sent:
+            status = "failed:session_no_send" if not any_sent else "failed:connection_error"
+        else:
+            frames_used = len(results)
+            try:
+                packet = _period_analysis_packet(
+                    results, requests, send_observations,
+                    symbol=symbol, start=start, end=end,
+                )
+                validate_context_contains_no_secrets(_secret_validation_copy(packet))
+                _save_period_analysis_capture(packet)
+                status = "saved"
+            except PeriodAnalysisHandoffError as exc:
+                print(f"{symbol}: period-analysis handoff validation ({exc})")
+                status = f"failed:handoff_{exc.reason}"
+            except PeriodAnalysisCaptureError as exc:
+                if exc.reason == "capture_already_exists":
+                    print(f"{symbol}: period-analysis capture already exists (no overwrite)")
+                else:
+                    print(f"{symbol}: period-analysis capture could not be safely saved")
+                status = f"failed:capture_{exc.reason}"
+            except (LivePilotCaptureError, TypeError, ValueError):
+                print(f"{symbol}: safe period-analysis export validation failed")
+                status = "failed:export_validation"
+
+        print(f"{symbol}: {status}")
+        rows.append((symbol, status, frames_used))
+
+        consecutive_session_failures = (
+            consecutive_session_failures + 1 if status == "failed:session_no_send" else 0
+        )
+        if consecutive_session_failures >= _CONSECUTIVE_SESSION_FAILURES_TO_STOP:
+            print(
+                "Stopping: session-level failure pattern detected for "
+                f"{_CONSECUTIVE_SESSION_FAILURES_TO_STOP} consecutive symbols "
+                "(connection closed before any request was sent). Check the "
+                "Telegram Mini App session/initData before retrying."
+            )
+            for skipped in remaining:
+                rows.append((skipped, "skipped_session_failure_stop", 0))
+            remaining = []
+            break
+
+        if remaining:
+            await asyncio.sleep(args.symbol_pause_seconds)
+
+    print("")
+    print(f"{'Symbol':<16}{'Status':<34}Frames")
+    for symbol, status, frames_used in rows:
+        print(f"{symbol:<16}{status:<34}{frames_used}")
+
+    session_failure_stop = any(
+        status == "skipped_session_failure_stop" for _, status, _ in rows
+    )
+    return 1 if session_failure_stop else 0
+
+
+async def _run_multi_symbol(
+    args: argparse.Namespace, parser: argparse.ArgumentParser, today: date,
+) -> int:
+    incompatible = (
+        bool(args.symbol), args.akd_only, args.custodian_only, args.custodian_diff_only,
+        args.custody_analysis_only, args.custody_distribution_only,
+        args.custody_stats_only, args.custody_date is not None,
+        args.include_custody_history, args.from_date is not None,
+        args.to_date is not None, args.emit_period_analysis_context,
+        args.require_all_responses, args.validate_evidence_bundle,
+        args.validate_live_context, args.emit_analysis_context,
+        args.capture_pilot_context,
+        args.akd_context_rows is not None, args.custodian_context_rows is not None,
+        args.distribution_context_rows is not None, args.stats_context_points is not None,
+    )
+    if any(incompatible):
+        parser.error(
+            "--symbols-file/--symbols cannot be combined with --symbol, "
+            "single-family, custody-history, bounded-context, or pilot-capture options"
+        )
+    if not args.save_period_analysis_context:
+        parser.error("--symbols-file/--symbols requires --save-period-analysis-context")
+    if args.start_date is None or args.end_date is None:
+        parser.error("--symbols-file/--symbols requires --start-date and --end-date")
+    if args.start_date > args.end_date:
+        parser.error("--start-date must not be after --end-date")
+    range_days = (args.end_date - args.start_date).days
+    if range_days > 90 and not args.allow_large_range:
+        parser.error("period analysis over 90 days requires --allow-large-range")
+    if not 0 <= args.symbol_pause_seconds <= 30:
+        parser.error("--symbol-pause-seconds must be between 0 and 30 seconds")
+    if not 60 <= args.max_wall_seconds <= 21600:
+        parser.error("--max-wall-seconds must be between 60 and 21600 seconds")
+
+    symbols = _load_multi_symbols(args, parser)
+    start, end = args.start_date, args.end_date
+
+    if args.dry_run:
+        return _print_multi_symbol_dry_run(args, symbols, start, end, today)
+    return await _collect_multi_symbol(args, symbols, start, end, today)
 
 
 def _dry_run_persistence_target(
@@ -1095,6 +1443,9 @@ async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         parser.error("--max-events must be between 1 and 50")
     if not 1 <= args.max_message_mib <= 8:
         parser.error("--max-message-mib must be between 1 and 8")
+
+    if args.symbols_file is not None or args.symbols is not None:
+        return await _run_multi_symbol(args, parser, today)
 
     requests = _requests(args, parser)
     if args.capture_pilot_context:
