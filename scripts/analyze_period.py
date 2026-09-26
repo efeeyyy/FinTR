@@ -18,6 +18,21 @@ import tempfile
 from fintr.data.corporate_actions import CorporateActionsError, load_corporate_action_registry
 from fintr.data.period_capture import PeriodCaptureError, load_period_capture
 from fintr.data.price_history import PriceHistoryCaptureError, load_price_history_capture
+from fintr.evaluation.symbol_exclusions import (
+    DEFAULT_EXCLUSIONS_PATH,
+    SymbolExclusionsError,
+    exclusion_reason,
+    is_excluded,
+    load_default_symbol_exclusions,
+)
+from fintr.evaluation.symbol_split import (
+    NO_SPLIT_GUARD_WARNING,
+    SymbolSplitError,
+    is_holdout,
+    load_symbol_split,
+    resolve_default_split_path,
+    split_guard_report,
+)
 from fintr.features.period import (
     DEFAULT_CUSTODY_FLOAT_TOLERANCE,
     DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS,
@@ -162,6 +177,31 @@ def _parser() -> argparse.ArgumentParser:
              f"two captures); excluded from lag matching counts (default: "
              f"{DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS})",
     )
+    parser.add_argument(
+        "--split-file", type=Path, default=None,
+        help=(
+            "fintr_symbol_split_v1 file; a holdout symbol's capture is refused "
+            "by default (--all: skipped with status skipped_holdout instead of "
+            "failing the batch). Default: resolved through "
+            "configs/splits/current.json if that pointer exists."
+        ),
+    )
+    parser.add_argument(
+        "--no-split-guard", action="store_true",
+        help=(
+            "Disable the holdout-split guard above. Exists only for non-BIST30 "
+            "exploratory work; using it on BIST30 symbols is reported loudly in "
+            "the output."
+        ),
+    )
+    parser.add_argument(
+        "--exclusions-file", type=Path, default=DEFAULT_EXCLUSIONS_PATH,
+        help=(
+            "fintr_symbol_exclusions_v1 file; an excluded symbol's capture is "
+            "refused unconditionally (--all: skipped with status "
+            f"skipped_excluded) -- no override flag (default: {DEFAULT_EXCLUSIONS_PATH})."
+        ),
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument(
         "--save", action="store_true",
@@ -172,6 +212,25 @@ def _parser() -> argparse.ArgumentParser:
              "also (over)writes <root>/index.json.",
     )
     return parser
+
+
+def _resolve_guards(args: argparse.Namespace):
+    """Load the exclusions file (always) and the split file (if resolved),
+    returning ``(split, split_path, exclusions, error_message)``. On any
+    invalid guard file, ``error_message`` is set and the other three are
+    ``None``; callers must print it and exit 1 without proceeding."""
+    try:
+        exclusions = load_default_symbol_exclusions(args.exclusions_file)
+    except SymbolExclusionsError as exc:
+        return None, None, None, f"invalid exclusions file ({exc})"
+    split_path = args.split_file or resolve_default_split_path()
+    split = None
+    if split_path is not None:
+        try:
+            split = load_symbol_split(split_path)
+        except SymbolSplitError as exc:
+            return None, None, None, f"invalid split file ({exc})"
+    return split, split_path, exclusions, None
 
 
 def report_filename(
@@ -266,6 +325,20 @@ def render_text(report: dict) -> str:
     lines = [
         f"{scope['symbol']} {scope['requested_start']}..{scope['requested_end']} "
         f"({scope['server_date_count']} işlem gözlemi; birimler sağlayıcının verdiği gibi)",
+    ]
+    guard = report.get("split_guard")
+    if guard is not None:
+        if guard["guard_bypassed"]:
+            lines.append(
+                "UYARI: --no-split-guard aktif; BIST30 holdout split koruması bu "
+                "çalışma için KAPALI."
+            )
+        lines.append(
+            "Split guard: dosya="
+            + (guard["split_file"] or "uygulanmadı")
+            + ("" if guard["split_file_sha256"] is None else f" sha256={guard['split_file_sha256']}")
+        )
+    lines += [
         "",
         "AKD mutabakatı (günlük toplam = dönem neti): "
         + ", ".join(f"{k}={v}" for k, v in report["akd_reconciliation"]["status_counts"].items()),
@@ -444,14 +517,20 @@ def discover_price_history(root: Path, symbol: str, start: date, end: date) -> P
     return candidates[0][2]
 
 
-def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
+def _process_capture(
+    path: Path, args: argparse.Namespace, *, split, exclusions, guard_bypassed: bool,
+) -> dict[str, object]:
     """Load, validate and (optionally) save the report for one capture.
 
     Never raises: a validation failure is returned as a ``failed`` entry so
-    the caller can keep processing the rest of the batch.
+    the caller can keep processing the rest of the batch. An excluded
+    symbol's capture is skipped (``skipped_excluded``, unconditional); a
+    holdout symbol's capture is skipped (``skipped_holdout``) unless the
+    guard is bypassed -- either way, without failing the batch.
     """
+    symbol = path.parent.name
     entry: dict[str, object] = {
-        "symbol": path.parent.name,
+        "symbol": symbol,
         "path": _display_path(path),
         "status": "failed",
         "error": None,
@@ -469,6 +548,13 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
         "report": None,
         "report_path": None,
     }
+    if is_excluded(exclusions, symbol):
+        entry["status"] = "skipped_excluded"
+        entry["error"] = exclusion_reason(exclusions, symbol)
+        return entry
+    if split is not None and not guard_bypassed and is_holdout(split, symbol):
+        entry["status"] = "skipped_holdout"
+        return entry
     try:
         capture_bytes = path.read_bytes()
         capture = load_period_capture(path)
@@ -570,14 +656,20 @@ _REPORT_STATUS_TR = {
 }
 
 
-def build_batch_index(root: Path, entries: list[dict[str, object]], args: argparse.Namespace) -> dict:
+def build_batch_index(
+    root: Path, entries: list[dict[str, object]], args: argparse.Namespace,
+    *, split, split_path, guard_bypassed: bool,
+) -> dict:
     """Compact cross-capture index; every number comes from build_period_report."""
     ok = sum(1 for e in entries if e["status"] == "ok")
-    failed = len(entries) - ok
+    skipped_holdout = sum(1 for e in entries if e["status"] == "skipped_holdout")
+    skipped_excluded = sum(1 for e in entries if e["status"] == "skipped_excluded")
+    failed = len(entries) - ok - skipped_holdout - skipped_excluded
     return {
         "schema": "fintr_period_batch_index_v1",
         "root": _display_path(root),
         "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "split_guard": split_guard_report(split_path, split, bypassed=guard_bypassed),
         "parameters": {
             "lags": list(args.lags), "detail_lag": args.detail_lag, "top": args.top,
             "price_history_root": _display_path(args.price_history_root),
@@ -592,6 +684,8 @@ def build_batch_index(root: Path, entries: list[dict[str, object]], args: argpar
         "totals": {
             "captures": len(entries),
             "ok": ok,
+            "skipped_holdout": skipped_holdout,
+            "skipped_excluded": skipped_excluded,
             "failed": failed,
             "reports_saved": sum(1 for e in entries if e["report"] == "saved"),
             "reports_skipped": sum(1 for e in entries if e["report"] == "skipped"),
@@ -603,9 +697,21 @@ def build_batch_index(root: Path, entries: list[dict[str, object]], args: argpar
 
 def render_index_text(index: dict) -> str:
     totals = index["totals"]
+    guard = index["split_guard"]
     lines = [
         f"Toplu dönem analizi: {index['root']} ({totals['captures']} kayıt)",
-        f"Başarılı: {totals['ok']}, başarısız: {totals['failed']}; "
+        "Split guard: dosya="
+        + (guard["split_file"] or "uygulanmadı")
+        + ("" if guard["split_file_sha256"] is None else f" sha256={guard['split_file_sha256']}"),
+    ]
+    if guard["guard_bypassed"]:
+        lines.append(
+            "UYARI: --no-split-guard aktif; BIST30 holdout split koruması bu "
+            "çalışma için KAPALI."
+        )
+    lines += [
+        f"Başarılı: {totals['ok']}, atlandı (holdout): {totals['skipped_holdout']}, "
+        f"atlandı (dışlanmış): {totals['skipped_excluded']}, başarısız: {totals['failed']}; "
         f"rapor kaydedildi: {totals['reports_saved']}, "
         f"atlandı (mevcut): {totals['reports_skipped']}, "
         f"kaydedilmedi (--save yok): {totals['reports_not_saved']}, "
@@ -613,6 +719,14 @@ def render_index_text(index: dict) -> str:
         "",
     ]
     for entry in index["captures"]:
+        if entry["status"] == "skipped_holdout":
+            lines.append(f"- {entry['symbol']} ({entry['path']}): ATLANDI (holdout sembolü)")
+            continue
+        if entry["status"] == "skipped_excluded":
+            lines.append(
+                f"- {entry['symbol']} ({entry['path']}): ATLANDI (dışlanmış sembol: {entry['error']})"
+            )
+            continue
         if entry["status"] != "ok":
             lines.append(f"- {entry['symbol']} ({entry['path']}): HATA - {entry['error']}")
             continue
@@ -642,11 +756,18 @@ def render_index_text(index: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run_batch(args: argparse.Namespace) -> int:
+def run_batch(
+    args: argparse.Namespace, *, split, split_path, exclusions, guard_bypassed: bool,
+) -> int:
     root: Path = args.all_root
     captures = discover_captures(root)
-    entries = [_process_capture(path, args) for path in captures]
-    index = build_batch_index(root, entries, args)
+    entries = [
+        _process_capture(path, args, split=split, exclusions=exclusions, guard_bypassed=guard_bypassed)
+        for path in captures
+    ]
+    index = build_batch_index(
+        root, entries, args, split=split, split_path=split_path, guard_bypassed=guard_bypassed,
+    )
     payload = (json.dumps(index, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
     if args.save:
@@ -667,6 +788,14 @@ def run_batch(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+
+    split, split_path, exclusions, guard_error = _resolve_guards(args)
+    if guard_error is not None:
+        print(f"Analysis failed: {guard_error}", file=sys.stderr)
+        return 1
+    if args.no_split_guard:
+        print(NO_SPLIT_GUARD_WARNING, file=sys.stderr)
+
     if args.all_root is not None:
         if args.capture is not None:
             print("Analysis failed: pass a capture path or --all, not both", file=sys.stderr)
@@ -685,7 +814,10 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        return run_batch(args)
+        return run_batch(
+            args, split=split, split_path=split_path, exclusions=exclusions,
+            guard_bypassed=args.no_split_guard,
+        )
     if args.capture is None:
         _parser().error("the following arguments are required: capture (or use --all)")
 
@@ -693,6 +825,21 @@ def main(argv: list[str] | None = None) -> int:
     try:
         capture_bytes = args.capture.read_bytes()
         capture = load_period_capture(args.capture)
+        if is_excluded(exclusions, capture.symbol):
+            print(
+                f"Analysis failed: symbol {capture.symbol} is excluded "
+                f"({exclusion_reason(exclusions, capture.symbol)})",
+                file=sys.stderr,
+            )
+            return 1
+        if split is not None and not args.no_split_guard and is_holdout(split, capture.symbol):
+            print(
+                f"Analysis failed: symbol {capture.symbol} is a holdout symbol of the "
+                f"frozen split ({split_path}, sha256={split.split_sha256}); pass "
+                "--no-split-guard for non-BIST30 exploratory work",
+                file=sys.stderr,
+            )
+            return 1
         price_capture = (
             None if args.price_history is None else load_price_history_capture(args.price_history)
         )
@@ -714,6 +861,7 @@ def main(argv: list[str] | None = None) -> int:
             ValueError) as exc:
         print(f"Analysis failed: {exc}", file=sys.stderr)
         return 1
+    report["split_guard"] = split_guard_report(split_path, split, bypassed=args.no_split_guard)
     registry_sha256 = (
         None if corporate_actions_bytes is None else hashlib.sha256(corporate_actions_bytes).hexdigest()
     )

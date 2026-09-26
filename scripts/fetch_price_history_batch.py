@@ -26,6 +26,14 @@ from pathlib import Path
 import time
 from typing import Any
 
+from fintr.evaluation.symbol_exclusions import (
+    DEFAULT_EXCLUSIONS_PATH,
+    SymbolExclusionsError,
+    exclusion_reason,
+    is_excluded,
+    load_default_symbol_exclusions,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -77,6 +85,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timeout", type=float, default=fetch.DEFAULT_TIMEOUT_SECONDS,
         help="Per-symbol network timeout in seconds, passed through to the underlying fetch.",
+    )
+    parser.add_argument(
+        "--exclusions-file", type=Path, default=DEFAULT_EXCLUSIONS_PATH,
+        help=(
+            "fintr_symbol_exclusions_v1 file; an excluded symbol is skipped "
+            "(status skipped_excluded) unconditionally -- no override flag "
+            f"(default: {DEFAULT_EXCLUSIONS_PATH}). Holdout symbols are never "
+            "blocked here: collecting held-out data is allowed."
+        ),
     )
     return parser
 
@@ -205,10 +222,22 @@ def main(argv: list[str] | None = None) -> int:
 
     symbols = _load_universe(args.universe, parser)
 
+    try:
+        exclusions = load_default_symbol_exclusions(args.exclusions_file)
+    except SymbolExclusionsError as exc:
+        parser.error(f"--exclusions-file: {exc}")
+        return 2
+
     results: list[dict[str, Any]] = []
     rate_limited = False
     previous_made_request = False
     for symbol in symbols:
+        if is_excluded(exclusions, symbol):
+            results.append({
+                "symbol": symbol, "status": "skipped_excluded",
+                "reason": exclusion_reason(exclusions, symbol),
+            })
+            continue
         if rate_limited:
             results.append({"symbol": symbol, "status": "skipped", "reason": "stopped_after_rate_limit"})
             continue

@@ -205,8 +205,20 @@ def render_text(result: dict) -> str:
         f"train/test sınırı: {result['train_test_cutoff']}; giriş: {result['entry_timing']}; "
         f"düzeltme sınırı politikası: {result['adjustment_boundary_policy']}; "
         f"işlem maliyeti: {result['parameters']['transaction_cost_bps']} bps",
-        "",
     ]
+    guard = result.get("split_guard")
+    if guard is not None:
+        if guard["guard_bypassed"]:
+            lines.append(
+                "UYARI: --no-split-guard aktif; BIST30 holdout split koruması bu "
+                "çalışma için KAPALI."
+            )
+        lines.append(
+            "Split guard: dosya="
+            + (guard["split_file"] or "uygulanmadı")
+            + ("" if guard["split_file_sha256"] is None else f" sha256={guard['split_file_sha256']}")
+        )
+    lines.append("")
     for horizon, stats in result["overall"].items():
         warn = " [UYARI: minimum olay eşiğinin altında]" if stats["below_min_events_warning"] else ""
         lines.append(

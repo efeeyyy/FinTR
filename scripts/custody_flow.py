@@ -23,9 +23,25 @@ import argparse
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 from fintr.data.period_capture import PeriodCapture, PeriodCaptureError, load_period_capture
+from fintr.evaluation.symbol_exclusions import (
+    DEFAULT_EXCLUSIONS_PATH,
+    SymbolExclusionsError,
+    exclusion_reason,
+    is_excluded,
+    load_default_symbol_exclusions,
+)
+from fintr.evaluation.symbol_split import (
+    NO_SPLIT_GUARD_WARNING,
+    SymbolSplitError,
+    is_holdout,
+    load_symbol_split,
+    resolve_default_split_path,
+    split_guard_report,
+)
 from fintr.features.custody_flow import (
     DEFAULT_MISSING_AKD_POLICY,
     DEFAULT_PAIR_TOLERANCE,
@@ -118,6 +134,29 @@ def _parser() -> argparse.ArgumentParser:
             "retail/institutional lot series flags as provisional "
             f"(default: {DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS}; 0 disables "
             "marking); same policy as fintr.features.period."
+        ),
+    )
+    parser.add_argument(
+        "--split-file", type=Path, default=None,
+        help=(
+            "fintr_symbol_split_v1 file; a holdout symbol's capture is refused "
+            "by default. Default: resolved through configs/splits/current.json "
+            "if that pointer exists."
+        ),
+    )
+    parser.add_argument(
+        "--no-split-guard", action="store_true",
+        help=(
+            "Disable the holdout-split guard above. Exists only for non-BIST30 "
+            "exploratory work; using it on BIST30 symbols is reported loudly in "
+            "the output."
+        ),
+    )
+    parser.add_argument(
+        "--exclusions-file", type=Path, default=DEFAULT_EXCLUSIONS_PATH,
+        help=(
+            "fintr_symbol_exclusions_v1 file; an excluded symbol's capture is "
+            f"refused unconditionally -- no override flag (default: {DEFAULT_EXCLUSIONS_PATH})."
         ),
     )
     return parser
@@ -226,6 +265,37 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"invalid capture: {exc}")
         return 2
 
+    try:
+        exclusions = load_default_symbol_exclusions(args.exclusions_file)
+    except SymbolExclusionsError as exc:
+        parser.error(f"invalid exclusions file: {exc}")
+        return 2
+    if is_excluded(exclusions, capture.symbol):
+        parser.error(
+            f"symbol {capture.symbol} is excluded "
+            f"({exclusion_reason(exclusions, capture.symbol)})"
+        )
+        return 2
+
+    split_path = args.split_file or resolve_default_split_path()
+    split = None
+    if split_path is not None:
+        try:
+            split = load_symbol_split(split_path)
+        except SymbolSplitError as exc:
+            parser.error(f"invalid split file: {exc}")
+            return 2
+    if args.no_split_guard:
+        print(NO_SPLIT_GUARD_WARNING, file=sys.stderr)
+    elif split is not None and is_holdout(split, capture.symbol):
+        parser.error(
+            f"symbol {capture.symbol} is a holdout symbol of the frozen split "
+            f"({split_path}, sha256={split.split_sha256}); pass --no-split-guard "
+            "for non-BIST30 exploratory work"
+        )
+        return 2
+    split_guard = split_guard_report(split_path, split, bypassed=args.no_split_guard)
+
     residual_result = compute_custody_residual(
         capture, lag=args.lag, missing_akd_policy=args.missing_akd_policy,
     )
@@ -236,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
 
     output: dict[str, Any] = {
         "symbol": capture.symbol,
+        "split_guard": split_guard,
         "custody_residual": _residual_to_json(residual_result),
         "same_day_pairs": _pairs_to_json(pair_result),
         "estimated_retail_lots": _retail_lots_to_json(retail_lots_result),
