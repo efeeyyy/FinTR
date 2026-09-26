@@ -1,0 +1,4 @@
+{
+  "schema": "fintr_current_split_v1",
+  "current": "configs/splits/bist30_2026_holdout_v2.json"
+}

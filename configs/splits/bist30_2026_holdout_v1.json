@@ -51,10 +51,12 @@
     "TUPRS",
     "YKBNK"
   ],
-  "frozen": true,
+  "frozen": false,
   "rules": [
     "Held-out symbols may be collected but must not be used for analysis, rule development, prompt/model selection or threshold tuning.",
     "A frozen study spec is evaluated on held-out symbols once; results are reported, not used to revise the spec.",
     "AKFIS and any symbol in src/fintr/evaluation/dev_registry.json remain development-only."
-  ]
+  ],
+  "superseded_by": "bist30_2026_holdout_v2",
+  "superseded_reason": "invalidated before any universe analysis: DSTKF excluded by user decision (2026-09-26)"
 }
