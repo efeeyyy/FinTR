@@ -120,7 +120,9 @@ def _distribution_features_dict(
     return {
         "row_count": features.row_count,
         "period_count": features.period_count,
-        "latest_period": features.latest_period.isoformat(),
+        "latest_period": (
+            None if features.latest_period is None else features.latest_period.isoformat()
+        ),
         "rows": [
             {
                 "code": row.code,

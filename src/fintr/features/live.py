@@ -98,7 +98,7 @@ class LiveDistributionRowFeatures:
 class LiveCustodyDistributionComputedFeatures:
     row_count: int
     period_count: int
-    latest_period: date
+    latest_period: date | None  # None only when the provider sent no periods
     rows: tuple[LiveDistributionRowFeatures, ...]
 
 
@@ -174,7 +174,10 @@ def calculate_live_distribution_features(
         raise TypeError("response must be LiveCustodyDistributionResponse")
     periods = response.periods
     if not periods:
-        raise ValueError("live_distribution_no_periods")
+        # Nothing to compare; an empty provider period list is not an error.
+        return LiveCustodyDistributionComputedFeatures(
+            row_count=len(response.rows), period_count=0, latest_period=None, rows=(),
+        )
     ordered_periods = sorted(range(len(periods)), key=lambda index: periods[index])
     latest_index = ordered_periods[-1]
     latest_period = periods[latest_index]

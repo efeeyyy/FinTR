@@ -153,6 +153,13 @@ class LiveDistributionFeaturesTests(unittest.TestCase):
         self.assertEqual(changes[date(2025, 1, 1)], Decimal(30) - Decimal(10))
         self.assertEqual(changes[date(2025, 2, 1)], Decimal(30) - Decimal(20))
 
+    def test_empty_period_list_yields_no_changes_instead_of_error(self) -> None:
+        rows = (LiveCustodyDistributionRow(code="A", values=(), percentage=None),)
+        features = calculate_live_distribution_features(self._response((), rows))
+        self.assertEqual((features.period_count, features.latest_period, features.rows),
+                         (0, None, ()))
+        self.assertEqual(features.row_count, 1)
+
     def test_none_values_propagate_to_none_change(self) -> None:
         periods = (date(2025, 1, 1), date(2025, 2, 1))
         rows = (
