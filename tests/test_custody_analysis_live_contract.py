@@ -180,12 +180,24 @@ class LiveCustodyAnalysisTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(FieldTypeError):
                     EventDispatcher().dispatch_frame(json.dumps(event))
 
-    def test_investor_count_non_null_remains_unsupported(self):
-        event = copy.deepcopy(self.event)
-        event["data"]["data"]["metadata"]["2026-09-22"]["investor_count"] = 7
-        with self.assertRaises(FieldTypeError) as captured:
-            EventDispatcher().dispatch_frame(json.dumps(event))
-        self.assertIn("non-null metadata type unverified", str(captured.exception))
+    def test_investor_count_whole_number_is_accepted(self):
+        # Observed as a JSON number in a one-year live response on 2026-09-27.
+        for raw in (7, 7.0):
+            event = copy.deepcopy(self.event)
+            event["data"]["data"]["metadata"]["2026-09-22"]["investor_count"] = raw
+            result = EventDispatcher().dispatch_frame(json.dumps(event))
+            day = [d for d in result.normalized.metadata if d.date.isoformat() == "2026-09-22"][0]
+            self.assertEqual(day.investor_count, 7)
+            self.assertIsInstance(day.investor_count, int)
+            self.assertNotIn("investor_count", day.null_fields)
+
+    def test_investor_count_invalid_values_are_rejected(self):
+        for raw in (-1, 12.5, "7", True):
+            event = copy.deepcopy(self.event)
+            event["data"]["data"]["metadata"]["2026-09-22"]["investor_count"] = raw
+            with self.assertRaises(FieldTypeError) as captured:
+                EventDispatcher().dispatch_frame(json.dumps(event))
+            self.assertIn("non-negative whole-number investor count", str(captured.exception))
 
     def test_untrusted_structured_path_is_rejected(self):
         error = FieldTypeError(
@@ -343,7 +355,7 @@ class LiveCustodyAnalysisTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(diagnostics[0].field_path,
                          "event.data.data.metadata.[date].investor_count")
         self.assertEqual((diagnostics[0].expected_kind, diagnostics[0].actual_kind),
-                         ("null", "number"))
+                         ("number", "number"))
         self.assertNotIn("12.5", repr(diagnostics))
 
     async def test_sent_response_with_both_percentage_numbers_completes_successfully(self):

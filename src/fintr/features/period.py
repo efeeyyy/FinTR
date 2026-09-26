@@ -560,6 +560,8 @@ def metadata_field_coverage(capture: PeriodCapture) -> tuple[MetadataFieldCovera
             non_null = sum(1 for day in days if day.retail_pct is not None)
         elif field == "institutional_pct":
             non_null = sum(1 for day in days if day.institutional_pct is not None)
+        elif field == "investor_count" and any(day.investor_count is not None for day in days):
+            non_null = sum(1 for day in days if day.investor_count is not None)
         else:
             null_count = sum(1 for day in days if field in day.null_fields)
             non_null = day_count - null_count

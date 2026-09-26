@@ -1222,6 +1222,7 @@ def _period_analysis_packet(
                     "uninterpreted_keys": list(day.uninterpreted_keys),
                     "retail_pct": day.retail_pct,
                     "institutional_pct": day.institutional_pct,
+                    "investor_count": day.investor_count,
                 }
                 for day in analysis.metadata
             ],

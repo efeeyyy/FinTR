@@ -87,6 +87,22 @@ def _parse_custody_days(value: Any) -> tuple[LiveAnalysisCustodyDay, ...]:
     return tuple(parsed)
 
 
+def _parse_investor_count(value: Any, path: str) -> int:
+    # First seen non-null in a one-year live response (2026-09-27) as a JSON
+    # number; only a non-negative whole number is a plausible count.
+    number = None
+    if not isinstance(value, bool) and isinstance(value, (int, float, Decimal)):
+        number = Decimal(str(value))
+    if (number is None or not number.is_finite() or number < 0
+            or number != number.to_integral_value()):
+        raise FieldTypeError(
+            f"{path}: expected a non-negative whole-number investor count",
+            field_path=path, expected_kind="number", actual_kind=json_kind(value),
+            reason="non_null_metadata_unverified",
+        )
+    return int(number)
+
+
 def _parse_metadata(value: Any) -> tuple[LiveAnalysisMetadataDay, ...]:
     days = require_mapping(value, "event.data.data.metadata")
     parsed: list[LiveAnalysisMetadataDay] = []
@@ -97,6 +113,7 @@ def _parse_metadata(value: Any) -> tuple[LiveAnalysisMetadataDay, ...]:
         null_fields: list[str] = []
         retail_pct: Decimal | None = None
         institutional_pct: Decimal | None = None
+        investor_count: int | None = None
         for key in _KNOWN_METADATA_FIELDS:
             if key in entry:
                 if entry[key] is None:
@@ -108,16 +125,11 @@ def _parse_metadata(value: Any) -> tuple[LiveAnalysisMetadataDay, ...]:
                     else:
                         institutional_pct = parsed_value
                 else:
-                    raise FieldTypeError(
-                        f"{path}.{key}: non-null metadata type unverified",
-                        field_path=f"{path}.{key}", expected_kind="null",
-                        actual_kind=json_kind(entry[key]),
-                        reason="non_null_metadata_unverified",
-                    )
+                    investor_count = _parse_investor_count(entry[key], f"{path}.{key}")
         uninterpreted_keys = tuple(key for key in entry if key not in _KNOWN_METADATA_FIELDS)
         parsed.append(LiveAnalysisMetadataDay(
             day, tuple(null_fields), uninterpreted_keys, retail_pct,
-            institutional_pct,
+            institutional_pct, investor_count,
         ))
     return tuple(parsed)
 
