@@ -63,8 +63,11 @@ yoksaymaz.
 
 `fintr.features.price_join.join_price_history`, bu şekilde yüklenen barları
 bir dönem paketinin sunucu tarihlerine hizalar (placeholder/beklenmeyen işlem
-barı sınıflandırması, hacim oranı kontrolü, düzeltme sınırı tarihleri); ayrıntı
-için `docs/features.md`'deki "Fiyat/hacim eşleştirmesi" bölümüne bakın.
+barı sınıflandırması, hacim oranı kontrolü, düzeltme sınırı tarihleri, ve
+Yahoo'nun `close`/`adjusted_close`'u aynı katsayıyla geriye dönük düzelttiği
+durumlarda düzeltme sınırı tespitinin gözden kaçırdığı bir "sabit 1/k hacim
+oranı rejimi" hipotezi); ayrıntı için `docs/features.md`'deki "Fiyat/hacim
+eşleştirmesi" bölümüne bakın.
 `scripts/analyze_period.py`, tek kayıt modunda `--price-history PATH`, toplu
 modda ise sembol ve aralığa göre otomatik keşifle bu eşleştirmeyi raporun
 `price_volume` bölümüne ekler.

@@ -20,7 +20,7 @@ from fintr.data.price_history import DailyBar, PriceHistoryCapture
 from fintr.features.period import daily_market_proxy
 
 
-FORMULA_VERSION = "price_join_v1"
+FORMULA_VERSION = "price_join_v2"
 
 # Ratio tolerance band for implied_traded_lots (an AKD-derived proxy that is
 # itself unverified, and only meaningful on a day where its own
@@ -40,6 +40,24 @@ DEFAULT_VOLUME_RATIO_TOLERANCE = Decimal("0.5")
 # are typically at least a few percent (a split or a sizeable dividend).
 # Also a CLI parameter, not a hidden default.
 DEFAULT_ADJUSTMENT_RATIO_EPSILON = Decimal("0.0005")
+
+# Yahoo back-adjusts BOTH close and adjusted_close for splits/bonus issues, so
+# adjustment_ratio (adjusted_close/close) never moves and adjustment_boundary
+# detection above stays silent on such an event. The symptom instead shows up
+# as implied_traded_lots/volume settling onto a constant 1/k ratio (k a small
+# integer) over a contiguous run of days, because "lots" on the AKD/custody
+# side are not retroactively rescaled while the price source's volume is.
+# Relative tolerance on |ratio - 1/k| / (1/k); a CLI parameter, not a hidden
+# default. 1% comfortably separates a real 1/k regime (near-exact in this
+# provider's Decimal data) from an unrelated ratio that happens to be close
+# to some 1/k by chance.
+DEFAULT_RATIO_REGIME_TOLERANCE = Decimal("0.01")
+
+# Upper bound on the integer k tested for a constant-ratio regime. Stock
+# splits/bonus issues are small integers in practice; this bound is generous
+# and documented here rather than exposed as a CLI knob because it changes
+# the search space, not a tolerance judgment.
+RATIO_REGIME_MAX_K = 20
 
 FORMULAS: dict[str, str] = {
     "price_only_classification": (
@@ -75,6 +93,22 @@ FORMULAS: dict[str, str] = {
         "full saved price series in ascending date order, not only joined "
         "dates; only the boundary dates are reported, not the ratio values"
     ),
+    "ratio_regime": (
+        "For a joined day with volume_ratio, vwap_proxy, bar.low and "
+        "bar.high all present: a candidate k (integer, 2 <= k <= "
+        "RATIO_REGIME_MAX_K) matches when "
+        "|volume_ratio - 1/k| / (1/k) <= ratio_regime_tolerance (parameter, "
+        "default documented on the CLI) AND bar.low <= vwap_proxy / k <= "
+        "bar.high; the smallest matching k is kept. A ratio_regime is a "
+        "maximal run of consecutive joined server dates sharing the same "
+        "matched k; it is reported as {start, end, k, day_count, label: "
+        "'probable_retroactive_price_adjustment'} -- a hypothesis about a "
+        "retroactive price-source adjustment that Yahoo's back-adjustment "
+        "of both close and adjusted_close would hide from adjustment_ratio, "
+        "not a verified corporate action. Days inside a ratio_regime are "
+        "excluded from the volume_ratio_within_tolerance check_summary "
+        "(reported separately, not as a genuine check failure)."
+    ),
 }
 
 
@@ -91,6 +125,20 @@ class JoinedDay:
     vwap_within_bar_range: bool | None
     volume_ratio: Decimal | None
     volume_ratio_within_tolerance: bool | None
+    ratio_regime_k: int | None  # integer k when volume_ratio ~= 1/k (see FORMULAS["ratio_regime"])
+
+
+@dataclass(frozen=True, slots=True)
+class RatioRegime:
+    """A contiguous run of joined server dates whose volume_ratio settles on
+    a constant 1/k; see FORMULAS["ratio_regime"]. A hypothesis, not a
+    verified corporate action."""
+
+    start: date
+    end: date
+    k: int
+    day_count: int
+    label: str = "probable_retroactive_price_adjustment"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,14 +156,23 @@ class PriceJoinResult:
     formula_version: str
     volume_ratio_tolerance: Decimal
     adjustment_ratio_epsilon: Decimal
+    ratio_regime_tolerance: Decimal
     joined: tuple[JoinedDay, ...]
     price_only_days: tuple[PriceOnlyDay, ...]
     adjustment_boundary_dates: tuple[date, ...]
+    ratio_regimes: tuple[RatioRegime, ...]
 
     @property
     def missing_dates(self) -> tuple[date, ...]:
         """Server dates for which the price capture has no bar."""
         return tuple(day.date for day in self.joined if not day.bar_present)
+
+    @property
+    def ratio_regime_dates(self) -> tuple[date, ...]:
+        """Every joined date that falls inside some ratio_regime, ascending."""
+        return tuple(
+            day.date for day in self.joined if day.ratio_regime_k is not None
+        )
 
     @property
     def placeholder_dates(self) -> tuple[date, ...]:
@@ -184,16 +241,64 @@ def _adjustment_boundary_dates(bars: tuple[DailyBar, ...], epsilon: Decimal) -> 
     return tuple(boundaries)
 
 
+def _ratio_regime_k(
+    volume_ratio: Decimal | None, vwap_proxy: Decimal | None,
+    low: Decimal | None, high: Decimal | None, tolerance: Decimal,
+) -> int | None:
+    """Smallest integer k (2..RATIO_REGIME_MAX_K) such that volume_ratio is
+    within ``tolerance`` (relative) of 1/k AND vwap_proxy/k falls in
+    [low, high]; None when no k matches or an input is missing."""
+    if volume_ratio is None or vwap_proxy is None or low is None or high is None:
+        return None
+    for k in range(2, RATIO_REGIME_MAX_K + 1):
+        expected = Decimal(1) / Decimal(k)
+        if abs(volume_ratio - expected) / expected > tolerance:
+            continue
+        if low <= vwap_proxy / Decimal(k) <= high:
+            return k
+    return None
+
+
+def _ratio_regimes(joined: tuple[JoinedDay, ...]) -> tuple[RatioRegime, ...]:
+    """Maximal runs of consecutive joined days sharing the same ratio_regime_k."""
+    regimes: list[RatioRegime] = []
+    run_start: date | None = None
+    run_end: date | None = None
+    run_k: int | None = None
+    run_days = 0
+    for day in joined:
+        if day.ratio_regime_k is not None and day.ratio_regime_k == run_k:
+            run_end = day.date
+            run_days += 1
+        else:
+            if run_k is not None:
+                regimes.append(RatioRegime(run_start, run_end, run_k, run_days))
+            if day.ratio_regime_k is not None:
+                run_start = run_end = day.date
+                run_k = day.ratio_regime_k
+                run_days = 1
+            else:
+                run_start = run_end = None
+                run_k = None
+                run_days = 0
+    if run_k is not None:
+        regimes.append(RatioRegime(run_start, run_end, run_k, run_days))
+    return tuple(regimes)
+
+
 def join_price_history(
     capture: PeriodCapture, price: PriceHistoryCapture, *,
     volume_ratio_tolerance: Decimal = DEFAULT_VOLUME_RATIO_TOLERANCE,
     adjustment_ratio_epsilon: Decimal = DEFAULT_ADJUSTMENT_RATIO_EPSILON,
+    ratio_regime_tolerance: Decimal = DEFAULT_RATIO_REGIME_TOLERANCE,
 ) -> PriceJoinResult:
     """Align ``price.bars`` to ``capture.server_dates``; see ``FORMULAS``."""
     if not isinstance(volume_ratio_tolerance, Decimal) or volume_ratio_tolerance < 0:
         raise ValueError("volume_ratio_tolerance must be a non-negative Decimal")
     if not isinstance(adjustment_ratio_epsilon, Decimal) or adjustment_ratio_epsilon < 0:
         raise ValueError("adjustment_ratio_epsilon must be a non-negative Decimal")
+    if not isinstance(ratio_regime_tolerance, Decimal) or ratio_regime_tolerance < 0:
+        raise ValueError("ratio_regime_tolerance must be a non-negative Decimal")
 
     bars_by_date = {bar.trade_date: bar for bar in price.bars}
     server_dates = set(capture.server_dates)
@@ -209,7 +314,7 @@ def join_price_history(
             joined.append(JoinedDay(
                 date=server_date, bar_present=False, close=None, volume=None,
                 adjusted_close=None, vwap_proxy=vwap_proxy, vwap_within_bar_range=None,
-                volume_ratio=None, volume_ratio_within_tolerance=None,
+                volume_ratio=None, volume_ratio_within_tolerance=None, ratio_regime_k=None,
             ))
             continue
         vwap_within_bar_range = (
@@ -221,11 +326,15 @@ def join_price_history(
             None if volume_ratio is None
             else abs(volume_ratio - 1) <= volume_ratio_tolerance
         )
+        ratio_regime_k = _ratio_regime_k(
+            volume_ratio, vwap_proxy, bar.low, bar.high, ratio_regime_tolerance,
+        )
         joined.append(JoinedDay(
             date=server_date, bar_present=True, close=bar.close, volume=bar.volume,
             adjusted_close=bar.adjusted_close, vwap_proxy=vwap_proxy,
             vwap_within_bar_range=vwap_within_bar_range, volume_ratio=volume_ratio,
             volume_ratio_within_tolerance=volume_ratio_within_tolerance,
+            ratio_regime_k=ratio_regime_k,
         ))
 
     price_only_days = tuple(
@@ -237,11 +346,14 @@ def join_price_history(
         if bar.trade_date not in server_dates
     )
 
+    joined_tuple = tuple(joined)
     return PriceJoinResult(
         formula_version=FORMULA_VERSION,
         volume_ratio_tolerance=volume_ratio_tolerance,
         adjustment_ratio_epsilon=adjustment_ratio_epsilon,
-        joined=tuple(joined),
+        ratio_regime_tolerance=ratio_regime_tolerance,
+        joined=joined_tuple,
         price_only_days=price_only_days,
         adjustment_boundary_dates=_adjustment_boundary_dates(price.bars, adjustment_ratio_epsilon),
+        ratio_regimes=_ratio_regimes(joined_tuple),
     )

@@ -273,22 +273,148 @@ class PeriodFeatureTests(unittest.TestCase):
         self.assertEqual(series["GGG"].points[1], (D2, None))
 
     def test_lagged_match_counts_and_pending_dates(self):
+        # provisional_last_custody_days defaults to 1, so D4 (the last server
+        # date) is a provisional custody date: any observation whose custody
+        # balance is read at D4 is excluded from comparable/exact/sign counts
+        # and reported separately (this also removes the D2->D4 mismatch that
+        # a prior version of this test observed at lag=2, since D4 is now
+        # excluded rather than compared).
         analysis = lagged_akd_custody_match(self.capture, lags=(0, 2), detail_lag=2)
+        self.assertEqual(analysis.provisional_custody_dates, (D4,))
         lag2 = analysis.summaries[1]
-        self.assertEqual((lag2.lag, lag2.comparable, lag2.exact_matches, lag2.sign_matches),
-                         (2, 4, 3, 4))
+        self.assertEqual(
+            (lag2.lag, lag2.comparable, lag2.exact_matches, lag2.sign_matches,
+             lag2.float_artifact_matches, lag2.excluded_provisional_count),
+            (2, 2, 2, 2, 0, 2),
+        )
+        self.assertEqual(len(analysis.unmatched), 0)
+        self.assertEqual(analysis.pending_akd_dates, (D3, D4))
+        with self.assertRaises(ValueError):
+            lagged_akd_custody_match(self.capture, lags=(-1,), detail_lag=2)
+
+    def test_provisional_window_can_be_disabled(self):
+        # With provisional_last_custody_days=0 nothing is excluded, and the
+        # D2->D4 mismatch from the fixture (custody_change=-5, akd_net=-10)
+        # is comparable and reported again, matching pre-item-3 behavior.
+        analysis = lagged_akd_custody_match(
+            self.capture, lags=(0, 2), detail_lag=2, provisional_last_custody_days=0,
+        )
+        self.assertEqual(analysis.provisional_custody_dates, ())
+        lag2 = analysis.summaries[1]
+        self.assertEqual((lag2.comparable, lag2.exact_matches, lag2.excluded_provisional_count),
+                         (4, 3, 0))
         self.assertEqual(len(analysis.unmatched), 1)
         miss = analysis.unmatched[0]
         self.assertEqual((miss.code, miss.akd_date, miss.custody_date), ("BBB", D2, D4))
         self.assertEqual((miss.akd_net, miss.custody_change), (Decimal(-10), Decimal(-5)))
-        self.assertEqual(analysis.pending_akd_dates, (D3, D4))
-        with self.assertRaises(ValueError):
-            lagged_akd_custody_match(self.capture, lags=(-1,), detail_lag=2)
 
     def test_panel_coverage_lists_unlisted_dates(self):
         coverage = {item.code: item for item in daily_panel_coverage(self.capture)}
         self.assertEqual(coverage["CCC"].custody_missing_dates, (D2,))
         self.assertEqual(coverage["AAA"].akd_missing_dates, ())
+
+
+def _custody_float_artifact_capture() -> PeriodCapture:
+    """Synthetic-only: FFF's difference has a 2e-9 float residual (like the
+    real provider's 18396115.650000002 pattern), well under the default
+    custody_float_tolerance; GGG has a residual an order of magnitude larger
+    than the tolerance, a real inconsistency."""
+    from fintr.data.period_capture import CodeValue, CustodianDiffRow, DatedCodeValues
+
+    d1, d2 = date(2026, 5, 4), date(2026, 5, 5)
+    custody = (
+        DatedCodeValues(d1, (
+            CodeValue("FFF", Decimal("100.0")), CodeValue("GGG", Decimal("50.0")),
+        )),
+        DatedCodeValues(d2, (
+            CodeValue("FFF", Decimal("100.000000005")), CodeValue("GGG", Decimal("50.05")),
+        )),
+    )
+    diffs = (
+        CustodianDiffRow("FFF", Decimal("100.0"), Decimal("100.000000002"), Decimal("0")),
+        CustodianDiffRow("GGG", Decimal("50.0"), Decimal("50.001"), Decimal("0")),
+    )
+    return PeriodCapture(
+        symbol="TEST", start=d1, end=d2, captured_at_utc="2026-05-05T00:00:00Z",
+        packet_sha256="deadbeef", server_dates=(d1, d2), period_akd_net=(),
+        daily_akd_net=(), daily_akd_market=(), daily_custody_lots=custody,
+        custodian_diff_start=d1, custodian_diff_end=d2, custodian_diff=diffs,
+        metadata=(), brokerage_directory=BrokerageDirectoryInfo(present=False, row_count=0, index=None),
+    )
+
+
+class CustodyFloatToleranceTests(unittest.TestCase):
+    """Item 2: a documented absolute tolerance separates provider float
+    noise from a real internal-consistency/panel mismatch; AKD net_size
+    reconciliation (integers) is untouched by this tolerance."""
+
+    def setUp(self):
+        self.capture = _custody_float_artifact_capture()
+
+    def test_default_tolerance_separates_float_artifact_from_real_mismatch(self):
+        check = check_custodian_diff(self.capture)
+        rows = {row.code: row for row in check.rows}
+        self.assertEqual(rows["FFF"].consistency_status, "float_artifact_within_tolerance")
+        self.assertTrue(rows["FFF"].internally_consistent)
+        self.assertEqual(rows["GGG"].consistency_status, "inconsistent")
+        self.assertFalse(rows["GGG"].internally_consistent)
+        # first_status/last_status use the same tolerance against the daily panel.
+        self.assertEqual(rows["FFF"].last_status, "float_artifact_within_tolerance")
+        self.assertEqual(rows["GGG"].last_status, "mismatch")
+
+    def test_zero_tolerance_treats_the_float_artifact_as_inconsistent(self):
+        check = check_custodian_diff(self.capture, custody_float_tolerance=Decimal("0"))
+        rows = {row.code: row for row in check.rows}
+        self.assertEqual(rows["FFF"].consistency_status, "inconsistent")
+
+    def test_negative_tolerance_and_days_rejected(self):
+        with self.assertRaises(ValueError):
+            check_custodian_diff(self.capture, custody_float_tolerance=Decimal("-1"))
+        with self.assertRaises(ValueError):
+            check_custodian_diff(self.capture, provisional_last_custody_days=-1)
+
+    def test_provisional_last_custody_days_flags_daily_last_date(self):
+        check = check_custodian_diff(self.capture, provisional_last_custody_days=1)
+        d2 = self.capture.server_dates[-1]
+        self.assertEqual(check.provisional_dates, (d2,))
+        self.assertTrue(check.daily_last_date_provisional)
+        disabled = check_custodian_diff(self.capture, provisional_last_custody_days=0)
+        self.assertEqual(disabled.provisional_dates, ())
+        self.assertFalse(disabled.daily_last_date_provisional)
+
+
+class MetadataFieldCoverageTests(unittest.TestCase):
+    """Item 4: per-field non_null_count/day_count/all_null, including a field
+    (investor_count) that only ever appears in null_fields, never typed."""
+
+    def test_typed_and_untyped_fields_are_both_covered(self):
+        from fintr.data.period_capture import PeriodMetadataDay
+        from fintr.features.period import metadata_field_coverage
+
+        d1, d2, d3 = (date(2026, 5, day) for day in (4, 5, 6))
+        metadata = (
+            PeriodMetadataDay(d1, Decimal("40.5"), Decimal("59.5"), ("investor_count",)),
+            PeriodMetadataDay(d2, Decimal("41.0"), Decimal("59.0"), ("investor_count",)),
+            PeriodMetadataDay(d3, None, None, ("retail_pct", "institutional_pct", "investor_count")),
+        )
+        capture = PeriodCapture(
+            symbol="TEST", start=d1, end=d3, captured_at_utc="2026-05-06T00:00:00Z",
+            packet_sha256="deadbeef", server_dates=(d1, d2, d3), period_akd_net=(),
+            daily_akd_net=(), daily_akd_market=(), daily_custody_lots=(),
+            custodian_diff_start=d1, custodian_diff_end=d3, custodian_diff=(),
+            metadata=metadata,
+            brokerage_directory=BrokerageDirectoryInfo(present=False, row_count=0, index=None),
+        )
+        coverage = {row.field: row for row in metadata_field_coverage(capture)}
+        self.assertEqual((coverage["retail_pct"].non_null_count, coverage["retail_pct"].day_count,
+                          coverage["retail_pct"].all_null), (2, 3, False))
+        self.assertEqual((coverage["institutional_pct"].non_null_count,
+                          coverage["institutional_pct"].all_null), (2, False))
+        # investor_count is never typed on PeriodMetadataDay; every day lists
+        # it in null_fields, so non_null_count is derived as 0 -> all_null.
+        self.assertEqual((coverage["investor_count"].non_null_count,
+                          coverage["investor_count"].day_count,
+                          coverage["investor_count"].all_null), (0, 3, True))
 
 
 def _build_capture(
@@ -423,7 +549,7 @@ class DailyMarketProxyTests(unittest.TestCase):
         )
 
     def test_formula_version_is_v2_and_documents_proxy_formulas(self):
-        self.assertEqual(FORMULA_VERSION, "period_features_v2")
+        self.assertEqual(FORMULA_VERSION, "period_features_v3")
         self.assertIn("daily_market_proxy_assumptions", FORMULAS)
         self.assertIn("daily_market_proxy_values", FORMULAS)
         self.assertIn("daily_market_proxy_checks", FORMULAS)
@@ -441,7 +567,9 @@ class PeriodReportTests(unittest.TestCase):
         self.assertEqual([row["code"] for row in report["period_akd_net"]["top_positive"]],
                          ["AAA", "CCC"])
         self.assertEqual(report["period_akd_net"]["top_negative"][0]["code"], "BBB")
-        self.assertEqual(report["custodian_diff_check"]["internally_inconsistent_codes"], ["BBB"])
+        internally_inconsistent = report["custodian_diff_check"]["internally_inconsistent_codes"]
+        self.assertEqual([row["code"] for row in internally_inconsistent], ["BBB"])
+        self.assertIn("status", internally_inconsistent[0]["label"])
         self.assertIn("lagged_match", report["formulas"])
         self.assertEqual(report["constraints"], list(REPORT_CONSTRAINTS))
         self.assertIs(report["provider_metadata"]["method_verified"], False)
@@ -528,6 +656,34 @@ class BrokerageDirectoryLabelTests(unittest.TestCase):
         self.assertEqual(flow_labels["AAA"]["status"], "resolved")
         self.assertEqual(flow_labels["BBB"]["status"], "unresolved")
 
+        # Item 5: akd_reconciliation.non_matching and daily_panel_gaps rows
+        # also carry the exact-code label.
+        non_matching_labels = {
+            row["code"]: row["label"] for row in report["akd_reconciliation"]["non_matching"]
+        }
+        self.assertEqual(non_matching_labels["CCC"]["status"], "unresolved")
+        self.assertEqual(non_matching_labels["DDD"]["status"], "unresolved")
+        gap_labels = {row["code"]: row["label"] for row in report["daily_panel_gaps"]}
+        self.assertEqual(gap_labels["CCC"]["status"], "unresolved")
+
+        # Item 5: a code_labels map covers every code seen anywhere in the
+        # capture, including custody-only codes with no AKD activity.
+        code_labels = report["code_labels"]
+        self.assertEqual(code_labels["AAA"]["status"], "resolved")
+        self.assertEqual(code_labels["EEE"]["status"], "ambiguous")
+        self.assertIn("BBB", code_labels)
+
+    def test_v2_lag_unmatched_rows_carry_label(self):
+        capture = parse_period_capture(_capture(_v2_packet()))
+        report = build_period_report(
+            capture, lags=(0, 1, 2), detail_lag=2, top_n=5, provisional_last_custody_days=0,
+        )
+        unmatched_labels = {
+            row["code"]: row["label"] for row in report["lagged_akd_custody_match"]["unmatched"]
+        }
+        self.assertIn("BBB", unmatched_labels)
+        self.assertEqual(unmatched_labels["BBB"]["status"], "unresolved")
+
     def test_v2_directory_row_count_mismatch_is_rejected(self):
         packet = _v2_packet()
         packet["brokerage_directory"]["row_count"] = 99
@@ -564,7 +720,9 @@ class AnalyzePeriodScriptTests(unittest.TestCase):
                 self.assertEqual(analyze.main([str(path), "--save"]), 0)
                 wrapped.flush()
             text = stdout.getvalue().decode("utf-8")
-            self.assertIn("gecikme 2: 3/4 birebir", text)
+            # provisional_last_custody_days defaults to 1 (D4 excluded); see
+            # test_lagged_match_counts_and_pending_dates.
+            self.assertIn("gecikme 2: 2/2 birebir", text)
             self.assertIn("EEE", text)
             self.assertIn("Günlük piyasa proxy kontrolleri", text)
             self.assertIn("net_sum_zero=0/4 geçti", text)
@@ -644,7 +802,10 @@ class AnalyzePeriodBatchTests(unittest.TestCase):
             self.assertTrue(by_symbol["BBB"]["brokerage_directory_present"])
             self.assertEqual(by_symbol["AAA"]["custodian_diff_exception_count"], 1)
             lag2 = next(r for r in by_symbol["AAA"]["lag_summaries"] if r["lag"] == 2)
-            self.assertEqual((lag2["comparable"], lag2["exact_matches"]), (4, 3))
+            # provisional_last_custody_days defaults to 1, excluding the last
+            # server date's custody balance from lag comparability; see
+            # test_lagged_match_counts_and_pending_dates.
+            self.assertEqual((lag2["comparable"], lag2["exact_matches"]), (2, 2))
             # Fixture AKD rows don't net to zero per day, so this flag is False
             # even though the fixture validates and loads cleanly.
             self.assertFalse(by_symbol["AAA"]["proxy_checks_passed"])
@@ -835,7 +996,7 @@ class PriceVolumeReportSingleModeTests(unittest.TestCase):
             self.assertEqual(code, 0)
             pv = report["price_volume"]
             self.assertEqual(pv["status"], "joined")
-            self.assertEqual(pv["formula_version"], "price_join_v1")
+            self.assertEqual(pv["formula_version"], "price_join_v2")
             self.assertIn("volume_ratio", pv["formulas"])
             self.assertEqual(pv["provenance"]["source_id"], "yahoo_finance_chart_v8")
             self.assertTrue(pv["provenance"]["unofficial_source"])

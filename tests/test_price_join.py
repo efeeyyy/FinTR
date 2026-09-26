@@ -187,6 +187,110 @@ class PriceJoinTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             join_price_history(_period_capture(), _price_capture(),
                                 adjustment_ratio_epsilon=Decimal("-1"))
+        with self.assertRaises(ValueError):
+            join_price_history(_period_capture(), _price_capture(),
+                                ratio_regime_tolerance=Decimal("-1"))
+
+
+R1, R2, R3 = date(2026, 4, 1), date(2026, 4, 2), date(2026, 4, 3)
+
+
+def _ratio_regime_capture() -> PeriodCapture:
+    """R1/R2 synthetically produce volume_ratio = 1/3 with vwap_proxy/3
+    landing inside the bar's [low, high]; R3 breaks the run with a normal
+    (ratio ~= 1) day. sum_total_size=40 -> implied_traded_lots=20 on every
+    day; the price bar's volume is set to k * implied_traded_lots so the
+    ratio lands exactly on 1/k (Decimal division here has no rounding)."""
+    def day(d: date) -> tuple:
+        net = (CodeValue("AAA", Decimal(10)), CodeValue("BBB", Decimal(-10)))
+        market = (
+            DailyMarketProxyRow("AAA", Decimal(20), Decimal(6)),
+            DailyMarketProxyRow("BBB", Decimal(20), Decimal(6)),
+        )
+        return DatedCodeValues(d, net), DatedMarketProxyValues(d, market)
+
+    n1, m1 = day(R1)
+    n2, m2 = day(R2)
+    n3, m3 = day(R3)
+    return PeriodCapture(
+        symbol="TEST", start=R1, end=R3, captured_at_utc="2026-04-03T18:00:00Z",
+        packet_sha256="deadbeef", server_dates=(R1, R2, R3), period_akd_net=(),
+        daily_akd_net=(n1, n2, n3), daily_akd_market=(m1, m2, m3),
+        daily_custody_lots=(), custodian_diff_start=R1, custodian_diff_end=R3,
+        custodian_diff=(), metadata=(),
+        brokerage_directory=BrokerageDirectoryInfo(present=False, row_count=0, index=None),
+    )
+
+
+def _ratio_regime_price() -> PriceHistoryCapture:
+    # implied_traded_lots is 20 on every day (see _ratio_regime_capture);
+    # R1/R2 use volume=60 (k=3, ratio=1/3), vwap_proxy=6 so vwap/3=2, inside
+    # [1.8, 2.2]; R3 uses volume=20 (ratio=1, not a 1/k match for k>=2).
+    bars = (
+        _bar(R1, o="2", h="2.2", l="1.8", c="2", adj="2", v=60),
+        _bar(R2, o="2", h="2.2", l="1.8", c="2", adj="2", v=60),
+        _bar(R3, o="6", h="7", l="5", c="6", adj="6", v=20),
+    )
+    meta = PriceHistoryCaptureMeta(
+        schema="fintr_price_history_capture_v1", source_id="yahoo_finance_chart_v8",
+        request_url="https://example.invalid/TEST", accessed_at_utc="2026-04-03T00:00:00Z",
+        permission_status="user_asserted_2026-09-26_not_independently_verified",
+        unofficial_source=True, raw_response_sha256="0" * 64, normalized_sha256="1" * 64,
+    )
+    return PriceHistoryCapture(
+        meta=meta, symbol="TEST", requested_start=R1, requested_end=R3,
+        date_source="gmtoffset_fallback", dropped_before_start_count=0,
+        dropped_after_end_count=0, bars=bars,
+    )
+
+
+class RatioRegimeTests(unittest.TestCase):
+    """Synthetic-only: a constant 1/k volume_ratio regime with vwap/k
+    corroboration (item 1, the Yahoo back-adjustment blind spot)."""
+
+    def setUp(self):
+        self.result = join_price_history(_ratio_regime_capture(), _ratio_regime_price())
+
+    def test_regime_detected_with_k_and_day_count(self):
+        self.assertEqual(len(self.result.ratio_regimes), 1)
+        regime = self.result.ratio_regimes[0]
+        self.assertEqual((regime.start, regime.end, regime.k, regime.day_count),
+                         (R1, R2, 3, 2))
+        self.assertEqual(regime.label, "probable_retroactive_price_adjustment")
+        self.assertEqual(self.result.ratio_regime_dates, (R1, R2))
+
+    def test_regime_days_carry_k_and_are_excluded_from_tolerance_check(self):
+        by_date = {day.date: day for day in self.result.joined}
+        self.assertEqual(by_date[R1].ratio_regime_k, 3)
+        self.assertEqual(by_date[R2].ratio_regime_k, 3)
+        self.assertIsNone(by_date[R3].ratio_regime_k)
+        # The regime days' volume_ratio (1/3) is far outside the default
+        # volume_ratio_tolerance, but they are a separate, reported category.
+        self.assertFalse(by_date[R1].volume_ratio_within_tolerance)
+
+    def test_tighter_tolerance_suppresses_the_regime(self):
+        # Exact 1/3 would still match at zero tolerance (no rounding here), so
+        # this instead shifts volume slightly off 1/3 and confirms a tight
+        # tolerance rejects it while a looser one still accepts it.
+        capture = _ratio_regime_capture()
+        price = _ratio_regime_price()
+        nudged_bars = tuple(
+            _bar(bar.trade_date, o=str(bar.open), h=str(bar.high), l=str(bar.low),
+                 c=str(bar.close), adj=str(bar.adjusted_close),
+                 v=61 if bar.trade_date == R1 else bar.volume)
+            for bar in price.bars
+        )
+        nudged_price = PriceHistoryCapture(
+            meta=price.meta, symbol=price.symbol, requested_start=price.requested_start,
+            requested_end=price.requested_end, date_source=price.date_source,
+            dropped_before_start_count=0, dropped_after_end_count=0, bars=nudged_bars,
+        )
+        lenient = join_price_history(capture, nudged_price, ratio_regime_tolerance=Decimal("0.02"))
+        strict = join_price_history(capture, nudged_price, ratio_regime_tolerance=Decimal("0.001"))
+        lenient_r1 = {day.date: day for day in lenient.joined}[R1]
+        strict_r1 = {day.date: day for day in strict.joined}[R1]
+        self.assertEqual(lenient_r1.ratio_regime_k, 3)
+        self.assertIsNone(strict_r1.ratio_regime_k)
 
 
 def _normalized_price_payload(symbol: str, start: str, end: str, bars: list[dict]) -> dict:

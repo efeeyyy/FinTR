@@ -11,17 +11,22 @@ from typing import Any
 from fintr.data.period_capture import PeriodCapture, resolve_brokerage_label
 from fintr.data.price_history import PriceHistoryCapture
 from fintr.features.period import (
+    DEFAULT_CUSTODY_FLOAT_TOLERANCE,
+    DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS,
     FORMULA_VERSION,
     FORMULAS,
+    METADATA_METHOD_UNVERIFIED_NOTE,
     broker_flow_series,
     check_custodian_diff,
     daily_market_proxy,
     daily_panel_coverage,
     lagged_akd_custody_match,
+    metadata_field_coverage,
     reconcile_daily_akd,
 )
 from fintr.features.price_join import (
     DEFAULT_ADJUSTMENT_RATIO_EPSILON,
+    DEFAULT_RATIO_REGIME_TOLERANCE,
     DEFAULT_VOLUME_RATIO_TOLERANCE,
     FORMULAS as PRICE_JOIN_FORMULAS,
     join_price_history,
@@ -75,6 +80,23 @@ def _label(capture: PeriodCapture, code: str) -> dict[str, Any]:
     return resolve_brokerage_label(capture.brokerage_directory, code)
 
 
+def _all_codes(capture: PeriodCapture) -> set[str]:
+    """Every brokerage/custodian code seen anywhere in this capture."""
+    codes = {row.code for row in capture.period_akd_net}
+    codes |= {row.code for day in capture.daily_akd_net for row in day.rows}
+    codes |= {row.code for day in capture.daily_akd_market for row in day.rows}
+    codes |= {row.code for day in capture.daily_custody_lots for row in day.rows}
+    codes |= {row.code for row in capture.custodian_diff}
+    return codes
+
+
+def build_code_labels(capture: PeriodCapture) -> dict[str, Any]:
+    """{code: label} for every code seen in the capture; unresolved codes are
+    included with their unresolved/ambiguous/directory_not_in_capture status,
+    never guessed."""
+    return {code: _label(capture, code) for code in sorted(_all_codes(capture))}
+
+
 def _bool_check_summary(values: Iterable[bool | None]) -> dict[str, Any]:
     evaluated = [value for value in values if value is not None]
     passed = sum(1 for value in evaluated if value)
@@ -88,6 +110,7 @@ def _bool_check_summary(values: Iterable[bool | None]) -> dict[str, Any]:
 def build_price_volume_report(
     capture: PeriodCapture, price: PriceHistoryCapture | None, *,
     volume_ratio_tolerance: Decimal, adjustment_ratio_epsilon: Decimal,
+    ratio_regime_tolerance: Decimal = DEFAULT_RATIO_REGIME_TOLERANCE,
 ) -> dict[str, Any]:
     """The optional 'price_volume' report section. ``price`` is None when no
     saved price-history capture was found/given; the section then reports
@@ -100,7 +123,9 @@ def build_price_volume_report(
         capture, price,
         volume_ratio_tolerance=volume_ratio_tolerance,
         adjustment_ratio_epsilon=adjustment_ratio_epsilon,
+        ratio_regime_tolerance=ratio_regime_tolerance,
     )
+    regime_dates = set(join.ratio_regime_dates)
     return {
         "status": "joined",
         "formula_version": join.formula_version,
@@ -115,6 +140,7 @@ def build_price_volume_report(
         "parameters": {
             "volume_ratio_tolerance": _num(join.volume_ratio_tolerance),
             "adjustment_ratio_epsilon": _num(join.adjustment_ratio_epsilon),
+            "ratio_regime_tolerance": _num(join.ratio_regime_tolerance),
         },
         "days": [
             {
@@ -127,6 +153,7 @@ def build_price_volume_report(
                 "vwap_within_bar_range": day.vwap_within_bar_range,
                 "volume_ratio": _num(day.volume_ratio),
                 "volume_ratio_within_tolerance": day.volume_ratio_within_tolerance,
+                "ratio_regime_k": day.ratio_regime_k,
             }
             for day in join.joined
         ],
@@ -135,14 +162,23 @@ def build_price_volume_report(
         "unexpected_trading_dates": [day.isoformat() for day in join.unexpected_trading_dates],
         "no_data_price_only_dates": [day.isoformat() for day in join.no_data_dates],
         "adjustment_boundary_dates": [day.isoformat() for day in join.adjustment_boundary_dates],
+        "ratio_regimes": [
+            {"start": regime.start.isoformat(), "end": regime.end.isoformat(),
+             "k": regime.k, "day_count": regime.day_count, "label": regime.label}
+            for regime in join.ratio_regimes
+        ],
         "check_summary": {
             "vwap_within_bar_range": _bool_check_summary(
                 day.vwap_within_bar_range for day in join.joined
             ),
+            # Days inside a ratio_regime are a separately-reported hypothesis
+            # (see ratio_regimes above), not a genuine check failure here.
             "volume_ratio_within_tolerance": _bool_check_summary(
                 day.volume_ratio_within_tolerance for day in join.joined
+                if day.date not in regime_dates
             ),
         },
+        "probable_retroactive_price_adjustment_days": len(regime_dates),
         "constraints": list(PRICE_VOLUME_CONSTRAINTS),
     }
 
@@ -152,17 +188,28 @@ def build_period_report(
     price: PriceHistoryCapture | None = None,
     volume_ratio_tolerance: Decimal = DEFAULT_VOLUME_RATIO_TOLERANCE,
     adjustment_ratio_epsilon: Decimal = DEFAULT_ADJUSTMENT_RATIO_EPSILON,
+    ratio_regime_tolerance: Decimal = DEFAULT_RATIO_REGIME_TOLERANCE,
+    custody_float_tolerance: Decimal = DEFAULT_CUSTODY_FLOAT_TOLERANCE,
+    provisional_last_custody_days: int = DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS,
 ) -> dict[str, Any]:
     """Build the report; every number is computed here, not by a model."""
     if type(top_n) is not int or top_n < 1:
         raise ValueError("top_n must be a positive integer")
 
     reconciliation = reconcile_daily_akd(capture)
-    diff_check = check_custodian_diff(capture)
+    diff_check = check_custodian_diff(
+        capture, custody_float_tolerance=custody_float_tolerance,
+        provisional_last_custody_days=provisional_last_custody_days,
+    )
     flows = broker_flow_series(capture)
-    lag = lagged_akd_custody_match(capture, lags=lags, detail_lag=detail_lag)
+    lag = lagged_akd_custody_match(
+        capture, lags=lags, detail_lag=detail_lag,
+        custody_float_tolerance=custody_float_tolerance,
+        provisional_last_custody_days=provisional_last_custody_days,
+    )
     coverage = daily_panel_coverage(capture)
     proxy = daily_market_proxy(capture)
+    metadata_coverage = metadata_field_coverage(capture)
 
     period_net = sorted(capture.period_akd_net, key=lambda row: (-row.value, row.code))
     diffs = sorted(capture.custodian_diff, key=lambda row: (-row.difference, row.code))
@@ -217,7 +264,7 @@ def build_period_report(
             "non_matching": [
                 {"code": row.code, "period_net": _num(row.period_net),
                  "daily_sum": _num(row.daily_sum), "days_listed": row.days_listed,
-                 "status": row.status}
+                 "status": row.status, "label": _label(capture, row.code)}
                 for row in reconciliation if row.status != "match"
             ],
         },
@@ -225,10 +272,18 @@ def build_period_report(
             "daily_first_date": _day(diff_check.daily_first_date),
             "daily_last_date": _day(diff_check.daily_last_date),
             "range_aligned_with_diff": diff_check.range_aligned,
+            "custody_float_tolerance": _num(diff_check.custody_float_tolerance),
+            "provisional_last_custody_days": diff_check.provisional_last_custody_days,
+            "provisional_dates": [day.isoformat() for day in diff_check.provisional_dates],
+            "daily_last_date_provisional": diff_check.daily_last_date_provisional,
             "internally_inconsistent_codes": [
-                row.code for row in diff_check.rows if not row.internally_consistent
+                {"code": row.code, "label": _label(capture, row.code)}
+                for row in diff_check.rows if not row.internally_consistent
             ],
             "status_counts": {
+                "consistency": dict(
+                    sorted(Counter(row.consistency_status for row in diff_check.rows).items())
+                ),
                 "first": dict(sorted(Counter(row.first_status for row in diff_check.rows).items())),
                 "last": dict(sorted(Counter(row.last_status for row in diff_check.rows).items())),
             },
@@ -242,7 +297,10 @@ def build_period_report(
                  "last_status": row.last_status,
                  "label": _label(capture, row.code)}
                 for row in diff_check.rows
-                if row.first_status != "match" or row.last_status != "match"
+                # float_artifact_within_tolerance is reported via status_counts,
+                # not here, so it is never conflated with a real mismatch.
+                if row.first_status not in ("match", "float_artifact_within_tolerance")
+                or row.last_status not in ("match", "float_artifact_within_tolerance")
             ],
         },
         "broker_flow_runs": {
@@ -266,9 +324,16 @@ def build_period_report(
             ],
         },
         "lagged_akd_custody_match": {
+            "custody_float_tolerance": _num(lag.custody_float_tolerance),
+            "provisional_last_custody_days": lag.provisional_last_custody_days,
+            "provisional_custody_dates": [
+                day.isoformat() for day in lag.provisional_custody_dates
+            ],
             "summaries": [
                 {"lag": item.lag, "comparable": item.comparable,
-                 "exact_matches": item.exact_matches, "sign_matches": item.sign_matches}
+                 "exact_matches": item.exact_matches, "sign_matches": item.sign_matches,
+                 "float_artifact_matches": item.float_artifact_matches,
+                 "excluded_provisional_count": item.excluded_provisional_count}
                 for item in lag.summaries
             ],
             "detail_lag": lag.detail_lag,
@@ -276,7 +341,8 @@ def build_period_report(
             "unmatched": [
                 {"code": item.code, "akd_date": item.akd_date.isoformat(),
                  "custody_date": item.custody_date.isoformat(),
-                 "akd_net": _num(item.akd_net), "custody_change": _num(item.custody_change)}
+                 "akd_net": _num(item.akd_net), "custody_change": _num(item.custody_change),
+                 "label": _label(capture, item.code)}
                 for item in lag.unmatched
             ],
             "akd_dates_without_later_custody": [
@@ -285,6 +351,7 @@ def build_period_report(
         },
         "daily_panel_gaps": [
             {"code": item.code,
+             "label": _label(capture, item.code),
              "akd_missing_dates": [day.isoformat() for day in item.akd_missing_dates],
              "custody_missing_dates": [day.isoformat() for day in item.custody_missing_dates]}
             for item in coverage
@@ -332,9 +399,16 @@ def build_period_report(
             capture, price,
             volume_ratio_tolerance=volume_ratio_tolerance,
             adjustment_ratio_epsilon=adjustment_ratio_epsilon,
+            ratio_regime_tolerance=ratio_regime_tolerance,
         ),
         "provider_metadata": {
             "method_verified": False,
+            "calculation_method_note": METADATA_METHOD_UNVERIFIED_NOTE,
+            "field_coverage": [
+                {"field": row.field, "non_null_count": row.non_null_count,
+                 "day_count": row.day_count, "all_null": row.all_null}
+                for row in metadata_coverage
+            ],
             "days": [
                 {"date": day.date.isoformat(), "retail_pct": _num(day.retail_pct),
                  "institutional_pct": _num(day.institutional_pct),
@@ -342,5 +416,6 @@ def build_period_report(
                 for day in capture.metadata
             ],
         },
+        "code_labels": build_code_labels(capture),
         "constraints": list(REPORT_CONSTRAINTS),
     }

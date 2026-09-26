@@ -17,8 +17,13 @@ import tempfile
 
 from fintr.data.period_capture import PeriodCaptureError, load_period_capture
 from fintr.data.price_history import PriceHistoryCaptureError, load_price_history_capture
+from fintr.features.period import (
+    DEFAULT_CUSTODY_FLOAT_TOLERANCE,
+    DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS,
+)
 from fintr.features.price_join import (
     DEFAULT_ADJUSTMENT_RATIO_EPSILON,
+    DEFAULT_RATIO_REGIME_TOLERANCE,
     DEFAULT_VOLUME_RATIO_TOLERANCE,
 )
 from fintr.inference.period_report import build_period_report
@@ -115,6 +120,29 @@ def _parser() -> argparse.ArgumentParser:
         help="price_volume: relative adjusted_close/close change that flags "
              f"a corporate-action boundary date (default: {DEFAULT_ADJUSTMENT_RATIO_EPSILON})",
     )
+    parser.add_argument(
+        "--ratio-regime-tolerance", type=_non_negative_decimal,
+        default=DEFAULT_RATIO_REGIME_TOLERANCE,
+        help="price_volume: relative tolerance for volume_ratio matching a "
+             "constant 1/k (probable_retroactive_price_adjustment hypothesis; "
+             f"default: {DEFAULT_RATIO_REGIME_TOLERANCE})",
+    )
+    parser.add_argument(
+        "--custody-float-tolerance", type=_non_negative_decimal,
+        default=DEFAULT_CUSTODY_FLOAT_TOLERANCE,
+        help="custodian_diff_check / lagged_akd_custody_match: absolute "
+             "tolerance (lot_count units) that separates float-artifact "
+             f"provider noise from a real inconsistency (default: "
+             f"{DEFAULT_CUSTODY_FLOAT_TOLERANCE})",
+    )
+    parser.add_argument(
+        "--provisional-last-custody-days", type=_non_negative_int,
+        default=DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS,
+        help="number of trailing server dates whose daily custody balance is "
+             "policy-treated as provisional (observed to be revised between "
+             f"two captures); excluded from lag matching counts (default: "
+             f"{DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS})",
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--save", action="store_true",
                         help="also write <capture>.report.json next to each capture; never "
@@ -143,6 +171,8 @@ def _display_path(path: Path) -> str:
 def _run_metadata(
     capture_path: Path, capture_bytes: bytes, *, lags: tuple[int, ...], detail_lag: int, top: int,
     volume_ratio_tolerance: Decimal, adjustment_ratio_epsilon: Decimal,
+    ratio_regime_tolerance: Decimal, custody_float_tolerance: Decimal,
+    provisional_last_custody_days: int,
 ) -> dict[str, object]:
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -154,6 +184,9 @@ def _run_metadata(
             "lags": list(lags), "detail_lag": detail_lag, "top": top,
             "volume_ratio_tolerance": str(volume_ratio_tolerance),
             "adjustment_ratio_epsilon": str(adjustment_ratio_epsilon),
+            "ratio_regime_tolerance": str(ratio_regime_tolerance),
+            "custody_float_tolerance": str(custody_float_tolerance),
+            "provisional_last_custody_days": provisional_last_custody_days,
         },
     }
 
@@ -186,8 +219,10 @@ def render_text(report: dict) -> str:
     diff = report["custodian_diff_check"]
     lines.append(
         "Takas farkı iç tutarlılık hatası: "
-        + (", ".join(diff["internally_inconsistent_codes"]) or "yok")
+        + (", ".join(_coded(row) for row in diff["internally_inconsistent_codes"]) or "yok")
         + f"; günlük panel aralığı hizalı: {'evet' if diff['range_aligned_with_diff'] else 'hayır'}"
+        + f"; provizyonel (henüz kesinleşmemiş) son gün sayısı="
+        f"{diff['provisional_last_custody_days']} ({', '.join(diff['provisional_dates']) or 'yok'})"
     )
     for item in diff["exceptions"]:
         lines.append(
@@ -216,12 +251,19 @@ def render_text(report: dict) -> str:
     lines += ["", "AKD neti ile sonraki takas değişimi eşleşmesi:"]
     lines += [
         f"  gecikme {row['lag']}: {row['exact_matches']}/{row['comparable']} birebir, "
-        f"{row['sign_matches']}/{row['comparable']} aynı işaret"
+        f"{row['sign_matches']}/{row['comparable']} aynı işaret, "
+        f"{row['float_artifact_matches']} ondalık gürültü toleransı içinde, "
+        f"{row['excluded_provisional_count']} provizyonel gün nedeniyle hariç"
         for row in lag["summaries"]
     ]
     lines.append(
         f"  gecikme {lag['detail_lag']} için takas karşılığı henüz olmayan AKD günleri: "
         + (", ".join(lag["akd_dates_without_later_custody"]) or "yok")
+    )
+    lines.append(
+        f"  provizyonel takas günleri (son {lag['provisional_last_custody_days']} sunucu "
+        "tarihi, gecikme eşleşmesinden hariç): "
+        + (", ".join(lag["provisional_custody_dates"]) or "yok")
     )
     proxy_summary = report["daily_market_proxy"]["check_summary"]
     lines += ["", "Günlük piyasa proxy kontrolleri (resmi fiyat/hacim serisi değildir): " + ", ".join(
@@ -234,6 +276,13 @@ def render_text(report: dict) -> str:
             f"{day['date'][5:]}={day['retail_pct'] if day['retail_pct'] is not None else 'null'}"
             for day in days
         )]
+    field_coverage = report["provider_metadata"]["field_coverage"]
+    if field_coverage:
+        lines += ["", "Sağlayıcı metadata alan kapsamı (yöntem doğrulanmamış): " + ", ".join(
+            f"{row['field']}={row['non_null_count']}/{row['day_count']}"
+            + (" (hep null)" if row["all_null"] else "")
+            for row in field_coverage
+        )]
     price_volume = report["price_volume"]
     if price_volume["status"] == "joined":
         checks = price_volume["check_summary"]
@@ -243,6 +292,9 @@ def render_text(report: dict) -> str:
         ) + (
             f"; hariç tutulan placeholder gün={len(price_volume['excluded_placeholder_dates'])}"
             f", düzeltme sınırı gün={len(price_volume['adjustment_boundary_dates'])}"
+            f", olası geçmişe dönük fiyat düzeltmesi (hipotez) gün="
+            f"{price_volume['probable_retroactive_price_adjustment_days']}"
+            f" ({len(price_volume['ratio_regimes'])} rejim)"
         )]
     elif price_volume["status"] == "load_failed":
         lines += ["", "Fiyat/hacim verisi: bulunan dosya yüklenemedi"]
@@ -364,6 +416,9 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
             price=price_capture,
             volume_ratio_tolerance=args.volume_ratio_tolerance,
             adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
+            ratio_regime_tolerance=args.ratio_regime_tolerance,
+            custody_float_tolerance=args.custody_float_tolerance,
+            provisional_last_custody_days=args.provisional_last_custody_days,
         )
     except (OSError, PeriodCaptureError, ValueError) as exc:
         entry["error"] = str(exc)
@@ -404,6 +459,9 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
         path, capture_bytes, lags=args.lags, detail_lag=args.detail_lag, top=args.top,
         volume_ratio_tolerance=args.volume_ratio_tolerance,
         adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
+        ratio_regime_tolerance=args.ratio_regime_tolerance,
+        custody_float_tolerance=args.custody_float_tolerance,
+        provisional_last_custody_days=args.provisional_last_custody_days,
     )
     payload = (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     try:
@@ -438,6 +496,9 @@ def build_batch_index(root: Path, entries: list[dict[str, object]], args: argpar
             "price_history_root": _display_path(args.price_history_root),
             "volume_ratio_tolerance": str(args.volume_ratio_tolerance),
             "adjustment_ratio_epsilon": str(args.adjustment_ratio_epsilon),
+            "ratio_regime_tolerance": str(args.ratio_regime_tolerance),
+            "custody_float_tolerance": str(args.custody_float_tolerance),
+            "provisional_last_custody_days": args.provisional_last_custody_days,
         },
         "captures": entries,
         "totals": {
@@ -544,6 +605,9 @@ def main(argv: list[str] | None = None) -> int:
             price=price_capture,
             volume_ratio_tolerance=args.volume_ratio_tolerance,
             adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
+            ratio_regime_tolerance=args.ratio_regime_tolerance,
+            custody_float_tolerance=args.custody_float_tolerance,
+            provisional_last_custody_days=args.provisional_last_custody_days,
         )
     except (OSError, PeriodCaptureError, PriceHistoryCaptureError, ValueError) as exc:
         print(f"Analysis failed: {exc}", file=sys.stderr)
@@ -552,6 +616,9 @@ def main(argv: list[str] | None = None) -> int:
         args.capture, capture_bytes, lags=args.lags, detail_lag=args.detail_lag, top=args.top,
         volume_ratio_tolerance=args.volume_ratio_tolerance,
         adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
+        ratio_regime_tolerance=args.ratio_regime_tolerance,
+        custody_float_tolerance=args.custody_float_tolerance,
+        provisional_last_custody_days=args.provisional_last_custody_days,
     )
     payload = (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     if args.save:

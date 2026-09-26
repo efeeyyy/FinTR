@@ -120,7 +120,7 @@ Bu formüller `formula_version="live_features_v1"` ile etiketlenir ve
 `computed_features.formulas` altında context'e aynen kopyalanır; LLM sonucu
 yeniden hesaplamak yerine bu değerleri kullanmalıdır.
 
-## Dönem paketi kontrolleri (`period_features_v2`)
+## Dönem paketi kontrolleri (`period_features_v3`)
 
 Kaydedilmiş `fintr_period_analysis_capture_v1` dosyası üzerinde çalışır
 (`fintr.data.period_capture`, `fintr.features.period`). Yükleyici paket
@@ -131,21 +131,59 @@ sağlayıcının birimiyle kalır.
 ```text
 akd_daily_sum[code]   = sum_t daily_akd.net_size[code, t]   (listelenen günler)
 akd_reconciliation    = match | mismatch | missing_in_daily | missing_in_period
-                        (akd_daily_sum[code] vs get_akd_period.net.size[code])
-diff_internal         = last_value - first_value == difference
+                        (akd_daily_sum[code] vs get_akd_period.net.size[code];
+                        AKD net_size sağlayıcıda tam sayı olduğu için burada
+                        her zaman tam eşitlik kullanılır, tolerans yok)
+diff_internal         = last_value - first_value - difference == 0 ise "consistent";
+                        sıfır değil ama |...| <= custody_float_tolerance ise
+                        "float_artifact_within_tolerance" (takas lot_count değerleri
+                        sağlayıcıda ondalık/float olduğu için 18396115.650000002 gibi
+                        artık gürültü taşıyabilir); aksi halde "inconsistent"
 diff_vs_daily         = first_value vs lot_count[code, ilk sunucu tarihi]
                         last_value  vs lot_count[code, son sunucu tarihi]
-                        (o gün listelenmeyen kod: absent_in_daily_panel, sıfır değil)
+                        (aynı custody_float_tolerance ile "match" /
+                        "float_artifact_within_tolerance" / "mismatch"; o gün
+                        listelenmeyen kod: "absent_in_daily_panel", sıfır değil).
+                        Son sunucu tarihi provisional_last_custody_days
+                        penceresindeyse (parametre, varsayılan 1; bu takas
+                        tarihinin iki capture arasında revize edildiği
+                        gözlenmiştir) daily_last_date_provisional true olur ve
+                        o günkü last_status kesin değil, provizyonel sayılmalıdır
 flow_run              = aynı işaretli, ardışık listelenmiş günler; listelenmeyen gün
                         diziyi keser
 custody_change[c,t+L] = lot_count[c, t+L] - lot_count[c, t+L-1]
-lag_exact(L)          = custody_change[c, t+L] == akd.net_size[c, t]
+lag_status(L)         = custody_change[c,t+L] == akd.net_size[c,t] ise "exact";
+                        değilse |custody_change - akd.net_size| <=
+                        custody_float_tolerance ise "float_artifact_within_tolerance";
+                        aksi halde "mismatch" (custody_change ondalık lot_count
+                        farkından, akd.net_size tam sayıdan gelir).
+                        t+L özel takas tarihi provisional_last_custody_days
+                        penceresindeyse gözlem tamamen hariç tutulur
+                        (excluded_provisional_count ve provisional_custody_dates)
 lag_sign(L)           = sign(custody_change[c, t+L]) == sign(akd.net_size[c, t])
+                        (float toleransından etkilenmez)
 ```
+
+`custody_float_tolerance` (varsayılan `0.000001`, lot_count birimiyle mutlak)
+ve `provisional_last_custody_days` (varsayılan `1`) CLI'dan açıkça ayarlanır;
+her ikisi de rapor çıktısında (`custodian_diff_check` ve
+`lagged_akd_custody_match` altında) aynen taşınır, gizli varsayılan değildir.
 
 Gecikme eşleşmesi zamanlama gözlemidir; sağlayıcı yöntemini, nedenselliği veya
 nihai yatırımcıyı kanıtlamaz. `t + L` gözlemi pakette yoksa ilgili AKD günleri
 `akd_dates_without_later_custody` altında ayrıca listelenir.
+
+### Sağlayıcı metadata alan kapsamı
+
+Her `provider_metadata` alanı (tipli `retail_pct`/`institutional_pct` veya bir
+günün `null_fields` listesinde görülen herhangi bir ad, örn. `investor_count`)
+için `field_coverage` altında `{field, non_null_count, day_count, all_null}`
+raporlanır; `non_null_count`, tipli olmayan alanlarda `day_count - (o alanı
+null_fields'ta listeleyen gün sayısı)` olarak türetilir (bu capture formatı
+böyle alanlar için tipli bir değer taşımaz). `all_null`, o alanın gözlenen tüm
+günlerde null olduğunu (örn. mevcut veride `investor_count`) sabit bir bayrakla
+işaretler. `calculation_method_note` sabiti, listedeki her alan için sağlayıcı
+hesaplama yönteminin doğrulanmadığını hatırlatır.
 
 ### Günlük piyasa proxy'si (`daily_market_proxy`, doğrulanmamış varsayım)
 
@@ -201,7 +239,16 @@ kodları da aynı dizine karşı aranır; dizinde yoksa `unresolved` kalır, ell
 eşleştirme yapılmaz. Metin çıktısında yalnızca `resolved` durumundaki kodlar
 `KOD (short_title)` biçiminde gösterilir.
 
-### Fiyat/hacim eşleştirmesi (`price_join_v1`, resmi olmayan kaynak)
+Rapordaki her kod içeren bölüme (`akd_reconciliation.non_matching`,
+`custodian_diff_check.internally_inconsistent_codes`/`exceptions`,
+`lagged_akd_custody_match.unmatched`, `daily_panel_gaps`, `broker_flow_runs`,
+dönem AKD/takas üst listeleri) aynı `{status, title, short_title}` biçimindeki
+`label` eklenir. Rapor ayrıca en üst seviyede, capture'da (dönem AKD, günlük
+AKD, günlük takas, takas farkı) görülen her koda karşılık gelen tek bir
+`code_labels` haritası (`{code: label}`) taşır; çözülemeyen kodlar tahmin
+edilmeden `unresolved`/`ambiguous`/`directory_not_in_capture` durumuyla kalır.
+
+### Fiyat/hacim eşleştirmesi (`price_join_v2`, resmi olmayan kaynak)
 
 `fintr.features.price_join`, kaydedilmiş bir fiyat geçmişi capture'ını
 (`fintr.data.price_history.load_price_history_capture`, bkz.
@@ -233,6 +280,24 @@ oranın bir önceki fiyatlı bardan `adjustment_ratio_epsilon` parametresinden
 (oran değerleri raporlanmaz). Bu, takas toplamlarında bazı tarihlerde
 görülen ölçek sıçramalarıyla ilişkilendirilebilir bir gözlemdir; nedeni
 çıkarılmaz.
+
+Yahoo, split/bedelsiz gibi olaylarda hem `close`'u hem `adjusted_close`'u
+geriye dönük olarak aynı katsayıyla düzelttiğinden `adjustment_ratio` bu
+durumda değişmez ve yukarıdaki sınır tespiti sessiz kalır. Bunun yerine
+belirti, `volume_ratio`'nun (implied_traded_lots/volume) ardışık günler
+boyunca sabit bir `1/k` değerine (k tam sayı, 2..20) yerleşmesi ve
+`vwap_proxy/k`'nin o günlerin `[low, high]` aralığına düşmesidir -- AKD/takas
+tarafındaki "lot" birimi geriye dönük olarak yeniden ölçeklenmezken fiyat
+kaynağının hacmi ölçeklenir. Bu ardışık gün aralığı bir **rejim**
+(`ratio_regime`) olarak `{start, end, k, day_count, label:
+"probable_retroactive_price_adjustment"}` biçiminde raporlanır; bu bir
+hipotezdir, doğrulanmış bir kurumsal işlem değildir. Eşleşme toleransı
+`ratio_regime_tolerance` parametresiyle (varsayılan `0.01`, göreli) CLI'dan
+açıkça ayarlanır. Bir rejime giren günler `check_summary.
+volume_ratio_within_tolerance`'ın değerlendirilen/geçen/başarısız gün
+sayılarından **hariç tutulur** (gerçek bir kontrol başarısızlığıyla
+karıştırılmaz) ve toplam sayıları ayrıca
+`probable_retroactive_price_adjustment_days` alanında taşınır.
 
 `scripts/analyze_period.py`, tek kayıt modunda `--price-history PATH` ile
 belirtilen dosyayı; `--all` modunda ise
@@ -288,3 +353,42 @@ Herhangi bir kayıt doğrulaması başarısız olursa çıkış kodu 1'dir.
 ```powershell
 .\.venv\Scripts\python.exe scripts\analyze_period.py --all
 ```
+
+## Takas artığı, aynı-gün eşleşme adayları ve kod-seti lot serisi
+
+`fintr.features.custody_flow` (`FORMULA_VERSION = "custody_flow_v1"`), bir
+`PeriodCapture` üzerinde üç bağımsız, deterministik gözlemi hesaplar:
+
+```text
+residual(code, t) = (lot[code, t] - lot[code, p]) - akd_net[code, a]
+    p = server_dates[i-1], a = server_dates[i-lag]  (varsayılan lag=2)
+    lot veya akd_net kodu o tarihte listelenmemişse residual None'dır
+    (asla 0 kabul edilmez).
+```
+
+Aynı takas tarihinde `residual_x + residual_y` toplamı `--pair-tolerance`
+(varsayılan 0, yani tam eşleşme) içinde kalan, sıfırdan farklı kalıntılı
+kod çiftleri **aday** olarak listelenir; kodlar alfabetik sıraya göre, her
+kod günde en fazla bir kez kullanılacak şekilde deterministik olarak
+eşleştirilir. Bu eşleşme bir virman/transfer kanıtı veya gerçek sahiplik
+iddiası değildir, yalnızca iki bağımsız doğrulanmamış seri arasında bir
+aritmetik rastlantıdır.
+
+Kod-seti lot serisi (`compute_code_set_series`) yerleşik bir "retail" kod
+seti içermez; çağıran taraf `{"name", "version", "codes"}` biçiminde adlı ve
+sürümlü bir kod seti sağlamalıdır (örn. üç kurumluk bir gruplama). Her tarih
+için: sette listelenen kodların lot toplamı, listelenen/eksik kod sayısı ve
+önceki tarihe göre değişim hesaplanır; eksik bir kod toplamda 0 kabul
+edilmez, yalnızca ayrı bir sayaçla izlenir.
+
+`scripts/custody_flow.py`, bu üç hesaplamayı bir capture dosyası üzerinde
+çalıştırır ve tam JSON çıktısı basar (kaydetme yok):
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\custody_flow.py `
+  data\interim\period_analysis\<SYM>\<START>_<END>.json `
+  --lag 2 --pair-tolerance 0 --code-set configs\code_sets\<isim>.json
+```
+
+`--code-set` verilmezse çıktıda `code_set_series` bölümü yer almaz.
