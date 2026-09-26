@@ -114,3 +114,10 @@ $env:PYTHONPATH = "$PWD\src"
 ```
 
 `--split test` is refused unless the spec's `frozen` is `true`.
+
+## Ön kayıtlı hipotez önerileri
+
+`docs/prereg/` (süreç, H1–H4, yeni feature/motor yeteneği listeleri) ve
+`configs/studies/prereg/` (eşleşen, `"frozen": false` spec'ler) Efe'nin
+onayını bekleyen önerilerdir; tavsiye veya doğrulanmış bulgu değildir.
+`tests/test_prereg_specs.py` bu spec'leri yükleyiciyle doğrular.

@@ -1,0 +1,125 @@
+{
+  "schema": "fintr_study_spec_v1",
+  "spec_id": "prereg_bist30_h4_concentrated_flow_close_discount_v1",
+  "description": "ÖNERİ — Efe'nin onayını bekliyor; tavsiye değildir. Tek bir aracı kurumun mutlak AKD netinin günlük sum_total_size'a oranı >= 0.10 VE kapanışın VWAP proxy'sinin en az ~%1 altında olduğu günlerin ardından 5 işlem günlük net getiri ortalaması baseline'dan yüksek midir (H3'ün simetriği)? Tarihsel istatistik araştırmasıdır; al/sat sinyali değildir; kurumun kimliği, müşterisi veya niyeti hakkında hiçbir çıkarım yapmaz.",
+  "frozen": false,
+  "symbols": [
+    "BIMAS",
+    "ENKAI",
+    "FROTO",
+    "GARAN",
+    "GUBRF",
+    "ISCTR",
+    "KCHOL",
+    "KRDMD",
+    "MGROS",
+    "PETKM",
+    "SAHOL",
+    "SISE",
+    "TCELL",
+    "THYAO",
+    "TOASO",
+    "TRALT",
+    "TRMET",
+    "TTKOM",
+    "TUPRS",
+    "YKBNK"
+  ],
+  "symbol_holdout": [
+    "AEFES",
+    "AKBNK",
+    "ASELS",
+    "ASTOR",
+    "EKGYO",
+    "EREGL",
+    "PGSUS",
+    "SASA",
+    "TAVHL",
+    "VAKBN"
+  ],
+  "train_test_cutoff": "2026-10-01",
+  "entry_timing": "next_open",
+  "horizons_trading_days": [
+    1,
+    5,
+    10,
+    20
+  ],
+  "min_event_warning_threshold": 100,
+  "adjustment_boundary_policy": "drop",
+  "bootstrap": {
+    "seed": 20261001,
+    "resamples": 2000,
+    "confidence_level": "0.975"
+  },
+  "condition": {
+    "op": "and",
+    "terms": [
+      {
+        "op": "ge",
+        "left": {
+          "feature": "top1_akd_net_share_of_volume"
+        },
+        "right": {
+          "const": "0.10"
+        }
+      },
+      {
+        "op": "ge",
+        "left": {
+          "feature": "vwap_proxy_vs_close"
+        },
+        "right": {
+          "const": "0.01"
+        }
+      },
+      {
+        "op": "le",
+        "left": {
+          "feature": "vwap_proxy_vs_close"
+        },
+        "right": {
+          "const": "0.10"
+        }
+      }
+    ]
+  },
+  "preregistration": {
+    "status": "proposal_pending_efe_approval",
+    "hypothesis_id": "H4",
+    "hypothesis_doc": "docs/prereg/H4.md",
+    "family_id": "prereg_bist30_akd_price_v1",
+    "family_size": 4,
+    "primary_horizon_trading_days": 5,
+    "primary_metric": "overall[primary_horizon].difference_mean (net_return, conditioned minus baseline)",
+    "predicted_direction": "positive",
+    "primary_test": "one_sided_moving_block_bootstrap_by_signal_date (engine capability E1; block_length=5, resamples=9999, seed=20261001)",
+    "multiple_comparison": "holm",
+    "familywise_alpha": "0.05",
+    "sesoi_difference": "0.0025",
+    "min_events_primary": 100,
+    "min_distinct_signal_dates_primary": 30,
+    "run_parameters": {
+      "cost_bps_per_side": "10",
+      "adjustment_ratio_epsilon": "0.0005",
+      "volume_ratio_tolerance": "0.5",
+      "custody_scale_jump_ratio": "3"
+    },
+    "train_window": {
+      "signal_start_target": "2025-10-01",
+      "signal_end_exclusive": "2026-10-01",
+      "price_data_end": "2026-09-30"
+    },
+    "test_window": {
+      "signal_start": "2026-10-01",
+      "signal_end": "2027-03-31",
+      "min_tradeable_bars_after_signal_end": 25
+    },
+    "split_file": "configs/splits/bist30_2026_holdout_v2.json",
+    "split_file_sha256": "bebf958462fccf3a538bb027cbd818dd8c6da14047166525e57136a43bd2a3cb",
+    "engine_prerequisites_before_train_run": [
+      "E1",
+      "E4"
+    ]
+  }
+}
