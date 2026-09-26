@@ -75,6 +75,10 @@ Gold vakalar insan annotation'ı gerektirir; repo yalnız formatı ve sızıntı
 korumasını sağlar ([`docs/evaluation_protocol.md`](docs/evaluation_protocol.md)).
 Geliştirmede kullanılmış semboller (`src/fintr/evaluation/dev_registry.json`)
 tarihten bağımsız olarak eval vakası olamaz.
+Dondurulmuş BIST 30 hisse ayrımı (`configs/splits/current.json`) ve dışlama
+listesi (`configs/exclusions/symbols.json`) analiz, çalışma ve eval
+araçlarında kodla zorunludur; ayrıntı için
+[`docs/evaluation_protocol.md`](docs/evaluation_protocol.md#dondurulmuş-bist-30-hisse-ayrımı-ve-dışlama-listesi-kodla-zorunlu).
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\validate_eval_manifest.py eval\cases\manifest.example.json

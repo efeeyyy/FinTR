@@ -477,3 +477,34 @@ durumlarından biriyle açıkça raporlanır. Geçen bir tutarlılık kontrolü,
 girilen aksiyonun doğruluğunun bağımsız kanıtı değildir -- yalnızca bu
 formülle uyumlu olduğunu gösterir; bu sınır hem kodda hem
 `docs/corporate_actions.md`'de tekrarlanır.
+
+### Dondurulmuş hisse ayrımı ve dışlama korumaları
+
+Problem: BIST 30 holdout hisseleri (`configs/splits/`) ve kullanıcı kararıyla
+dışlanan hisseler (`configs/exclusions/symbols.json`) yalnız belgelerde
+kalırsa bir analiz, çalışma veya eval doğrulaması onları sessizce
+kullanabilir; ayrım da (v1 → v2) yenilenebildiği için sabit bir dosya adı
+güvenilir değildir.
+
+Alternatifler: (a) her script'e `--split-file`/`--exclusions-file` bayrağı --
+ilk WIP böyleydi, ama bir bayrak etkin ayrımı atlamaya veya boş bir dışlama
+dosyasıyla dışlamayı kaldırmaya izin verir; reddedildi. (b) eksik
+işaretçi/dışlama dosyasında korumayı kapatmak (cwd'ye göreli varsayılanlar) --
+başka bir dizinden çalıştırınca koruma sessizce kapanıyordu; reddedildi.
+(c) toplamayı da holdout için engellemek -- holdout verisinin toplanması
+gereklidir (tek seferlik değerlendirme için); yalnız kullanım korunur.
+
+Karar: `fintr.evaluation.symbol_guard.load_active_guards` etkin ayrımı
+yalnız `configs/splits/current.json` üzerinden, dışlamaları yalnız
+`configs/exclusions/symbols.json`'dan, repo köküne göre mutlak yollarla ve
+kapalı-güvenli yükler; `frozen: false` veya `superseded_by` taşıyan ayrım
+etkin olamaz. Analiz/çalışma/eval araçları holdout ve dışlama kurallarını,
+toplama araçları yalnız dışlamayı uygular. `--no-split-guard` yalnız holdout
+kontrolünü kapatır ve çıktıda belirgin biçimde raporlanır; dışlamanın
+geçersiz kılma seçeneği yoktur. `run_study --split test` motoru
+`symbol_scope="holdout_only"` ile çalıştırır.
+
+Sonuç: Her çıktı uygulanan ayrım ve dışlama dosyasını SHA-256'larıyla
+kaydeder. Bozuk/eksik işaretçi, ayrım veya dışlama dosyası tüm korunan
+araçları durdurur (bilinçli). Kurallar ve tablo:
+[`docs/evaluation_protocol.md`](evaluation_protocol.md).

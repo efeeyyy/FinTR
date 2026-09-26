@@ -82,6 +82,31 @@ spec ever declared (train symbols + hold-out). `fintr.research.report.
 run_study` raises rather than build a `test` result for a spec whose
 `frozen` is `false`.
 
+### Frozen BIST 30 split guard (`scripts/run_study.py`)
+
+On top of the engine gate, the CLI enforces the active frozen symbol split
+(resolved only through `configs/splits/current.json`; see
+[evaluation_protocol.md](evaluation_protocol.md#dondurulmuş-bist-30-hisse-ayrımı-ve-dışlama-listesi-kodla-zorunlu))
+and the symbol exclusions before any data file is read:
+
+- `--split train`: refused if the spec's `symbols` or any `--data` symbol
+  is a holdout symbol of the split.
+- `--split test`: refused unless the spec is `frozen: true`, declares a
+  non-empty `symbol_holdout` that is a subset of the split's holdout
+  symbols, and every `--data` symbol is a holdout symbol. The engine then
+  runs with `symbol_scope="holdout_only"`: only `symbol_holdout` is
+  evaluated (no development symbol mixed into the one-shot holdout result).
+- Excluded symbols (`configs/exclusions/symbols.json`), in `--data` or
+  anywhere in the spec, are always refused; there is no override.
+- `--no-split-guard` disables only the holdout checks (non-BIST 30
+  exploration); the test split then falls back to `symbol_scope="declared"`.
+  The result's `split_guard` block records `guard_bypassed: true`, the
+  warning and `bypassed_holdout_symbols`, and the text output starts with a
+  `!!! UYARI` line.
+
+Every result carries `split_guard` (split file, its SHA-256, split id,
+exclusions file and its SHA-256) and `symbol_scope`.
+
 ## Output
 
 Per horizon: event count, mean/median net return, hit rate, baseline (all
@@ -113,7 +138,10 @@ $env:PYTHONPATH = "$PWD\src"
   --split train --cost-bps 10 --save
 ```
 
-`--split test` is refused unless the spec's `frozen` is `true`.
+`--split test` is refused unless the spec's `frozen` is `true` and only
+holdout symbols of the frozen split are passed (see above). AKFIS is outside
+the BIST 30 split and not a holdout symbol, so the train example above passes
+the guard; a BIST 30 holdout symbol would not.
 
 ## Ön kayıtlı hipotez önerileri
 
