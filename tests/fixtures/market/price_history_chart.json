@@ -1,0 +1,39 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "currency": "TRY",
+          "symbol": "TESTX.IS",
+          "exchangeName": "IST",
+          "instrumentType": "EQUITY",
+          "firstTradeDate": 1000000000,
+          "gmtoffset": 10800,
+          "timezone": "+03",
+          "exchangeTimezoneName": "Europe/Istanbul",
+          "dataGranularity": "1d",
+          "range": "",
+          "validRanges": ["1d", "5d", "1mo"]
+        },
+        "timestamp": [1767596400, 1767682800, 1767769200, 1767855600, 1767942000],
+        "indicators": {
+          "quote": [
+            {
+              "open": [10.00, 10.20, null, 10.10, 10.35],
+              "high": [10.50, 10.30, null, 10.40, 10.60],
+              "low": [9.80, 10.00, null, 10.05, 10.20],
+              "close": [10.20, 10.10, null, 10.35, 10.50],
+              "volume": [1000000, 900000, null, 1100000, 1200000]
+            }
+          ],
+          "adjclose": [
+            {
+              "adjclose": [10.15, 10.05, null, 10.30, 10.45]
+            }
+          ]
+        }
+      }
+    ],
+    "error": null
+  }
+}

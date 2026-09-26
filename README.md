@@ -37,6 +37,7 @@ Proje yatırım tavsiyesi, hedef fiyat veya doğrudan al/sat kararı üretmez.
 - Feature formülleri: [`docs/features.md`](docs/features.md)
 - Context örneği: [`docs/context_example_v0.md`](docs/context_example_v0.md)
 - Collector: [`docs/collector.md`](docs/collector.md)
+- Fiyat/hacim geçmişi: [`docs/price_history.md`](docs/price_history.md)
 - Bellek içi canlı analiz bağlamı: [`docs/live_context.md`](docs/live_context.md)
 - Çevrimiçi test öncesi çevrimdışı kontrol: [`docs/offline_preflight.md`](docs/offline_preflight.md)
 - Değerlendirme protokolü: [`docs/evaluation_protocol.md`](docs/evaluation_protocol.md)
