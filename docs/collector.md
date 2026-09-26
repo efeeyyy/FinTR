@@ -49,6 +49,16 @@ Welcome-sonrası gönderim kullanıcı tarafından canlı denendi; beklenen resp
 yine alınmadı. Bu sıra değişikliği sorunu çözmüş sayılmaz. Offline testler yalnız
 gönderim sırasını, tek seferlik tetiklemeyi ve bekleme sınırlarını doğrular.
 
+`WebSocketCollector.collect(requests, *, stop_when=None)` (2026-09-26'da
+eklendi) opsiyonel bir `stop_when: Callable[[tuple[DispatchResult, ...]], bool]`
+kabul eder; her eklenen `DispatchResult` sonrası çağrılır ve `True` dönerse
+deneme normal biçimde biter, bağlantı kapanır — `--max-frames`/`--timeout`
+sınırlarını beklemeden. `stop_when=None` (varsayılan) önceki davranışı
+korur. `scripts/live_collector_smoke.py` bunu, beklenen her response bilinen/
+normalize/pending-olmayan ve (yerel provenance bağlayan aileler için)
+provenance'lı olduğunda `True` dönen bir predicate ile kullanır; bu, sağlayıcı
+oturumunu gereksiz yere açık tutmayı önler (bkz. [live_check_runbook.md](live_check_runbook.md)).
+
 ## Canlı doğrulama durumu ve protokol sınırları
 
 Aşağıdaki canlı sonuçlar kullanıcı/yönetici tarafından bildirilen gözlemlerdir;
@@ -402,11 +412,19 @@ gösterilmez. Decode/parse/validation hataları yeniden denenmez; sınırlı ret
 yalnız geçici transport hataları içindir. `send completed` ardından hata görülmesi
 tek başına AKD yanıtı alındığını kanıtlamaz. Dedup koruması retry'da sürer.
 
-Yalnız `custody_distribution_data` parse hatalarında güvenli shape özeti eklenir:
-`event.data` ve `event.data.data` seviyelerindeki sabit allowlist alanlarının
-yalnız varlık/null ve JSON tür kategorileri gösterilir. Alan değerleri, bilinmeyen
+`custody_distribution_data`, `akd_data`, `custody_analysis_data` ve
+`custodian_diff_data` parse hatalarında güvenli shape özeti eklenir (son üçü
+2026-09-26'da eklendi; Run A'daki `akd_data`/`event.data.data.source` hatası
+bu gözlemin nedenidir — o hatada hiç shape özeti yoktu). `event.data` ve
+`event.data.data` seviyelerindeki sabit allowlist alanlarının yalnız
+varlık/null ve JSON tür kategorileri gösterilir. Alan değerleri, bilinmeyen
 anahtar adları ve satır/date/code içerikleri özetlenmez; eksik alan `missing`,
-explicit null ise `null` olarak ayrılır. Bu teşhis parse kurallarını gevşetmez
+explicit null ise `null` olarak ayrılır. Her ailenin kendi sabit anahtar
+allowlist'i vardır (`akd_data`: `as_of`/`source`/`results` +ortak zarf
+alanları; `custody_analysis_data`: `symbol`/`dates`/`data_range`/`akd`/
+`custody`/`metadata` +ortak; `custodian_diff_data`: `start_date`/`end_date`/
+`source`/`results` +ortak); allowlist dışındaki hiçbir anahtar adı (sayı
+olarak bile) tanılamaya eklenmez. Bu teşhis parse kurallarını gevşetmez
 ve alternatif nesting için fallback anlamına gelmez.
 
 `brokerages_data` parse hatasında ayrı ve daha dar bir özet üretilir. `event.data`
@@ -443,6 +461,24 @@ Varsayılan smoke tüm isteklerin tamamlandığını doğrulamaz; bunun için
 `--require-all-responses` gerekir. Bu seçenek de sunucu tarafı request-id
 korelasyonunu doğrulamaz. Canlı AKD/günlük Takas/dönem farkı/analiz için yerel
 tek-gönderim bağlamı ayrıca gerekir; analizde yanıt sembolü de eşleştirilir.
+Script artık (`stop_when`) beklenen tüm response'lar bu koşullarla tamamlanınca
+denemeyi erken bitirir; `--max-frames`/`--timeout` yalnız üst sınır olarak kalır
+(bkz. yukarıda "Mimari" bölümü).
+
+`--end-date`/`--to-date`/`--custody-date` bugünün yerel tarihinden ileriyse
+(2026-09-26'da eklendi) script her modda, `--dry-run` dahil, initData
+istemeden veya bağlanmadan `parser.error` ile durur (exit code 2) — sağlayıcı
+henüz gelecek tarih için veri döndürmüyor (gözlenen hata: `akd_data` için
+eksik/null `event.data.data.source`). Tarih tam bugünse çalışır ama aynı
+günün verisinin eksik olabileceğine dair bir not basılır. Ayrıntı ve örnek
+hata metni: [live_check_runbook.md](live_check_runbook.md#5-hata-durumunda-ne-anlama-gelir).
+
+`--show-unknown-event-types` (2026-09-26'da eklendi) varsayılan olarak kapalıdır;
+verilmeden her bilinmeyen event `[UNKNOWN_EVENT_TYPE]` basılır. Verildiğinde bile
+yalnız `^[a-z][a-z_]{0,39}$` ile tam eşleşen isimler (rakamsız, küçük harf) gösterilir;
+diğer her şey (rakam, büyük harf, URL/secret benzeri metin dahil) yine maskelenir.
+Bu flag dispatcher/client'a yeni bir log eklemez; yalnız script'in kendi terminal
+çıktısını etkiler.
 
 Sembol snapshot'ları için tarihler açıkça verilmelidir:
 

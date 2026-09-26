@@ -44,6 +44,18 @@ gerekmez. Mevcut `2026-09-08_2026-09-25` kaydı farklı dosya adıdır; üzerine
 yazma çakışması beklenmez — yine de çalıştırmadan önce `--dry-run` ile
 doğrulayın.
 
+**Gelecek tarih koruması (2026-09-26'da eklendi):** `--end-date`/`--to-date`/
+`--custody-date` bugünün yerel tarihinden ileriyse script, `--dry-run` dahil,
+initData istemeden veya bağlanmadan `parser.error` ile durur (exit code 2).
+Bu koruma, aşağıdaki `2026-07-01..2026-09-29` komutunun **29 Eylül takası
+kesinleşene kadar (2026-09-30'dan önce) her denemesini reddeder** — Run A'da
+gözlenen `event=akd_data; field=event.data.data.source; expected=present;
+actual=missing_or_null` hatasının kök nedeni budur (sağlayıcının o tarih için
+henüz verisi yoktu). Bitiş tarihi tam bugünse (`--end-date`/`--to-date`/
+`--custody-date` == bugün) komut çalışır ama "Note: same-day data (...) may be
+incomplete or not yet available from the provider." notu basılır; bu gün
+sonu verisi eksik olabilir.
+
 **Mesaj boyutu:** Varsayılan WebSocket mesaj sınırı 1 MiB'dir. 14 işlem
 günlük `custody_analysis` verisi kayıtlı pakette ~133 KB tuttu (günde
 ~9,5 KB); üç ayda ~63 işlem günü ~600 KB, sağlayıcı biçimiyle daha fazla
@@ -66,13 +78,22 @@ veya offline test bunu kanıtlamaz, yalnız canlı deneme gösterir.
 [collector.md](collector.md) içindeki `--max-frames` bölümü). Geçmiş canlı
 denemelerde beklenen yanıt gelmediğinde araya çok sayıda `hb` sıkışabildiği
 gözlenmiştir (bkz. collector.md "Önceki smoke": 35 frame sınırında 1 `welcome`
-+ 34 `hb`, hiç `brokerages_data` yok). Bu yüzden 5 frame'lik teorik minimumun
-biraz üzerinde, birkaç `hb`'ye yer bırakacak ama 50 tavanının çok altında
-kalacak bir değer seçilir: **`--max-frames 12`, `--timeout 8`**. En kötü
-senaryoda (her frame tam timeout sınırında gelirse) bu, deneme başına en
-fazla ~96 saniyelik bekleme demektir; sabit 2 retry ile toplam üst sınır
-birkaç dakikayı geçmez. Bu yalnız bounded bekleme bütçesidir, sağlayıcının
-gerçekte bu kadar sürede yanıt vereceğinin kanıtı değildir.
++ 34 `hb`, hiç `brokerages_data` yok). Ayrıca Run B'de (bkz. giriş) dört
+beklenen yanıtın **her biri** kendi `[UNKNOWN_EVENT_TYPE]` çift frame'iyle
+geldi (`akd_data` → unknown, `custody_analysis_data` → unknown, vb.). Bu
+yüzden çok-yanıtlı dönem yakalamalarında (2a gibi) **`--max-frames 16`**
+önerilir — dört yanıt + dört olası eşlik eden unknown event + birkaç `hb`
++ `welcome` payı. **`--timeout 8`** aynı kalır. En kötü senaryoda (her frame
+tam timeout sınırında gelirse) bu, deneme başına en fazla ~128 saniyelik
+bekleme demektir; sabit 2 retry ile toplam üst sınır birkaç dakikayı geçmez.
+Bu yalnız bounded bekleme bütçesidir, sağlayıcının gerçekte bu kadar sürede
+yanıt vereceğinin kanıtı değildir. **Erken durdurma (2026-09-26'da eklendi):**
+Collector artık dört beklenen yanıtın tümü bilinen/normalize/pending-olmayan
+ve (yerel provenance bağlayan aileler için) provenance'lı hâle geldiği anda
+denemeyi bitirip bağlantıyı kapatır; Run B'de gözlenen "üç fazla `hb`
+beklenmesi" artık olmaz. Bu yalnız script tarafının bağlantıyı ne zaman
+kapattığını değiştirir — `--max-frames`/`--timeout` üst sınırları hâlâ
+geçerlidir ve hiçbir yanıt gelmezse aynı şekilde tüketilir.
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src"
@@ -83,8 +104,23 @@ $env:PYTHONPATH = "$PWD\src"
   --end-date 2026-09-29 `
   --save-period-analysis-context `
   --allow-session-takeover `
-  --timeout 15 --max-frames 12 --max-message-mib 4
+  --timeout 15 --max-frames 16 --max-message-mib 4
 ```
+
+**Not (2026-09-26 itibarıyla):** Bu komut bugün çalıştırılırsa yeni gelecek
+tarih koruması onu **reddeder** — `--dry-run` dahil, hiçbir initData istemi
+veya bağlantı olmadan:
+
+```text
+live_collector_smoke.py: error: --end-date 2026-09-29 is after today
+(2026-09-26); the provider has no data for future dates yet (a live run
+previously failed with a missing akd_data event.data.data.source field for
+a future --end-date)
+```
+
+Bu, yukarıdaki takvim notuyla tutarlıdır: komutu **29 Eylül takası kesinleşen
+2026-09-30 veya sonrasında** çalıştırın; o tarihten önce hem takvim notu hem
+de bu kod-seviyesi koruma aynı komutu engeller.
 
 Dry-run `Persistence target does not exist yet` yazdırdıktan sonra, Mini
 App'i kapatıp aynı komutu `--dry-run` olmadan çalıştırın:
@@ -97,7 +133,23 @@ $env:PYTHONPATH = "$PWD\src"
   --end-date 2026-09-29 `
   --save-period-analysis-context `
   --allow-session-takeover `
-  --timeout 15 --max-frames 12 --max-message-mib 4
+  --timeout 15 --max-frames 16 --max-message-mib 4
+```
+
+**AKFIS T+2 takip komutu (2026-09-30 veya sonrasında çalıştırın):** Yukarıdaki
+komutla aynıdır; yalnız gelecek tarih koruması geçtikten sonra tekrar
+listelenmiştir — bu komut, 29 Eylül takasının T+2 ile kesinleştiği güne kadar
+her denemede reddedilecektir:
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\live_collector_smoke.py `
+  --symbol AKFIS `
+  --start-date 2026-07-01 `
+  --end-date 2026-09-29 `
+  --save-period-analysis-context `
+  --allow-session-takeover `
+  --max-message-mib 4 --timeout 15 --max-frames 16
 ```
 
 ### 2b. (Opsiyonel) Günlük beşli aile kontrolü
@@ -218,6 +270,30 @@ fixture'a karşı yazılmalıdır. Bu kılavuz o parser değişikliğini yapmaz;
 yalnız hangi gözlemin nereye ve nasıl (şema mı, değer mi) kaydedileceğini
 tanımlar.
 
+### 4a. `--show-unknown-event-types` ile protokol gözlemi (2026-09-26'da eklendi)
+
+DevTools yerine (veya ona ek olarak) `scripts/live_collector_smoke.py`'nin
+kendi çıktısından bilinmeyen event tiplerinin **adını** görmek için
+`--show-unknown-event-types` ekleyin. Varsayılan davranış değişmez: bu flag
+olmadan her bilinmeyen event `[UNKNOWN_EVENT_TYPE]` olarak basılır (2026-09-25
+tarihli güvenlik kararı — sağlayıcıdan gelen keyfi metin terminale
+yazdırılmaz). Flag verildiğinde bile bir isim yalnız `^[a-z][a-z_]{0,39}$`
+ile **tam eşleşirse** (1–40 küçük harf/alt çizgi, rakam veya büyük harf yok)
+gösterilir; rakam, büyük harf, URL benzeri veya secret benzeri hiçbir metin
+(`query_id=...`, `https://...` vb.) bu koşulu geçemez ve yine
+`[UNKNOWN_EVENT_TYPE]` basılır. Bu yalnız event **tip adı** için geçerlidir;
+payload alan adları/değerleri bu flag ile de asla basılmaz. Dispatcher/client
+bu flag için yeni bir log satırı eklemez.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\live_collector_smoke.py --allow-session-takeover --show-unknown-event-types
+```
+
+Görülen bir isim `subscribe_ack` gibi tanıdık bir kontrol frame'iyse ve
+tekrarlanan gözlemlerde kararlıysa, bölüm 4'teki gibi
+[protocol_inventory.md](protocol_inventory.md)'ye işleyin; script'in kendisi
+bunu otomatik kaydetmez.
+
 ## 5. Hata durumunda ne anlama gelir
 
 `scripts/live_collector_smoke.py` çıktısındaki sabit hata metinleri
@@ -226,6 +302,7 @@ yazıldığı sürüme aittir):
 
 | Mesaj | Anlamı | Ne yapın |
 |---|---|---|
+| `--end-date/--to-date/--custody-date <tarih> is after today (<bugün>); the provider has no data for future dates yet (...)` | Gelecek tarih koruması (2026-09-26'da eklendi): belirtilen tarih yerel bugünden ileri. `--dry-run` dahil her modda, initData istemeden/bağlanmadan `parser.error` ile durur (exit code 2). | Tarihi bugüne veya öncesine çekin ya da takas/veri kesinleşene kadar bekleyin (bkz. bölüm 2a takvim notu). Tarih tam bugünse komut çalışır ama "Note: same-day data (...) may be incomplete" notu basılır. |
 | `<takeover uyarısı> Close the Mini App first, then rerun with --allow-session-takeover.` | `--allow-session-takeover` verilmedi; `--dry-run` değilse script bağlanmadan (exit code 2) durur. | Mini App'i kapatıp flag'i ekleyin. `--dry-run` bu kontrolden muaftır. |
 | `Smoke failed: {redakte edilmiş bağlantı hatası}` | Bounded retry (en fazla 2 deneme) sonunda `connect`/`receive`/`decode`/`parse`/`send` aşamalarından biri kalıcı olarak başarısız oldu; ham exception/response metni yok, yalnız aşama ve sabit kategori. | Yazdırılan `Attempt N: failure at <stage> (<category>)` satırına bakın; `transport_error`/`transport_closed` ise ağ/oturum sorunudur (Mini App gerçekten kapalı mı, oturum çakışması mı), `internal_error`/`schema_error` ise kod tarafında araştırma gerekir. |
 | `No request send completed in any attempt.` | Hiçbir istek gönderilemedi (ör. `welcome` hiç gelmedi). | `send` satırlarında `not sent: no top-level welcome` var mı kontrol edin; sağlayıcı taraf welcome göndermiyor olabilir. |

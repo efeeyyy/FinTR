@@ -94,6 +94,18 @@ _DISTRIBUTION_SHAPE_KEYS = (
     "request_id", "timestamp", "processing_time_ms", "symbol", "data",
     "periods", "results", "source",
 )
+_AKD_SHAPE_KEYS = (
+    "request_id", "timestamp", "processing_time_ms", "data",
+    "as_of", "source", "results",
+)
+_CUSTODY_ANALYSIS_SHAPE_KEYS = (
+    "request_id", "timestamp", "processing_time_ms", "data",
+    "symbol", "dates", "data_range", "akd", "custody", "metadata",
+)
+_CUSTODIAN_DIFF_SHAPE_KEYS = (
+    "request_id", "timestamp", "processing_time_ms", "data",
+    "start_date", "end_date", "source", "results",
+)
 _SHAPE_KINDS = frozenset({
     "null", "string", "number", "boolean", "array", "object", "unknown",
 })
@@ -163,6 +175,48 @@ def _custody_distribution_shape_summary(event: Mapping[str, Any]) -> tuple[str, 
     else:
         summary.append(f"event.data.data={_shape_kind(payload)}")
     return tuple(summary)
+
+
+def _two_level_shape_summary(
+    event: Mapping[str, Any], keys: Sequence[str],
+) -> tuple[str, ...]:
+    """Summarize event.data/event.data.data using one shared allowlist per family.
+
+    Same allowlisted-keys-only, fixed-JSON-kind-category approach as
+    ``_custody_distribution_shape_summary``, without that function's third
+    (``event.data.data.data``) nesting level, which these families do not have.
+    """
+
+    summary: list[str] = []
+    envelope = event.get("data", _MISSING_SHAPE_VALUE)
+    if envelope is _MISSING_SHAPE_VALUE:
+        summary.append("event.data=missing")
+        return tuple(summary)
+    if not isinstance(envelope, Mapping):
+        summary.append(f"event.data={_shape_kind(envelope)}")
+        return tuple(summary)
+
+    summary.append(_allowlisted_shape_level("event.data", envelope, keys))
+    payload = envelope.get("data", _MISSING_SHAPE_VALUE)
+    if payload is _MISSING_SHAPE_VALUE:
+        summary.append("event.data.data=missing")
+    elif isinstance(payload, Mapping):
+        summary.append(_allowlisted_shape_level("event.data.data", payload, keys))
+    else:
+        summary.append(f"event.data.data={_shape_kind(payload)}")
+    return tuple(summary)
+
+
+def _akd_shape_summary(event: Mapping[str, Any]) -> tuple[str, ...]:
+    return _two_level_shape_summary(event, _AKD_SHAPE_KEYS)
+
+
+def _custody_analysis_shape_summary(event: Mapping[str, Any]) -> tuple[str, ...]:
+    return _two_level_shape_summary(event, _CUSTODY_ANALYSIS_SHAPE_KEYS)
+
+
+def _custodian_diff_shape_summary(event: Mapping[str, Any]) -> tuple[str, ...]:
+    return _two_level_shape_summary(event, _CUSTODIAN_DIFF_SHAPE_KEYS)
 
 
 def _safe_analysis_path(path: str) -> str | None:
@@ -490,6 +544,8 @@ class WebSocketCollector:
         connection_url: str,
         requests: Sequence[CollectorRequest],
         attempt: int = 1,
+        *,
+        stop_when: Callable[[tuple[DispatchResult, ...]], bool] | None = None,
     ) -> tuple[DispatchResult, ...]:
         results: list[DispatchResult] = []
         sent_provenance: dict[str, list[Any | None]] = {
@@ -561,6 +617,12 @@ class WebSocketCollector:
                             and all(isinstance(item, str) for item in attached_summary)
                             else _brokerages_shape_summary(decoded.event)
                         )
+                    elif safe_event == "akd_data":
+                        shape_summary = _akd_shape_summary(decoded.event)
+                    elif safe_event == "custody_analysis_data":
+                        shape_summary = _custody_analysis_shape_summary(decoded.event)
+                    elif safe_event == "custodian_diff_data":
+                        shape_summary = _custodian_diff_shape_summary(decoded.event)
                     raise CollectorAttemptError(
                         AttemptDiagnostic(
                             attempt, "parse", category, safe_event,
@@ -600,6 +662,8 @@ class WebSocketCollector:
                             normalization_pending=False,
                         )
                 results.append(result)
+                if stop_when is not None and stop_when(tuple(results)):
+                    break
                 # Provider readiness hypothesis: only a top-level welcome opens sending.
                 if (
                     not requests_attempted
@@ -639,6 +703,8 @@ class WebSocketCollector:
     async def collect(
         self,
         requests: Sequence[CollectorRequest],
+        *,
+        stop_when: Callable[[tuple[DispatchResult, ...]], bool] | None = None,
     ) -> tuple[DispatchResult, ...]:
         init_data = self._secret_provider.get_init_data()
         connection_url = build_authenticated_url(self._config.endpoint, init_data)
@@ -649,7 +715,9 @@ class WebSocketCollector:
             nonlocal attempt
             attempt += 1
             try:
-                return await self._collect_once(connection_url, requests, attempt)
+                return await self._collect_once(
+                    connection_url, requests, attempt, stop_when=stop_when,
+                )
             except Exception as exc:
                 if isinstance(exc, CollectorAttemptError):
                     failure = exc

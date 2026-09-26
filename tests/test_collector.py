@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import logging
 import unittest
@@ -12,12 +12,15 @@ from fintr.collector.client import (
     CollectorConnectionError,
     RequestRateLimiter,
     WebSocketCollector,
+    _akd_shape_summary,
+    _custodian_diff_shape_summary,
+    _custody_analysis_shape_summary,
     replay_frames,
     run_with_bounded_retry,
 )
 from fintr.collector.dispatcher import EventDispatcher
 from fintr.collector.events import EventDecodeError, decode_event_frame
-from fintr.collector.models import CollectorConfig, RetryPolicy
+from fintr.collector.models import AttemptDiagnostic, CollectorConfig, RetryPolicy
 from fintr.collector.secrets import (
     build_authenticated_url,
     redact_text,
@@ -423,6 +426,285 @@ class AssemblerTests(unittest.TestCase):
         self.assertEqual(
             assembler.component_received_at("GLRMK")["depth"], received_new
         )
+
+
+class NewFamilyShapeSummaryUnitTests(unittest.TestCase):
+    """Direct unit coverage of the akd/custody_analysis/custodian_diff shape
+    summary helpers: allowlisted keys and fixed JSON kind categories only,
+    never values, never array contents, and never unknown key names."""
+
+    def test_akd_shape_summary_hides_unknown_key_and_secret_value(self) -> None:
+        secret = "https://evil.example/?initData=SECRET-TOKEN"
+        summary = _akd_shape_summary({
+            "type": "akd_data",
+            "data": {
+                "request_id": "r1",
+                "timestamp": 1,
+                "processing_time_ms": 2,
+                "data": {
+                    "as_of": None,
+                    "results": [],
+                    "unknown_secret_field": secret,
+                },
+            },
+        })
+        joined = " | ".join(summary)
+        self.assertIn("event.data=object{", joined)
+        self.assertIn("source:missing", joined)
+        self.assertIn("results:array", joined)
+        self.assertIn("as_of:null", joined)
+        self.assertNotIn("unknown_secret_field", joined)
+        self.assertNotIn(secret, joined)
+        self.assertNotIn("SECRET", joined)
+
+    def test_akd_shape_summary_handles_missing_and_non_mapping_levels(self) -> None:
+        self.assertEqual(_akd_shape_summary({"type": "akd_data"}), ("event.data=missing",))
+        self.assertEqual(
+            _akd_shape_summary({"type": "akd_data", "data": "PRIVATE-STRING"}),
+            ("event.data=string",),
+        )
+        summary = _akd_shape_summary({"type": "akd_data", "data": {"data": 5}})
+        self.assertIn("event.data.data=number", summary)
+
+    def test_custody_analysis_shape_summary_hides_unknown_key_and_secret_value(self) -> None:
+        secret = "wss://secret.example/ws?auth_date=1700000000"
+        summary = _custody_analysis_shape_summary({
+            "type": "custody_analysis_data",
+            "data": {
+                "request_id": "r1",
+                "timestamp": 1,
+                "processing_time_ms": 2,
+                "data": {
+                    "dates": [],
+                    "unknown_secret_field": secret,
+                },
+            },
+        })
+        joined = " | ".join(summary)
+        self.assertIn("symbol:missing", joined)
+        self.assertIn("dates:array", joined)
+        self.assertNotIn("unknown_secret_field", joined)
+        self.assertNotIn(secret, joined)
+        self.assertNotIn("secret.example", joined)
+
+    def test_custodian_diff_shape_summary_hides_unknown_key_and_secret_value(self) -> None:
+        secret = "query_id=TOP-SECRET&user=PRIVATE"
+        summary = _custodian_diff_shape_summary({
+            "type": "custodian_diff_data",
+            "data": {
+                "request_id": "r1",
+                "timestamp": 1,
+                "processing_time_ms": 2,
+                "data": {
+                    "end_date": "2026-09-22",
+                    "unknown_secret_field": secret,
+                },
+            },
+        })
+        joined = " | ".join(summary)
+        self.assertIn("start_date:missing", joined)
+        self.assertIn("end_date:string", joined)
+        self.assertNotIn("unknown_secret_field", joined)
+        self.assertNotIn(secret, joined)
+        self.assertNotIn("TOP-SECRET", joined)
+
+
+class NewFamilyShapeSummaryDiagnosticTests(unittest.IsolatedAsyncioTestCase):
+    """End-to-end: a real parse failure through the collector attaches a
+    shape summary built only from the allowlisted helpers above."""
+
+    async def _diagnostic_for(self, frames, request):
+        remaining = iter(frames)
+
+        class Connection:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def send(self, message):
+                pass
+
+            async def recv(self):
+                try:
+                    frame = next(remaining)
+                except StopIteration:
+                    await asyncio.Future()
+                return json.dumps(frame)
+
+        provider = Mock()
+        provider.get_init_data.return_value = "query_id=SAFE-FIXTURE"
+        connector = Mock(return_value=Connection())
+        config = CollectorConfig(max_events=8, receive_timeout_seconds=0.01)
+        diagnostics: list = []
+        collector = WebSocketCollector(
+            provider, config=config, connector=connector,
+            retry_policy=RetryPolicy(max_retries=0),
+            rate_limiter=RequestRateLimiter(
+                minimum_interval_seconds=0, deduplication_window_seconds=0,
+            ),
+            diagnostic_observer=diagnostics.append,
+        )
+        with self.assertRaises(CollectorConnectionError):
+            await collector.collect((request,))
+        self.assertEqual(len(diagnostics), 1)
+        return diagnostics[0]
+
+    async def test_akd_missing_source_failure_carries_safe_shape_summary(self) -> None:
+        secret = "http://evil.example/SECRET-TOKEN"
+        diagnostic = await self._diagnostic_for((
+            {"type": "welcome"},
+            {
+                "type": "akd_data",
+                "data": {
+                    "request_id": "r1", "timestamp": 1, "processing_time_ms": 2,
+                    "data": {"as_of": None, "results": [], "leak": secret},
+                },
+            },
+        ), build_akd_request("ASELS", date(2026, 9, 1), date(2026, 9, 1)))
+        self.assertEqual(diagnostic.field_path, "event.data.data.source")
+        joined = " | ".join(diagnostic.shape_summary)
+        self.assertIn("source:missing", joined)
+        self.assertIn("results:array", joined)
+        self.assertNotIn("leak", joined)
+        self.assertNotIn(secret, joined)
+        self.assertNotIn("SECRET", joined)
+
+    async def test_custody_analysis_missing_symbol_failure_carries_safe_shape_summary(self) -> None:
+        secret = "wss://secret.example/ws?auth_date=1700000000"
+        diagnostic = await self._diagnostic_for((
+            {"type": "welcome"},
+            {
+                "type": "custody_analysis_data",
+                "data": {
+                    "request_id": "r1", "timestamp": 1, "processing_time_ms": 2,
+                    "data": {"dates": [], "leak": secret},
+                },
+            },
+        ), build_custody_analysis_request("ASELS", date(2026, 9, 1), date(2026, 9, 1)))
+        self.assertEqual(diagnostic.field_path, "event.data.data.symbol")
+        joined = " | ".join(diagnostic.shape_summary)
+        self.assertIn("symbol:missing", joined)
+        self.assertIn("dates:array", joined)
+        self.assertNotIn("leak", joined)
+        self.assertNotIn(secret, joined)
+        self.assertNotIn("secret.example", joined)
+
+    async def test_custodian_diff_missing_start_date_failure_carries_safe_shape_summary(self) -> None:
+        secret = "query_id=TOP-SECRET&user=PRIVATE"
+        diagnostic = await self._diagnostic_for((
+            {"type": "welcome"},
+            {
+                "type": "custodian_diff_data",
+                "data": {
+                    "request_id": "r1", "timestamp": 1, "processing_time_ms": 2,
+                    "data": {"end_date": "2026-09-22", "leak": secret},
+                },
+            },
+        ), build_custodian_diff_request("ASELS", date(2026, 9, 1), date(2026, 9, 1)))
+        self.assertEqual(diagnostic.field_path, "event.data.data.start_date")
+        joined = " | ".join(diagnostic.shape_summary)
+        self.assertIn("start_date:missing", joined)
+        self.assertIn("end_date:string", joined)
+        self.assertNotIn("leak", joined)
+        self.assertNotIn(secret, joined)
+        self.assertNotIn("TOP-SECRET", joined)
+
+
+class EarlyStopTests(unittest.IsolatedAsyncioTestCase):
+    """WebSocketCollector.collect/_collect_once optional stop_when predicate."""
+
+    async def _collect(self, frames, *, stop_when=None, max_events=8):
+        actions: list = []
+        remaining = iter(frames)
+
+        class Connection:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def send(self, message):
+                actions.append(("send", message))
+
+            async def recv(self):
+                try:
+                    frame = next(remaining)
+                except StopIteration:
+                    actions.append(("wait", None))
+                    await asyncio.Future()
+                actions.append(("recv", frame["type"]))
+                return json.dumps(frame)
+
+        provider = Mock()
+        connector = Mock(return_value=Connection())
+        config = CollectorConfig(max_events=max_events, receive_timeout_seconds=0.01)
+        collector = WebSocketCollector(
+            provider, config=config, connector=connector,
+            rate_limiter=RequestRateLimiter(
+                minimum_interval_seconds=0, deduplication_window_seconds=0,
+            ),
+        )
+        results = await collector._collect_once(
+            config.endpoint, (build_brokerages_request(),), stop_when=stop_when,
+        )
+        return actions, results
+
+    async def test_stop_when_ends_attempt_without_waiting_for_further_frames(self) -> None:
+        def stop_when(results):
+            return any(result.event_type == "brokerages_data" for result in results)
+
+        actions, results = await self._collect((
+            {"type": "welcome"},
+            load("brokerages_data.json"),
+            {"type": "hb"}, {"type": "hb"}, {"type": "hb"},
+        ), stop_when=stop_when)
+        # Only the welcome + brokerages_data frames were received; the trailing
+        # hb frames were never read because the attempt stopped and closed.
+        self.assertEqual(
+            [value for kind, value in actions if kind == "recv"],
+            ["welcome", "brokerages_data"],
+        )
+        self.assertEqual(
+            [result.event_type for result in results], ["welcome", "brokerages_data"],
+        )
+
+    async def test_no_stop_when_keeps_default_behavior(self) -> None:
+        actions, results = await self._collect((
+            {"type": "welcome"}, {"type": "hb"}, {"type": "hb"},
+        ), stop_when=None)
+        self.assertEqual(
+            [value for kind, value in actions if kind == "recv"],
+            ["welcome", "hb", "hb"],
+        )
+        self.assertEqual(len(results), 3)
+
+    async def test_stop_when_false_for_missing_response_keeps_collecting(self) -> None:
+        def stop_when(results):
+            return any(result.event_type == "brokerages_data" for result in results)
+
+        actions, results = await self._collect((
+            {"type": "welcome"}, {"type": "hb"}, {"type": "hb"},
+        ), stop_when=stop_when, max_events=3)
+        # brokerages_data never arrives, so stop_when never fires; every
+        # supplied frame is still consumed up to the configured max_events.
+        self.assertEqual(
+            [value for kind, value in actions if kind == "recv"],
+            ["welcome", "hb", "hb"],
+        )
+        self.assertEqual(len(results), 3)
+
+    async def test_stop_when_is_evaluated_after_each_append_with_growing_tuple(self) -> None:
+        seen_lengths: list[int] = []
+
+        def stop_when(results):
+            seen_lengths.append(len(results))
+            return False
+
+        await self._collect(({"type": "welcome"}, {"type": "hb"}), stop_when=stop_when)
+        self.assertEqual(seen_lengths, [1, 2])
 
 
 if __name__ == "__main__":

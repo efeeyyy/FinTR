@@ -85,6 +85,45 @@ _EVENT_STATUS_ALLOWLIST = frozenset({
     "custody_analysis_data", "custody_stats_data", "brokerages_data",
 })
 _UNKNOWN_EVENT_TYPE_LABEL = "[UNKNOWN_EVENT_TYPE]"
+_SHOWABLE_UNKNOWN_EVENT_TYPE = re.compile(r"^[a-z][a-z_]{0,39}$")
+_FUTURE_DATE_FLAGS: tuple[tuple[str, str], ...] = (
+    ("--end-date", "end_date"),
+    ("--to-date", "to_date"),
+    ("--custody-date", "custody_date"),
+)
+
+
+def _today() -> date:
+    """Local calendar date; tests override via ``patch.object(smoke, "_today", ...)``."""
+    return date.today()
+
+
+def _reject_future_dates(args: argparse.Namespace, parser: argparse.ArgumentParser) -> date:
+    """Reject any --end-date/--to-date/--custody-date after today, before any
+    secret prompt or connection (including in --dry-run); the provider has no
+    data for future dates yet (a live run observed a missing
+    ``akd_data``/``event.data.data.source`` failure for a future --end-date)."""
+    today = _today()
+    for flag, attr in _FUTURE_DATE_FLAGS:
+        value = getattr(args, attr)
+        if value is not None and value > today:
+            parser.error(
+                f"{flag} {value.isoformat()} is after today ({today.isoformat()}); "
+                "the provider has no data for future dates yet (a live run "
+                "previously failed with a missing akd_data event.data.data.source "
+                "field for a future --end-date)"
+            )
+    return today
+
+
+def _same_day_note(today: date, args: argparse.Namespace) -> str | None:
+    """A same-day date is allowed, but its data may still be incomplete."""
+    if today in (args.end_date, args.to_date, args.custody_date):
+        return (
+            f"Note: same-day data ({today.isoformat()}) may be incomplete or not "
+            "yet available from the provider."
+        )
+    return None
 
 
 class PeriodAnalysisHandoffError(ValueError):
@@ -120,12 +159,18 @@ def _positive_int(value: str) -> int:
     return number
 
 
-def _event_status_label(event_type: str) -> str:
-    return (
-        event_type
-        if isinstance(event_type, str) and event_type in _EVENT_STATUS_ALLOWLIST
-        else _UNKNOWN_EVENT_TYPE_LABEL
-    )
+def _event_status_label(
+    event_type: str, *, show_unknown_event_types: bool = False,
+) -> str:
+    if isinstance(event_type, str) and event_type in _EVENT_STATUS_ALLOWLIST:
+        return event_type
+    if (
+        show_unknown_event_types
+        and isinstance(event_type, str)
+        and _SHOWABLE_UNKNOWN_EVENT_TYPE.fullmatch(event_type)
+    ):
+        return event_type
+    return _UNKNOWN_EVENT_TYPE_LABEL
 
 
 def _stats_provenance_matches_request(result, requests) -> bool:
@@ -143,6 +188,67 @@ def _stats_provenance_matches_request(result, requests) -> bool:
         and data.get("symbol") == provenance.symbol
         and data.get("history") is provenance.history
     )
+
+
+def _matched_response_events(results, requests, expected_events: set[str]) -> set[str]:
+    """Event types that are expected, known, fully normalized, and (for
+    families that bind local provenance) tied to exactly one sent request.
+
+    Shared by the early-stop predicate (evaluated during collection) and the
+    post-collection success check, so both use the same completion rule.
+    """
+    return {
+        result.event_type for result in results
+        if result.known and result.normalized is not None and not result.normalization_pending
+        and result.event_type in expected_events
+        and (
+            result.event_type != "akd_data"
+            or (
+                isinstance(result.normalized, LiveAKDResponse)
+                and result.normalized.request_provenance is not None
+            )
+        )
+        and (
+            result.event_type != "custodian_data"
+            or (
+                isinstance(result.normalized, LiveCustodianResponse)
+                and result.normalized.request_provenance is not None
+            )
+        )
+        and (
+            result.event_type != "custodian_diff_data"
+            or (
+                isinstance(result.normalized, LiveCustodianDiffResponse)
+                and result.normalized.request_provenance is not None
+            )
+        )
+        and (
+            result.event_type != "custody_analysis_data"
+            or (
+                isinstance(result.normalized, LiveCustodyAnalysisResponse)
+                and result.normalized.request_provenance is not None
+                and result.normalized.symbol == result.normalized.request_provenance.symbol
+            )
+        )
+        and (
+            result.event_type != "custody_distribution_data"
+            or (
+                isinstance(result.normalized, LiveCustodyDistributionResponse)
+                and result.normalized.request_provenance is not None
+            )
+        )
+        and (
+            result.event_type != "custody_stats_data"
+            or (
+                isinstance(result.normalized, LiveCustodyStatsResponse)
+                and _stats_provenance_matches_request(result, requests)
+            )
+        )
+        and (
+            result.event_type != "brokerages_data"
+            or isinstance(result.normalized, LiveBrokeragesResponse)
+        )
+    }
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -259,6 +365,16 @@ def _parser() -> argparse.ArgumentParser:
         "--max-message-mib", type=int, default=1,
         help="Largest accepted WebSocket message in MiB (default: 1; maximum: 8); "
              "raise only for long period ranges.",
+    )
+    parser.add_argument(
+        "--show-unknown-event-types", action="store_true",
+        help=(
+            "For protocol observation only: show an unknown event type's name "
+            "when it strictly matches ^[a-z][a-z_]{0,39}$ (1-40 lowercase "
+            "letters/underscores only; no digits, no uppercase). Anything else, "
+            "including any digit/uppercase/long/URL-like/secret-like string, "
+            "still prints as [UNKNOWN_EVENT_TYPE]. Default: always masked."
+        ),
     )
     return parser
 
@@ -434,6 +550,7 @@ def _print_dry_run(
     requests,
     expected_events: set[str],
     response_requirement: str,
+    today: date,
 ) -> int:
     """Print the same plan a real run would send/expect; never touch secrets or the network."""
     print("Dry run: argument validation passed; no initData prompt, no connection.")
@@ -464,6 +581,9 @@ def _print_dry_run(
             )
         else:
             print("Persistence target does not exist yet")
+    note = _same_day_note(today, args)
+    if note is not None:
+        print(note)
     print("Dry run: no connection opened")
     return 0
 
@@ -950,6 +1070,7 @@ def _save_period_analysis_capture(packet: dict[str, object]) -> Path:
 
 
 async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    today = _reject_future_dates(args, parser)
     if args.capture_eval_context:
         parser.error(
             "--capture-eval-context is retired: this case was used for prompt/output "
@@ -1032,7 +1153,7 @@ async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         else "at least one"
     )
     if args.dry_run:
-        return _print_dry_run(args, requests, expected_events, response_requirement)
+        return _print_dry_run(args, requests, expected_events, response_requirement, today)
     config = CollectorConfig(
         receive_timeout_seconds=args.timeout,
         max_events=args.max_events,
@@ -1095,8 +1216,18 @@ async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         print("Persistent storage: opt-in requested for the validated period-analysis packet")
     else:
         print("Persistent storage: disabled")
+    same_day_note = _same_day_note(today, args)
+    if same_day_note is not None:
+        print(same_day_note)
+
+    def stop_when(observed: tuple) -> bool:
+        # End the attempt as soon as every expected response is known, fully
+        # normalized (not pending), and provenance-bound where applicable, so
+        # the provider connection closes without waiting out extra frames.
+        return expected_events <= _matched_response_events(observed, requests, expected_events)
+
     try:
-        results = await collector.collect(requests)
+        results = await collector.collect(requests, stop_when=stop_when)
     except CollectorConnectionError as exc:
         print(f"Smoke failed: {exc}")
         if not any(item.status == "sent" for item in send_observations):
@@ -1113,7 +1244,11 @@ async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         status = "known" if result.known else "unknown"
         if result.normalization_pending:
             status += "; normalization pending: incomplete verified schema"
-        print(f"Event: {_event_status_label(result.event_type)} ({status})")
+        label = _event_status_label(
+            result.event_type,
+            show_unknown_event_types=args.show_unknown_event_types,
+        )
+        print(f"Event: {label} ({status})")
     if args.emit_period_analysis_context or args.save_period_analysis_context:
         saved_path = None
         try:
@@ -1155,58 +1290,7 @@ async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
             )
         print("Smoke completed: all period-analysis requests and responses validated")
         return 0
-    matched_events = {
-        result.event_type for result in results
-        if result.known and result.normalized is not None and not result.normalization_pending
-        and result.event_type in expected_events
-        and (
-            result.event_type != "akd_data"
-            or (
-                isinstance(result.normalized, LiveAKDResponse)
-                and result.normalized.request_provenance is not None
-            )
-        )
-        and (
-            result.event_type != "custodian_data"
-            or (
-                isinstance(result.normalized, LiveCustodianResponse)
-                and result.normalized.request_provenance is not None
-            )
-        )
-        and (
-            result.event_type != "custodian_diff_data"
-            or (
-                isinstance(result.normalized, LiveCustodianDiffResponse)
-                and result.normalized.request_provenance is not None
-            )
-        )
-        and (
-            result.event_type != "custody_analysis_data"
-            or (
-                isinstance(result.normalized, LiveCustodyAnalysisResponse)
-                and result.normalized.request_provenance is not None
-                and result.normalized.symbol == result.normalized.request_provenance.symbol
-            )
-        )
-        and (
-            result.event_type != "custody_distribution_data"
-            or (
-                isinstance(result.normalized, LiveCustodyDistributionResponse)
-                and result.normalized.request_provenance is not None
-            )
-        )
-        and (
-            result.event_type != "custody_stats_data"
-            or (
-                isinstance(result.normalized, LiveCustodyStatsResponse)
-                and _stats_provenance_matches_request(result, requests)
-            )
-        )
-        and (
-            result.event_type != "brokerages_data"
-            or isinstance(result.normalized, LiveBrokeragesResponse)
-        )
-    }
+    matched_events = _matched_response_events(results, requests, expected_events)
     if not matched_events:
         if any(result.normalization_pending and result.event_type in expected_events
                for result in results):

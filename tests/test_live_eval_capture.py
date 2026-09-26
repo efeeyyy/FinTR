@@ -125,7 +125,7 @@ class LivePilotCaptureTests(unittest.IsolatedAsyncioTestCase):
             patch.object(smoke, "InteractiveSecretProvider"),
             redirect_stdout(output),
         ):
-            async def collect(requests):
+            async def collect(requests, **_kwargs):
                 observer = collector.call_args.kwargs["send_observer"]
                 for request in requests:
                     observer(SendObservation(1, request.request_type, "sent"))

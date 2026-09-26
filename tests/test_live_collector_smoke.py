@@ -1,4 +1,4 @@
-"""Offline smoke acceptance tests: no authentication and no live connection."""
+﻿"""Offline smoke acceptance tests: no authentication and no live connection."""
 
 import importlib.util
 import hashlib
@@ -132,7 +132,7 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
             ),
             redirect_stdout(output),
         ):
-            async def collect_with_observations(_requests):
+            async def collect_with_observations(_requests, **_kwargs):
                 observer = collector.call_args.kwargs["send_observer"]
                 for request_type in sent_request_types:
                     observer(SendObservation(1, request_type, "sent"))
@@ -783,7 +783,7 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(smoke, "InteractiveSecretProvider"),
             redirect_stdout(output),
         ):
-            async def fail(_requests):
+            async def fail(_requests, **_kwargs):
                 collector.call_args.kwargs["diagnostic_observer"](AttemptDiagnostic(
                     1, "parse", "field_type", "custody_analysis_data",
                     "event.data.data.akd.[date][index].net_cost", "number", "string",
@@ -809,7 +809,7 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(smoke, "InteractiveSecretProvider"),
             redirect_stdout(output),
         ):
-            async def fail(_requests):
+            async def fail(_requests, **_kwargs):
                 collector.call_args.kwargs["diagnostic_observer"](AttemptDiagnostic(
                     1, "parse", "missing_field", "custody_distribution_data",
                     "event.data.data.periods", "present", "missing_or_null",
@@ -1349,6 +1349,7 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(smoke, "PROJECT_ROOT", Path(temporary)),
                 patch.object(smoke, "WebSocketCollector") as collector,
                 patch.object(smoke, "InteractiveSecretProvider") as provider,
+                patch.object(smoke, "_today", return_value=date(2026, 9, 29)),
                 redirect_stdout(output),
             ):
                 code = await smoke._run(args, parser)
@@ -1404,6 +1405,7 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(smoke, "PROJECT_ROOT", project_root),
                 patch.object(smoke, "WebSocketCollector") as collector,
                 patch.object(smoke, "InteractiveSecretProvider") as provider,
+                patch.object(smoke, "_today", return_value=date(2026, 9, 29)),
                 redirect_stdout(output),
             ):
                 code = await smoke._run(args, parser)
@@ -1457,6 +1459,7 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(smoke, "WebSocketCollector") as collector,
             patch.object(smoke, "InteractiveSecretProvider"),
+            patch.object(smoke, "_today", return_value=date(2026, 9, 30)),
             redirect_stdout(io.StringIO()) as output,
         ):
             collector.return_value.collect = AsyncMock(return_value=())
@@ -1479,6 +1482,186 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
                     smoke._save_period_analysis_capture(packet)
             self.assertEqual(error.exception.reason, "invalid_packet_scope")
             self.assertEqual(list(project_root.iterdir()), [])
+
+    # -- Future-date guard -------------------------------------------------
+
+    async def test_future_end_date_is_rejected_before_secret_prompt_in_dry_run(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--dry-run", "--symbol", "AKFIS", "--start-date", "2026-09-01",
+            "--end-date", "2026-09-27", "--custody-date", "2026-09-01",
+        ))
+        error = io.StringIO()
+        with (
+            patch.object(smoke, "_today", return_value=date(2026, 9, 26)),
+            patch.object(smoke, "WebSocketCollector") as collector,
+            patch.object(smoke, "InteractiveSecretProvider") as provider,
+            redirect_stderr(error),
+        ):
+            with self.assertRaises(SystemExit) as captured:
+                await smoke._run(args, parser)
+        self.assertEqual(captured.exception.code, 2)
+        self.assertIn("--end-date 2026-09-27 is after today (2026-09-26)", error.getvalue())
+        self.assertIn("no data for future dates yet", error.getvalue())
+        collector.assert_not_called()
+        provider.assert_not_called()
+
+    async def test_future_to_date_is_rejected_in_dry_run(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--dry-run", "--custody-analysis-only", "--symbol", "AKFIS",
+            "--from-date", "2026-09-01", "--to-date", "2026-09-30",
+        ))
+        error = io.StringIO()
+        with (
+            patch.object(smoke, "_today", return_value=date(2026, 9, 26)),
+            patch.object(smoke, "WebSocketCollector") as collector,
+            patch.object(smoke, "InteractiveSecretProvider") as provider,
+            redirect_stderr(error),
+        ):
+            with self.assertRaises(SystemExit) as captured:
+                await smoke._run(args, parser)
+        self.assertEqual(captured.exception.code, 2)
+        self.assertIn("--to-date 2026-09-30 is after today (2026-09-26)", error.getvalue())
+        collector.assert_not_called()
+        provider.assert_not_called()
+
+    async def test_future_custody_date_is_rejected_before_connector_in_real_run(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--allow-session-takeover", "--custodian-only", "--symbol", "AKFIS",
+            "--custody-date", "2026-09-27",
+        ))
+        error = io.StringIO()
+        with (
+            patch.object(smoke, "_today", return_value=date(2026, 9, 26)),
+            patch.object(smoke, "WebSocketCollector") as collector,
+            patch.object(smoke, "InteractiveSecretProvider") as provider,
+            redirect_stderr(error),
+        ):
+            with self.assertRaises(SystemExit) as captured:
+                await smoke._run(args, parser)
+        self.assertEqual(captured.exception.code, 2)
+        self.assertIn("--custody-date 2026-09-27 is after today (2026-09-26)", error.getvalue())
+        collector.assert_not_called()
+        provider.assert_not_called()
+
+    async def test_today_end_date_prints_same_day_note_in_dry_run(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--dry-run", "--symbol", "AKFIS", "--start-date", "2026-09-01",
+            "--end-date", "2026-09-26", "--custody-date", "2026-09-01",
+        ))
+        output = io.StringIO()
+        with (
+            patch.object(smoke, "_today", return_value=date(2026, 9, 26)),
+            patch.object(smoke, "WebSocketCollector") as collector,
+            patch.object(smoke, "InteractiveSecretProvider") as provider,
+            redirect_stdout(output),
+        ):
+            code = await smoke._run(args, parser)
+        self.assertEqual(code, 0)
+        rendered = output.getvalue()
+        self.assertIn(
+            "Note: same-day data (2026-09-26) may be incomplete or not yet "
+            "available from the provider.",
+            rendered,
+        )
+        self.assertIn("Dry run: no connection opened", rendered)
+        collector.assert_not_called()
+        provider.assert_not_called()
+
+    async def test_today_custody_date_prints_same_day_note_in_real_run(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--allow-session-takeover", "--custodian-only", "--symbol", "AKFIS",
+            "--custody-date", "2026-09-26",
+        ))
+        output = io.StringIO()
+        with (
+            patch.object(smoke, "_today", return_value=date(2026, 9, 26)),
+            patch.object(smoke, "WebSocketCollector") as collector,
+            patch.object(smoke, "InteractiveSecretProvider"),
+            redirect_stdout(output),
+        ):
+            collector.return_value.collect = AsyncMock(return_value=())
+            await smoke._run(args, parser)
+        self.assertIn(
+            "Note: same-day data (2026-09-26) may be incomplete or not yet "
+            "available from the provider.",
+            output.getvalue(),
+        )
+
+    async def test_past_custody_date_does_not_trigger_future_guard_or_note(self):
+        code, output, _ = await self.run_smoke(
+            (), argv=(
+                "--allow-session-takeover", "--custodian-only", "--symbol", "AKFIS",
+                "--custody-date", "2026-09-01",
+            ),
+        )
+        self.assertNotIn("is after today", output)
+        self.assertNotIn("Note: same-day data", output)
+
+    # -- Opt-in unknown event type display ----------------------------------
+
+    async def test_show_unknown_event_types_default_hides_everything(self):
+        results = (
+            DispatchResult("subscribe_ack", False, None),
+            DispatchResult("weird_type_123", False, None),
+        )
+        code, output, _ = await self.run_smoke(results)
+        self.assertEqual(code, 1)
+        self.assertIn("Event: [UNKNOWN_EVENT_TYPE] (unknown)", output)
+        self.assertNotIn("subscribe_ack", output)
+        self.assertNotIn("weird_type_123", output)
+
+    async def test_show_unknown_event_types_flag_shows_only_strict_match(self):
+        results = (DispatchResult("subscribe_ack", False, None),)
+        code, output, _ = await self.run_smoke(
+            results, argv=("--allow-session-takeover", "--show-unknown-event-types"),
+        )
+        self.assertIn("Event: subscribe_ack (unknown)", output)
+
+    async def test_show_unknown_event_types_flag_still_hides_non_matching_names(self):
+        cases = (
+            "weird_type_123",
+            "Subscribe_Ack",
+            "a" * 41,
+            "http://evil.example/x",
+            "query_id=TOP-SECRET",
+        )
+        for event_type in cases:
+            with self.subTest(event_type=event_type):
+                results = (DispatchResult(event_type, False, None),)
+                code, output, _ = await self.run_smoke(
+                    results,
+                    argv=("--allow-session-takeover", "--show-unknown-event-types"),
+                )
+                self.assertIn("Event: [UNKNOWN_EVENT_TYPE] (unknown)", output)
+                self.assertNotIn(event_type, output)
+
+    # -- Early stop wiring ---------------------------------------------------
+
+    async def test_stop_when_predicate_matches_expected_completion_rule(self):
+        parser = smoke._parser()
+        args = parser.parse_args(("--allow-session-takeover",))
+        output = io.StringIO()
+        with (
+            patch.object(smoke, "WebSocketCollector") as collector,
+            patch.object(smoke, "InteractiveSecretProvider"),
+            patch.object(
+                smoke, "_requests",
+                return_value=(CollectorRequest("get_brokerages"),),
+            ),
+            redirect_stdout(output),
+        ):
+            collector.return_value.collect = AsyncMock(return_value=())
+            await smoke._run(args, parser)
+        stop_when = collector.return_value.collect.call_args.kwargs["stop_when"]
+        self.assertTrue(callable(stop_when))
+        self.assertFalse(stop_when(()))
+        complete = tuple(await replay_frames((fixture_frame("brokerages_data_live"),)))
+        self.assertTrue(stop_when(complete))
 
 
 if __name__ == "__main__":
