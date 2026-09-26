@@ -91,6 +91,8 @@ class PeriodMetadataDay:
     retail_pct: Decimal | None
     institutional_pct: Decimal | None
     null_fields: tuple[str, ...]
+    # Absent from captures saved before 2026-09-27; None there and when null.
+    investor_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +225,16 @@ def _dated_market_proxy_rows(
 def _optional_decimal(entry: Mapping[str, Any], key: str, path: str) -> Decimal | None:
     value = entry.get(key)
     return None if value is None else require_decimal(value, f"{path}.{key}")
+
+
+def _optional_count(entry: Mapping[str, Any], key: str, path: str) -> int | None:
+    value = entry.get(key)
+    if value is None:
+        return None
+    number = require_decimal(value, f"{path}.{key}")
+    if number < 0 or number != number.to_integral_value():
+        raise PeriodCaptureError(f"invalid_capture_field: {path}.{key}")
+    return int(number)
 
 
 def _brokerage_directory(packet: Mapping[str, Any], packet_schema: str) -> BrokerageDirectoryInfo:
@@ -358,6 +370,7 @@ def parse_period_capture(document: Any) -> PeriodCapture:
                 _optional_decimal(entry, "retail_pct", entry_path),
                 _optional_decimal(entry, "institutional_pct", entry_path),
                 tuple(require_string(name, f"{entry_path}.null_fields") for name in null_fields),
+                _optional_count(entry, "investor_count", entry_path),
             ))
 
         return PeriodCapture(

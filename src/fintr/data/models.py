@@ -294,6 +294,7 @@ class LiveAnalysisMetadataDay:
     uninterpreted_keys: tuple[str, ...]
     retail_pct: Decimal | None = None
     institutional_pct: Decimal | None = None
+    investor_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
