@@ -37,6 +37,7 @@ from fintr.features.period import (
     lagged_akd_custody_match,
     reconcile_daily_akd,
 )
+from fintr.data.price_history import canonical_json as price_canonical_json
 from fintr.inference.period_report import REPORT_CONSTRAINTS, build_period_report
 
 
@@ -699,6 +700,226 @@ class AnalyzePeriodBatchTests(unittest.TestCase):
             self.assertIn("Toplu dönem analizi", text)
             self.assertIn("AAA 2026-01-05..2026-01-08", text)
             self.assertIn("rapor=kaydedilmedi (--save yok)", text)
+
+
+def _normalized_price_payload(symbol: str, start: str, end: str, bars: list[dict]) -> dict:
+    return {
+        "schema": "fintr_price_history_normalized_v1",
+        "symbol": symbol,
+        "currency": "TRY",
+        "exchange_name": "IST",
+        "exchange_timezone_name": "Europe/Istanbul",
+        "gmtoffset": 10800,
+        "timezone_abbreviation": "TRT",
+        "date_source": "gmtoffset_fallback",
+        "requested_start_date": start,
+        "requested_end_date": end,
+        "dropped_before_start_count": 0,
+        "dropped_after_end_count": 0,
+        "bar_count": len(bars),
+        "bars": bars,
+    }
+
+
+def _price_bar(d: str, *, o="5", h="5", l="5", c="5", adj="5", v=0, ts=0) -> dict:
+    return {
+        "date": d, "timestamp_utc": ts, "open": o, "high": h, "low": l, "close": c,
+        "adjusted_close": adj, "volume": v,
+    }
+
+
+def _price_capture_document(symbol: str, start: str, end: str, bars: list[dict]) -> dict:
+    """A minimal, synthetic ``fintr_price_history_capture_v1`` document."""
+    normalized = _normalized_price_payload(symbol, start, end, bars)
+    normalized_hash = hashlib.sha256(price_canonical_json(normalized).encode("utf-8")).hexdigest()
+    return {
+        "capture_metadata": {
+            "schema": "fintr_price_history_capture_v1",
+            "source_id": "yahoo_finance_chart_v8",
+            "request_url": f"https://example.invalid/{symbol}",
+            "accessed_at_utc": "2026-09-26T00:00:00Z",
+            "permission_provenance": {
+                "status": "user_asserted_2026-09-26_not_independently_verified",
+                "source_note": "synthetic test fixture",
+            },
+            "raw_response_sha256": "0" * 64,
+            "normalized_sha256": normalized_hash,
+        },
+        "raw_response": {"synthetic": True},
+        "normalized": normalized,
+    }
+
+
+def _write_price_capture(root: Path, symbol: str, start: str, end: str, bars: list[dict]) -> Path:
+    directory = root / symbol
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{start}_{end}.json"
+    path.write_text(json.dumps(_price_capture_document(symbol, start, end, bars)), encoding="utf-8")
+    return path
+
+
+class DiscoverPriceHistoryTests(unittest.TestCase):
+    """``analyze_period.discover_price_history`` picks the smallest covering
+    range under ``root/<symbol>/``; an exact match always has the minimum
+    possible span so it wins automatically."""
+
+    def test_missing_symbol_directory_returns_none(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertIsNone(
+                analyze.discover_price_history(root, "NOPE", date(2026, 1, 5), date(2026, 1, 8)),
+            )
+
+    def test_exact_match_wins_over_a_wider_covering_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wide = _write_price_capture(root, "AAA", "2026-01-01", "2026-01-31", [])
+            exact = _write_price_capture(root, "AAA", "2026-01-05", "2026-01-08", [])
+            found = analyze.discover_price_history(root, "AAA", date(2026, 1, 5), date(2026, 1, 8))
+            self.assertEqual(found, exact)
+            self.assertNotEqual(found, wide)
+
+    def test_smallest_covering_range_chosen_when_no_exact_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            narrower = _write_price_capture(root, "AAA", "2026-01-04", "2026-01-09", [])
+            _write_price_capture(root, "AAA", "2026-01-01", "2026-01-31", [])
+            found = analyze.discover_price_history(root, "AAA", date(2026, 1, 5), date(2026, 1, 8))
+            self.assertEqual(found, narrower)
+
+    def test_non_covering_files_are_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_price_capture(root, "AAA", "2026-01-06", "2026-01-08", [])  # starts too late
+            _write_price_capture(root, "AAA", "2026-01-01", "2026-01-06", [])  # ends too early
+            found = analyze.discover_price_history(root, "AAA", date(2026, 1, 5), date(2026, 1, 8))
+            self.assertIsNone(found)
+
+
+class PriceVolumeReportSingleModeTests(unittest.TestCase):
+    """CLI wiring for ``--price-history`` in single-capture mode."""
+
+    def _run(self, argv: list[str]) -> tuple[int, dict]:
+        stdout, stderr = io.BytesIO(), io.StringIO()
+        with redirect_stderr(stderr), patch.object(
+            analyze.sys, "stdout", io.TextIOWrapper(stdout, encoding="utf-8"),
+        ) as wrapped:
+            code = analyze.main(argv)
+            wrapped.flush()
+        return code, json.loads(stdout.getvalue().decode("utf-8"))
+
+    def test_without_price_history_section_is_not_available(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "2026-01-05_2026-01-08.json"
+            path.write_text(smoke._compact_json(_capture()), encoding="utf-8")
+            code, report = self._run([str(path), "--format", "json"])
+            self.assertEqual(code, 0)
+            self.assertEqual(report["price_volume"], {"status": "not_available"})
+            text = analyze.render_text(report)
+            self.assertIn("Fiyat/hacim verisi: mevcut değil", text)
+
+    def test_with_price_history_section_is_joined_and_has_check_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture_path = root / "2026-01-05_2026-01-08.json"
+            capture_path.write_text(smoke._compact_json(_capture()), encoding="utf-8")
+            price_path = _write_price_capture(root, "TEST", "2026-01-05", "2026-01-08", [
+                _price_bar("2026-01-05", c="10", adj="10", v=100, h="11", l="9"),
+                _price_bar("2026-01-06", c="10", adj="10", v=100, h="11", l="9"),
+                _price_bar("2026-01-07", c="10", adj="10", v=100, h="11", l="9"),
+                _price_bar("2026-01-08", c="10", adj="10", v=100, h="11", l="9"),
+            ])
+            code, report = self._run([
+                str(capture_path), "--price-history", str(price_path), "--format", "json",
+            ])
+            self.assertEqual(code, 0)
+            pv = report["price_volume"]
+            self.assertEqual(pv["status"], "joined")
+            self.assertEqual(pv["formula_version"], "price_join_v1")
+            self.assertIn("volume_ratio", pv["formulas"])
+            self.assertEqual(pv["provenance"]["source_id"], "yahoo_finance_chart_v8")
+            self.assertTrue(pv["provenance"]["unofficial_source"])
+            self.assertEqual(len(pv["days"]), 4)
+            self.assertIn("vwap_within_bar_range", pv["check_summary"])
+            self.assertIn("volume_ratio_within_tolerance", pv["check_summary"])
+            self.assertTrue(any(
+                "unofficial" in c.lower() or "not official" in c.lower() for c in pv["constraints"]
+            ))
+            text = analyze.render_text(report)
+            self.assertIn("Fiyat/hacim eşleşme kontrolleri", text)
+
+    def test_price_history_with_all_mode_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = _write_capture(root, "AAA", "2026-01-05", "2026-01-08", _capture())
+            with redirect_stderr(io.StringIO()) as errors, redirect_stdout(io.StringIO()):
+                code = analyze.main(["--all", str(root), "--price-history", str(path)])
+            self.assertEqual(code, 1)
+            self.assertIn("single-capture mode only", errors.getvalue())
+
+    def test_nonexistent_price_history_file_fails_the_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture_path = Path(directory) / "2026-01-05_2026-01-08.json"
+            capture_path.write_text(smoke._compact_json(_capture()), encoding="utf-8")
+            missing = Path(directory) / "no-such-price-file.json"
+            with redirect_stderr(io.StringIO()) as errors, redirect_stdout(io.StringIO()):
+                code = analyze.main([str(capture_path), "--price-history", str(missing)])
+            self.assertEqual(code, 1)
+            self.assertIn("Analysis failed", errors.getvalue())
+
+
+class PriceVolumeBatchModeTests(unittest.TestCase):
+    """``--all`` auto-discovers a matching price-history file per capture."""
+
+    def _run(self, argv: list[str]) -> tuple[int, dict]:
+        stdout, stderr = io.BytesIO(), io.StringIO()
+        with redirect_stderr(stderr), patch.object(
+            analyze.sys, "stdout", io.TextIOWrapper(stdout, encoding="utf-8"),
+        ) as wrapped:
+            code = analyze.main(argv)
+            wrapped.flush()
+        return code, json.loads(stdout.getvalue().decode("utf-8"))
+
+    def test_batch_index_flags_found_and_not_found(self):
+        # discover_price_history matches on the capture's own parsed
+        # requested_period.symbol (fintr.data.period_capture.PeriodCapture.
+        # symbol), not the containing directory name, so each fixture packet
+        # here carries a distinct symbol matching its price-history folder.
+        def _packet_for_symbol(symbol: str) -> dict:
+            packet = _packet()
+            packet["requested_period"]["symbol"] = symbol
+            return packet
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            captures_root = root / "captures"
+            price_root = root / "prices"
+            _write_capture(captures_root, "AAA", "2026-01-05", "2026-01-08",
+                            _capture(_packet_for_symbol("AAA")))
+            _write_capture(captures_root, "BBB", "2026-01-05", "2026-01-08",
+                            _capture(_packet_for_symbol("BBB")))
+            _write_price_capture(price_root, "AAA", "2026-01-05", "2026-01-08", [
+                _price_bar("2026-01-05", c="10", adj="10", v=100, h="11", l="9"),
+                _price_bar("2026-01-06", c="10", adj="10", v=100, h="11", l="9"),
+                _price_bar("2026-01-07", c="10", adj="10", v=100, h="11", l="9"),
+                _price_bar("2026-01-08", c="10", adj="10", v=100, h="11", l="9"),
+            ])
+            # BBB has no matching price file under price_root.
+
+            code, index = self._run([
+                "--all", str(captures_root), "--price-history-root", str(price_root),
+                "--format", "json",
+            ])
+            self.assertEqual(code, 0)
+            by_symbol = {e["symbol"]: e for e in index["captures"]}
+            self.assertTrue(by_symbol["AAA"]["price_history_found"])
+            self.assertIsInstance(by_symbol["AAA"]["price_volume_checks_passed"], bool)
+            self.assertFalse(by_symbol["BBB"]["price_history_found"])
+            self.assertIsNone(by_symbol["BBB"]["price_volume_checks_passed"])
+
+            text = analyze.render_index_text(index)
+            self.assertIn("fiyat verisi bulundu=evet", text)
+            self.assertIn("fiyat verisi bulundu=hayır", text)
 
 
 if __name__ == "__main__":

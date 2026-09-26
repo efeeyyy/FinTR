@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import os
@@ -15,6 +16,11 @@ import sys
 import tempfile
 
 from fintr.data.period_capture import PeriodCaptureError, load_period_capture
+from fintr.data.price_history import PriceHistoryCaptureError, load_price_history_capture
+from fintr.features.price_join import (
+    DEFAULT_ADJUSTMENT_RATIO_EPSILON,
+    DEFAULT_VOLUME_RATIO_TOLERANCE,
+)
 from fintr.inference.period_report import build_period_report
 
 
@@ -23,11 +29,13 @@ DEFAULT_LAGS = "0,1,2,3"
 DEFAULT_DETAIL_LAG = 2
 DEFAULT_TOP_N = 10
 DEFAULT_BATCH_ROOT = Path("data/interim/period_analysis")
+DEFAULT_PRICE_HISTORY_ROOT = Path("data/interim/price_history")
 
 # <SYMBOL>/<YYYY-MM-DD>_<YYYY-MM-DD>.json only; *.report.json, temp files
 # (e.g. the ".period-report-*.tmp" files _save() briefly creates) and any
 # other name are ignored by discovery.
 _CAPTURE_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.json$")
+_PRICE_CAPTURE_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.json$")
 
 
 def _lags(value: str) -> tuple[int, ...]:
@@ -57,6 +65,16 @@ def _positive_int(value: str) -> int:
     return number
 
 
+def _non_negative_decimal(value: str) -> Decimal:
+    try:
+        number = Decimal(value)
+    except InvalidOperation as exc:
+        raise argparse.ArgumentTypeError("expected a decimal number") from exc
+    if not number.is_finite() or number < 0:
+        raise argparse.ArgumentTypeError("expected a non-negative finite decimal number")
+    return number
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Analyze a saved period capture offline; no network, no model call.",
@@ -73,6 +91,30 @@ def _parser() -> argparse.ArgumentParser:
                         help=f"lag whose unmatched rows are listed (default: {DEFAULT_DETAIL_LAG})")
     parser.add_argument("--top", type=_positive_int, default=DEFAULT_TOP_N,
                         help=f"rows per ranked list (default: {DEFAULT_TOP_N})")
+    parser.add_argument(
+        "--price-history", type=Path, default=None, metavar="PRICE_HISTORY_JSON",
+        help="single-capture mode only: a saved fintr_price_history_capture_v1 "
+             "file to join against the capture's server dates for the "
+             "report's price_volume section. In --all mode, a matching file "
+             "is auto-discovered instead; see --price-history-root.",
+    )
+    parser.add_argument(
+        "--price-history-root", type=Path, default=DEFAULT_PRICE_HISTORY_ROOT, metavar="ROOT",
+        help="--all mode only: root under which price-history captures are "
+             f"auto-discovered (default: {DEFAULT_PRICE_HISTORY_ROOT})",
+    )
+    parser.add_argument(
+        "--volume-ratio-tolerance", type=_non_negative_decimal,
+        default=DEFAULT_VOLUME_RATIO_TOLERANCE,
+        help="price_volume: allowed relative deviation of "
+             f"implied_traded_lots/volume from 1 (default: {DEFAULT_VOLUME_RATIO_TOLERANCE})",
+    )
+    parser.add_argument(
+        "--adjustment-ratio-epsilon", type=_non_negative_decimal,
+        default=DEFAULT_ADJUSTMENT_RATIO_EPSILON,
+        help="price_volume: relative adjusted_close/close change that flags "
+             f"a corporate-action boundary date (default: {DEFAULT_ADJUSTMENT_RATIO_EPSILON})",
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--save", action="store_true",
                         help="also write <capture>.report.json next to each capture; never "
@@ -100,6 +142,7 @@ def _display_path(path: Path) -> str:
 
 def _run_metadata(
     capture_path: Path, capture_bytes: bytes, *, lags: tuple[int, ...], detail_lag: int, top: int,
+    volume_ratio_tolerance: Decimal, adjustment_ratio_epsilon: Decimal,
 ) -> dict[str, object]:
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -109,6 +152,8 @@ def _run_metadata(
         "python": platform.python_version(),
         "parameters": {
             "lags": list(lags), "detail_lag": detail_lag, "top": top,
+            "volume_ratio_tolerance": str(volume_ratio_tolerance),
+            "adjustment_ratio_epsilon": str(adjustment_ratio_epsilon),
         },
     }
 
@@ -189,6 +234,20 @@ def render_text(report: dict) -> str:
             f"{day['date'][5:]}={day['retail_pct'] if day['retail_pct'] is not None else 'null'}"
             for day in days
         )]
+    price_volume = report["price_volume"]
+    if price_volume["status"] == "joined":
+        checks = price_volume["check_summary"]
+        lines += ["", "Fiyat/hacim eşleşme kontrolleri (resmi olmayan kaynak): " + ", ".join(
+            f"{name}={summary['passed_days']}/{summary['evaluated_days']} geçti"
+            for name, summary in checks.items()
+        ) + (
+            f"; hariç tutulan placeholder gün={len(price_volume['excluded_placeholder_dates'])}"
+            f", düzeltme sınırı gün={len(price_volume['adjustment_boundary_dates'])}"
+        )]
+    elif price_volume["status"] == "load_failed":
+        lines += ["", "Fiyat/hacim verisi: bulunan dosya yüklenemedi"]
+    else:
+        lines += ["", "Fiyat/hacim verisi: mevcut değil"]
     lines += ["", "Sınırlar:"] + [f"  - {text}" for text in report["constraints"]]
     return "\n".join(lines) + "\n"
 
@@ -228,6 +287,39 @@ def discover_captures(root: Path) -> list[Path]:
     return found
 
 
+def discover_price_history(root: Path, symbol: str, start: date, end: date) -> Path | None:
+    """Best covering saved price-history file for one capture's symbol/period.
+
+    Looks under ``root/<symbol>/`` for ``<S>_<E>.json`` files (same name
+    shape as a period capture) whose own ``[S, E]`` range covers (is a
+    superset, inclusive, of) the capture's ``[start, end]``. Among covering
+    files the one with the smallest total day span is chosen -- an exact
+    ``[start, end]`` match always has the minimum possible span, so it wins
+    automatically; ties break on the lexicographically smallest filename. No
+    covering file under ``root/<symbol>/`` (including a missing directory)
+    returns ``None``.
+    """
+    symbol_dir = root / symbol
+    if not symbol_dir.is_dir():
+        return None
+    candidates: list[tuple[int, str, Path]] = []
+    for entry in sorted(symbol_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        match = _PRICE_CAPTURE_NAME_RE.match(entry.name)
+        if not match:
+            continue
+        file_start = date.fromisoformat(match.group(1))
+        file_end = date.fromisoformat(match.group(2))
+        if file_start > file_end or file_start > start or file_end < end:
+            continue
+        candidates.append(((file_end - file_start).days, entry.name, entry))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2]
+
+
 def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
     """Load, validate and (optionally) save the report for one capture.
 
@@ -248,17 +340,37 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
         "lag_summaries": None,
         "brokerage_directory_present": None,
         "proxy_checks_passed": None,
+        "price_history_found": False,
+        "price_volume_checks_passed": None,
         "report": None,
     }
     try:
         capture_bytes = path.read_bytes()
         capture = load_period_capture(path)
+
+        price_capture = None
+        price_load_error: str | None = None
+        price_path = discover_price_history(
+            args.price_history_root, capture.symbol, capture.start, capture.end,
+        )
+        if price_path is not None:
+            try:
+                price_capture = load_price_history_capture(price_path)
+            except PriceHistoryCaptureError as exc:
+                price_load_error = str(exc)
+
         report = build_period_report(
             capture, lags=args.lags, detail_lag=args.detail_lag, top_n=args.top,
+            price=price_capture,
+            volume_ratio_tolerance=args.volume_ratio_tolerance,
+            adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
         )
     except (OSError, PeriodCaptureError, ValueError) as exc:
         entry["error"] = str(exc)
         return entry
+
+    if price_load_error is not None:
+        report["price_volume"] = {"status": "load_failed", "error": price_load_error}
 
     entry.update({
         "status": "ok",
@@ -274,6 +386,14 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
             summary["all_evaluated_days_passed"]
             for summary in report["daily_market_proxy"]["check_summary"].values()
         ),
+        "price_history_found": report["price_volume"]["status"] == "joined",
+        "price_volume_checks_passed": (
+            all(
+                summary["all_evaluated_days_passed"]
+                for summary in report["price_volume"]["check_summary"].values()
+            )
+            if report["price_volume"]["status"] == "joined" else None
+        ),
     })
 
     if not args.save:
@@ -282,6 +402,8 @@ def _process_capture(path: Path, args: argparse.Namespace) -> dict[str, object]:
 
     report["run"] = _run_metadata(
         path, capture_bytes, lags=args.lags, detail_lag=args.detail_lag, top=args.top,
+        volume_ratio_tolerance=args.volume_ratio_tolerance,
+        adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
     )
     payload = (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     try:
@@ -311,7 +433,12 @@ def build_batch_index(root: Path, entries: list[dict[str, object]], args: argpar
         "schema": "fintr_period_batch_index_v1",
         "root": _display_path(root),
         "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "parameters": {"lags": list(args.lags), "detail_lag": args.detail_lag, "top": args.top},
+        "parameters": {
+            "lags": list(args.lags), "detail_lag": args.detail_lag, "top": args.top,
+            "price_history_root": _display_path(args.price_history_root),
+            "volume_ratio_tolerance": str(args.volume_ratio_tolerance),
+            "adjustment_ratio_epsilon": str(args.adjustment_ratio_epsilon),
+        },
         "captures": entries,
         "totals": {
             "captures": len(entries),
@@ -346,6 +473,12 @@ def render_index_text(index: dict) -> str:
             f"{row['sign_matches']}/{row['comparable']} aynı işaret"
             for row in entry["lag_summaries"]
         )
+        if entry["price_volume_checks_passed"] is None:
+            price_checks_text = "n/a"
+        elif entry["price_volume_checks_passed"]:
+            price_checks_text = "evet"
+        else:
+            price_checks_text = "hayır"
         lines.append(
             f"- {entry['symbol']} {entry['period_start']}..{entry['period_end']} "
             f"({entry['schema_version']}, {entry['server_date_count']} gözlem, "
@@ -353,6 +486,8 @@ def render_index_text(index: dict) -> str:
             f"AKD mutabakatı[{akd}], takas farkı istisna={entry['custodian_diff_exception_count']}, "
             f"gecikme[{lag}], "
             f"piyasa proxy kontrolleri geçti={'evet' if entry['proxy_checks_passed'] else 'hayır'}, "
+            f"fiyat verisi bulundu={'evet' if entry['price_history_found'] else 'hayır'}, "
+            f"fiyat/hacim kontrolleri geçti={price_checks_text}, "
             f"rapor={_REPORT_STATUS_TR[entry['report']]}"
         )
     return "\n".join(lines) + "\n"
@@ -387,6 +522,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.capture is not None:
             print("Analysis failed: pass a capture path or --all, not both", file=sys.stderr)
             return 1
+        if args.price_history is not None:
+            print(
+                "Analysis failed: --price-history is single-capture mode only; "
+                "--all auto-discovers under --price-history-root",
+                file=sys.stderr,
+            )
+            return 1
         return run_batch(args)
     if args.capture is None:
         _parser().error("the following arguments are required: capture (or use --all)")
@@ -394,14 +536,22 @@ def main(argv: list[str] | None = None) -> int:
     try:
         capture_bytes = args.capture.read_bytes()
         capture = load_period_capture(args.capture)
+        price_capture = (
+            None if args.price_history is None else load_price_history_capture(args.price_history)
+        )
         report = build_period_report(
             capture, lags=args.lags, detail_lag=args.detail_lag, top_n=args.top,
+            price=price_capture,
+            volume_ratio_tolerance=args.volume_ratio_tolerance,
+            adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
         )
-    except (OSError, PeriodCaptureError, ValueError) as exc:
+    except (OSError, PeriodCaptureError, PriceHistoryCaptureError, ValueError) as exc:
         print(f"Analysis failed: {exc}", file=sys.stderr)
         return 1
     report["run"] = _run_metadata(
         args.capture, capture_bytes, lags=args.lags, detail_lag=args.detail_lag, top=args.top,
+        volume_ratio_tolerance=args.volume_ratio_tolerance,
+        adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
     )
     payload = (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     if args.save:

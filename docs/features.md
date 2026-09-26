@@ -201,11 +201,62 @@ kodları da aynı dizine karşı aranır; dizinde yoksa `unresolved` kalır, ell
 eşleştirme yapılmaz. Metin çıktısında yalnızca `resolved` durumundaki kodlar
 `KOD (short_title)` biçiminde gösterilir.
 
+### Fiyat/hacim eşleştirmesi (`price_join_v1`, resmi olmayan kaynak)
+
+`fintr.features.price_join`, kaydedilmiş bir fiyat geçmişi capture'ını
+(`fintr.data.price_history.load_price_history_capture`, bkz.
+`docs/price_history.md`) dönem paketinin sunucu tarihlerine ve
+`daily_market_proxy` çıktısına hizalar. İki taraf da bağımsız olarak
+doğrulanmamıştır; bu bölüm bir nedensellik iddiası değildir ve fiyat yönü
+çıkarımı yapmaz.
+
+Her sunucu tarihi için: o tarihe ait bar varsa ham `close`/`volume` ile
+`adjusted_close` ayrı alanlarda tutulur;
+`vwap_within_bar_range = bar.low <= vwap_proxy <= bar.high`;
+`volume_ratio = implied_traded_lots / bar.volume` (Decimal, hacim 0/None ise
+`None`) ve bunun `volume_ratio_tolerance` parametresi içinde olup olmadığı
+(varsayılan `0.5`; "lot" birimi AKD/takas tarafında fiyat kaynağının hacim
+birimiyle aynı olmak zorunda değildir, bu yüzden geniş bir bant yalnızca
+büyük ölçekli tutarsızlıkları işaretler). Bar yoksa o tarih
+`missing_server_dates` altında listelenir.
+
+Dönem paketinde karşılığı olmayan (price-only) tarihler üçe ayrılır:
+`placeholder` (hacim 0/None ve `open == high == low == close` — bir borsa
+tatili işaretleyici barının belgelenen şekli), `no_data_bar` (dört OHLC alanı
+da `None`) ve `unexpected_trading_bar` (diğerleri). Placeholder barlar asla
+gerçek bir işlem gözlemi sayılmaz.
+
+`adjustment_ratio = adjusted_close / close` barın tarihinde hesaplanır; bu
+oranın bir önceki fiyatlı bardan `adjustment_ratio_epsilon` parametresinden
+(varsayılan `0.0005`, göreli) daha fazla değiştiği tarihler
+`adjustment_boundary_dates` altında yalnızca **tarih olarak** listelenir
+(oran değerleri raporlanmaz). Bu, takas toplamlarında bazı tarihlerde
+görülen ölçek sıçramalarıyla ilişkilendirilebilir bir gözlemdir; nedeni
+çıkarılmaz.
+
+`scripts/analyze_period.py`, tek kayıt modunda `--price-history PATH` ile
+belirtilen dosyayı; `--all` modunda ise
+`--price-history-root` (varsayılan `data/interim/price_history`) altında
+`<SEMBOL>/<S>_<E>.json` desenine uyan, kaydın `[start, end]` aralığını
+kapsayan (superset) dosyalar arasından en dar aralıklıyı (birebir eşleşme
+otomatik olarak kazanır) otomatik bulur; eşleşme yoksa rapordaki
+`price_volume.status` alanı `"not_available"` olur. `--volume-ratio-tolerance`
+ve `--adjustment-ratio-epsilon` bu iki parametreyi CLI'dan açıkça ayarlar
+(varsayılanları gizli değildir). Rapordaki `price_volume` bölümü provenance
+(`source_id`, `accessed_at_utc`, `normalized_sha256`, `unofficial_source`),
+tarih bazlı satırlar, kontrol özetleri, `adjustment_boundary_dates` ve
+hariç tutulan placeholder tarihlerini taşır. Metin çıktısı yalnızca
+geçen/toplam kontrol sayılarını ve placeholder/düzeltme sınırı tarih
+sayılarını gösterir, tek tek fiyat/hacim değerlerini listelemez. Toplu mod
+indeksi her kayıt için `price_history_found` ve
+`price_volume_checks_passed` bayraklarını taşır.
+
 Çalıştırma (ağ ve model çağrısı yok):
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src"
-.\.venv\Scripts\python.exe scripts\analyze_period.py data\interim\period_analysis\<SYM>\<START>_<END>.json
+.\.venv\Scripts\python.exe scripts\analyze_period.py data\interim\period_analysis\<SYM>\<START>_<END>.json `
+  --price-history data\interim\price_history\<SYM>\<START>_<END>.json
 ```
 
 `--format json` tam raporu, `--save` ise raporu `<START>_<END>.report.json`

@@ -14,12 +14,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+import hashlib
+import json
 import math
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fintr.data.parsers.common import (
     MarketDataParseError,
+    require_date,
     require_field,
     require_int,
     require_list,
@@ -355,8 +359,6 @@ def normalized_payload(filtered: FilteredPriceHistory) -> dict[str, Any]:
 
 def canonical_json(value: Any) -> str:
     """Sorted-key compact JSON with exact Decimal/number tokens, for capture hashes."""
-    import json
-
     if isinstance(value, dict):
         if any(not isinstance(key, str) for key in value):
             raise PriceHistoryParseError("non_string_json_key")
@@ -377,3 +379,206 @@ def canonical_json(value: Any) -> str:
             raise PriceHistoryParseError("non_finite_number")
         return json.dumps(value, ensure_ascii=False, allow_nan=False)
     raise PriceHistoryParseError("unsupported_json_value")
+
+
+# ---------------------------------------------------------------------------
+# Loading a saved capture artifact (``fintr_price_history_capture_v1``)
+# ---------------------------------------------------------------------------
+#
+# ``parse_chart_json``/``filter_to_range``/``normalized_payload`` above build a
+# capture at fetch time (see ``scripts/fetch_price_history.py``); the loader
+# below reads one back, re-deriving ``normalized_sha256`` from the saved
+# ``normalized`` section the same way ``fintr.data.period_capture`` re-derives
+# ``packet_sha256_canonical_json`` for period captures. A hash mismatch (or
+# any structural problem) is refused, not silently ignored.
+
+PRICE_HISTORY_CAPTURE_SCHEMA = "fintr_price_history_capture_v1"
+
+
+class PriceHistoryCaptureError(ValueError):
+    """A saved price-history capture file failed structural or integrity validation."""
+
+
+@dataclass(frozen=True, slots=True)
+class PriceHistoryCaptureMeta:
+    """Provenance fields read from one saved capture's ``capture_metadata``."""
+
+    schema: str
+    source_id: str
+    request_url: str
+    accessed_at_utc: str
+    permission_status: str
+    unofficial_source: bool
+    raw_response_sha256: str
+    normalized_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class PriceHistoryCapture:
+    """Validated, loaded price-history capture; ``bars`` in ascending date order."""
+
+    meta: PriceHistoryCaptureMeta
+    symbol: str
+    requested_start: date
+    requested_end: date
+    date_source: str
+    dropped_before_start_count: int
+    dropped_after_end_count: int
+    bars: tuple[DailyBar, ...]
+
+
+def _reject_capture_constant(token: str) -> None:
+    raise PriceHistoryCaptureError(f"non_finite_json_constant: {token}")
+
+
+def _decimal_from_normalized_str(value: Any, path: str) -> Decimal | None:
+    """``normalized.bars`` numbers are strings (see ``_decimal_str`` above)."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise PriceHistoryCaptureError(
+            f"{path}: expected string or null, got {type(value).__name__}"
+        )
+    try:
+        result = Decimal(value)
+    except InvalidOperation as exc:
+        raise PriceHistoryCaptureError(f"{path}: invalid decimal number") from exc
+    if not result.is_finite():
+        raise PriceHistoryCaptureError(f"{path}: number must be finite")
+    return result
+
+
+def _int_from_normalized(value: Any, path: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PriceHistoryCaptureError(
+            f"{path}: expected integer or null, got {type(value).__name__}"
+        )
+    return value
+
+
+def _bar_from_normalized(raw: Any, path: str) -> DailyBar:
+    row = require_mapping(raw, path)
+    return DailyBar(
+        trade_date=require_date(require_field(row, "date", path), f"{path}.date"),
+        timestamp_utc=require_int(require_field(row, "timestamp_utc", path), f"{path}.timestamp_utc"),
+        open=_decimal_from_normalized_str(row.get("open"), f"{path}.open"),
+        high=_decimal_from_normalized_str(row.get("high"), f"{path}.high"),
+        low=_decimal_from_normalized_str(row.get("low"), f"{path}.low"),
+        close=_decimal_from_normalized_str(row.get("close"), f"{path}.close"),
+        adjusted_close=_decimal_from_normalized_str(row.get("adjusted_close"), f"{path}.adjusted_close"),
+        volume=_int_from_normalized(row.get("volume"), f"{path}.volume"),
+    )
+
+
+def parse_price_history_capture(document: Any) -> PriceHistoryCapture:
+    """Validate a decoded ``fintr_price_history_capture_v1`` document and its
+    ``normalized_sha256``."""
+    try:
+        root = require_mapping(document, "capture")
+        meta_raw = require_mapping(
+            require_field(root, "capture_metadata", "capture"), "capture.capture_metadata",
+        )
+        if meta_raw.get("schema") != PRICE_HISTORY_CAPTURE_SCHEMA:
+            raise PriceHistoryCaptureError("unsupported_schema")
+        normalized = require_mapping(
+            require_field(root, "normalized", "capture"), "capture.normalized",
+        )
+
+        expected_hash = require_string(
+            require_field(meta_raw, "normalized_sha256", "capture.capture_metadata"),
+            "capture.capture_metadata.normalized_sha256",
+        )
+        actual_hash = hashlib.sha256(canonical_json(normalized).encode("utf-8")).hexdigest()
+        if actual_hash != expected_hash:
+            raise PriceHistoryCaptureError("normalized_hash_mismatch")
+
+        permission = require_mapping(
+            require_field(meta_raw, "permission_provenance", "capture.capture_metadata"),
+            "capture.capture_metadata.permission_provenance",
+        )
+        meta = PriceHistoryCaptureMeta(
+            schema=meta_raw["schema"],
+            source_id=require_string(
+                require_field(meta_raw, "source_id", "capture.capture_metadata"),
+                "capture.capture_metadata.source_id",
+            ),
+            request_url=require_string(
+                require_field(meta_raw, "request_url", "capture.capture_metadata"),
+                "capture.capture_metadata.request_url",
+            ),
+            accessed_at_utc=require_string(
+                require_field(meta_raw, "accessed_at_utc", "capture.capture_metadata"),
+                "capture.capture_metadata.accessed_at_utc",
+            ),
+            permission_status=require_string(
+                require_field(permission, "status", "capture.capture_metadata.permission_provenance"),
+                "capture.capture_metadata.permission_provenance.status",
+            ),
+            # Every source this loader currently supports (see module
+            # docstring) is documented as an unofficial secondary source; if
+            # a second, official source is ever added this must become a
+            # real per-source_id lookup instead of a constant.
+            unofficial_source=True,
+            raw_response_sha256=require_string(
+                require_field(meta_raw, "raw_response_sha256", "capture.capture_metadata"),
+                "capture.capture_metadata.raw_response_sha256",
+            ),
+            normalized_sha256=actual_hash,
+        )
+
+        bars_path = "capture.normalized.bars"
+        bars = tuple(
+            _bar_from_normalized(raw, f"{bars_path}[{index}]")
+            for index, raw in enumerate(require_list(
+                require_field(normalized, "bars", "capture.normalized"), bars_path,
+            ))
+        )
+        bar_dates = [bar.trade_date for bar in bars]
+        if len(set(bar_dates)) != len(bar_dates):
+            raise PriceHistoryCaptureError("duplicate_date_in_bars")
+        if bar_dates != sorted(bar_dates):
+            raise PriceHistoryCaptureError("bars_not_ascending")
+
+        return PriceHistoryCapture(
+            meta=meta,
+            symbol=require_string(
+                require_field(normalized, "symbol", "capture.normalized"), "capture.normalized.symbol",
+            ),
+            requested_start=require_date(
+                require_field(normalized, "requested_start_date", "capture.normalized"),
+                "capture.normalized.requested_start_date",
+            ),
+            requested_end=require_date(
+                require_field(normalized, "requested_end_date", "capture.normalized"),
+                "capture.normalized.requested_end_date",
+            ),
+            date_source=require_string(
+                require_field(normalized, "date_source", "capture.normalized"),
+                "capture.normalized.date_source",
+            ),
+            dropped_before_start_count=require_int(
+                require_field(normalized, "dropped_before_start_count", "capture.normalized"),
+                "capture.normalized.dropped_before_start_count",
+            ),
+            dropped_after_end_count=require_int(
+                require_field(normalized, "dropped_after_end_count", "capture.normalized"),
+                "capture.normalized.dropped_after_end_count",
+            ),
+            bars=bars,
+        )
+    except MarketDataParseError as exc:
+        raise PriceHistoryCaptureError(
+            f"invalid_capture_field: {exc.field_path or 'unknown'}"
+        ) from None
+
+
+def load_price_history_capture(path: Path) -> PriceHistoryCapture:
+    """Read one saved capture with exact Decimal numbers and validate it."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+        document = json.loads(text, parse_float=Decimal, parse_constant=_reject_capture_constant)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise PriceHistoryCaptureError("unreadable_capture") from None
+    return parse_price_history_capture(document)

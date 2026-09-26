@@ -52,6 +52,23 @@ bağlantısı açmaz. Gerçek bir çekim ve kayıt için `--save` eklenir; hedef
 `data/interim/price_history/<SEMBOL>/<BAŞLANGIÇ>_<BİTİŞ>.json` zaten varsa
 üzerine yazılmaz.
 
+## Kaydedilmiş capture'ı yükleme ve dönem paketiyle eşleştirme
+
+`fintr.data.price_history.load_price_history_capture`, kaydedilmiş bir
+capture dosyasını okur ve `capture_metadata.normalized_sha256`'yı
+`normalized` bölümünden yeniden hesaplayıp doğrular (dönem capture'larının
+`packet_sha256_canonical_json`'ı doğrulamasıyla aynı desen); uyuşmazsa veya
+şema beklenenden farklıysa `PriceHistoryCaptureError` fırlatır, sessizce
+yoksaymaz.
+
+`fintr.features.price_join.join_price_history`, bu şekilde yüklenen barları
+bir dönem paketinin sunucu tarihlerine hizalar (placeholder/beklenmeyen işlem
+barı sınıflandırması, hacim oranı kontrolü, düzeltme sınırı tarihleri); ayrıntı
+için `docs/features.md`'deki "Fiyat/hacim eşleştirmesi" bölümüne bakın.
+`scripts/analyze_period.py`, tek kayıt modunda `--price-history PATH`, toplu
+modda ise sembol ve aralığa göre otomatik keşifle bu eşleştirmeyi raporun
+`price_volume` bölümüne ekler.
+
 Aynı sembol/aralık için daha önce kaydedilmiş bir dönem paketiyle
 (`data/interim/period_analysis/...`) yalnızca tarih kapsamını karşılaştırmak
 için (hiçbir fiyat/hacim değeri yazdırmadan):

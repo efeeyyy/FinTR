@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable
 from datetime import date
 from decimal import Decimal
 from typing import Any
 
 from fintr.data.period_capture import PeriodCapture, resolve_brokerage_label
+from fintr.data.price_history import PriceHistoryCapture
 from fintr.features.period import (
     FORMULA_VERSION,
     FORMULAS,
@@ -17,6 +19,12 @@ from fintr.features.period import (
     daily_panel_coverage,
     lagged_akd_custody_match,
     reconcile_daily_akd,
+)
+from fintr.features.price_join import (
+    DEFAULT_ADJUSTMENT_RATIO_EPSILON,
+    DEFAULT_VOLUME_RATIO_TOLERANCE,
+    FORMULAS as PRICE_JOIN_FORMULAS,
+    join_price_history,
 )
 
 
@@ -38,6 +46,23 @@ REPORT_CONSTRAINTS: tuple[str, ...] = (
 )
 
 
+PRICE_VOLUME_CONSTRAINTS: tuple[str, ...] = (
+    "Price/volume data is from an unofficial secondary source (Yahoo "
+    "Finance public chart endpoint), not official Borsa Istanbul data; see "
+    "docs/price_history.md.",
+    "The joined price/AKD-proxy series is context alongside the period's "
+    "flow and custody data; it is not a causal claim and no price "
+    "direction is inferred from it.",
+    "implied_traded_lots (used in volume_ratio) is itself an unverified "
+    "proxy derived from daily AKD rows; a ratio outside tolerance flags a "
+    "mismatch between two independently unverified series, not a proven "
+    "data error in either one.",
+    "A placeholder bar (an exchange-holiday marker: zero/None volume, "
+    "open == high == low == close) is excluded from trading-day "
+    "classification and never treated as a real trading observation.",
+)
+
+
 def _num(value: Decimal | None) -> str | None:
     return None if value is None else format(value, "f")
 
@@ -50,8 +75,83 @@ def _label(capture: PeriodCapture, code: str) -> dict[str, Any]:
     return resolve_brokerage_label(capture.brokerage_directory, code)
 
 
+def _bool_check_summary(values: Iterable[bool | None]) -> dict[str, Any]:
+    evaluated = [value for value in values if value is not None]
+    passed = sum(1 for value in evaluated if value)
+    failing = len(evaluated) - passed
+    return {
+        "evaluated_days": len(evaluated), "passed_days": passed,
+        "failing_days": failing, "all_evaluated_days_passed": failing == 0,
+    }
+
+
+def build_price_volume_report(
+    capture: PeriodCapture, price: PriceHistoryCapture | None, *,
+    volume_ratio_tolerance: Decimal, adjustment_ratio_epsilon: Decimal,
+) -> dict[str, Any]:
+    """The optional 'price_volume' report section. ``price`` is None when no
+    saved price-history capture was found/given; the section then reports
+    ``status: "not_available"`` and nothing else, per the same
+    JSON-ready-report pattern as the rest of this module."""
+    if price is None:
+        return {"status": "not_available"}
+
+    join = join_price_history(
+        capture, price,
+        volume_ratio_tolerance=volume_ratio_tolerance,
+        adjustment_ratio_epsilon=adjustment_ratio_epsilon,
+    )
+    return {
+        "status": "joined",
+        "formula_version": join.formula_version,
+        "formulas": dict(PRICE_JOIN_FORMULAS),
+        "provenance": {
+            "source_id": price.meta.source_id,
+            "accessed_at_utc": price.meta.accessed_at_utc,
+            "normalized_sha256": price.meta.normalized_sha256,
+            "unofficial_source": price.meta.unofficial_source,
+            "permission_status": price.meta.permission_status,
+        },
+        "parameters": {
+            "volume_ratio_tolerance": _num(join.volume_ratio_tolerance),
+            "adjustment_ratio_epsilon": _num(join.adjustment_ratio_epsilon),
+        },
+        "days": [
+            {
+                "date": day.date.isoformat(),
+                "bar_present": day.bar_present,
+                "close": _num(day.close),
+                "volume": day.volume,
+                "adjusted_close": _num(day.adjusted_close),
+                "vwap_proxy": _num(day.vwap_proxy),
+                "vwap_within_bar_range": day.vwap_within_bar_range,
+                "volume_ratio": _num(day.volume_ratio),
+                "volume_ratio_within_tolerance": day.volume_ratio_within_tolerance,
+            }
+            for day in join.joined
+        ],
+        "missing_server_dates": [day.isoformat() for day in join.missing_dates],
+        "excluded_placeholder_dates": [day.isoformat() for day in join.placeholder_dates],
+        "unexpected_trading_dates": [day.isoformat() for day in join.unexpected_trading_dates],
+        "no_data_price_only_dates": [day.isoformat() for day in join.no_data_dates],
+        "adjustment_boundary_dates": [day.isoformat() for day in join.adjustment_boundary_dates],
+        "check_summary": {
+            "vwap_within_bar_range": _bool_check_summary(
+                day.vwap_within_bar_range for day in join.joined
+            ),
+            "volume_ratio_within_tolerance": _bool_check_summary(
+                day.volume_ratio_within_tolerance for day in join.joined
+            ),
+        },
+        "constraints": list(PRICE_VOLUME_CONSTRAINTS),
+    }
+
+
 def build_period_report(
     capture: PeriodCapture, *, lags: tuple[int, ...], detail_lag: int, top_n: int,
+    price: PriceHistoryCapture | None = None,
+    volume_ratio_tolerance: Decimal = DEFAULT_VOLUME_RATIO_TOLERANCE,
+    adjustment_ratio_epsilon: Decimal = DEFAULT_ADJUSTMENT_RATIO_EPSILON,
 ) -> dict[str, Any]:
     """Build the report; every number is computed here, not by a model."""
     if type(top_n) is not int or top_n < 1:
@@ -228,6 +328,11 @@ def build_period_report(
                 )
             },
         },
+        "price_volume": build_price_volume_report(
+            capture, price,
+            volume_ratio_tolerance=volume_ratio_tolerance,
+            adjustment_ratio_epsilon=adjustment_ratio_epsilon,
+        ),
         "provider_metadata": {
             "method_verified": False,
             "days": [
