@@ -145,12 +145,12 @@ def find_leakage_violations(
 
     Checked, in order per case: development-only source path, development
     registry symbol match (company-level, regardless of date), duplicate
-    case_id, duplicate capture checksum, duplicate leakage group, and (only
-    when the corresponding argument is supplied -- both are optional and
-    off by default) a frozen BIST30 holdout-split violation
-    (``not_in_holdout_split``, from ``scripts/validate_eval_manifest.py
-    --split-file``) or a symbol-exclusions violation (``excluded_symbol``,
-    unconditional, no override flag).
+    case_id, duplicate capture checksum, duplicate leakage group, and --
+    only when the corresponding argument is supplied -- a frozen BIST 30
+    holdout-split violation (``not_in_holdout_split``: the case symbol is
+    not in ``split.holdout_symbols``) and a symbol-exclusions violation
+    (``excluded_symbol``). ``scripts/validate_eval_manifest.py`` always
+    supplies both, from the active split and the project exclusions file.
     """
     if not isinstance(cases, tuple) or any(not isinstance(case, EvalCase) for case in cases):
         raise ManifestError("invalid_cases")

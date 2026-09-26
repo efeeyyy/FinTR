@@ -17,6 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from fintr.evaluation.symbol_guard import render_guard_lines
 from fintr.research.engine import (
     EngineError,
     SymbolData,
@@ -96,6 +97,7 @@ class RunParameters:
 
 def run_study(
     spec: StudySpec, symbol_data: dict[str, SymbolData], *, split: str, params: RunParameters,
+    symbol_scope: str = "declared",
 ) -> dict:
     """Build the full result dict for one split ("train" or "test").
 
@@ -104,13 +106,28 @@ def run_study(
     results may always be built, including for an unfrozen spec, since
     iterating on a spec against the train period is exactly what
     pre-registration precedes.
+
+    ``symbol_scope``: ``"declared"`` (default) uses ``symbols_for_split``;
+    ``"holdout_only"`` (test split only) evaluates only the spec's
+    ``symbol_holdout`` -- what ``scripts/run_study.py --split test`` uses
+    under the frozen BIST 30 split guard, so a one-shot holdout evaluation
+    never mixes in development symbols.
     """
     if split not in ("train", "test"):
         raise EngineError("invalid_split")
+    if symbol_scope not in ("declared", "holdout_only"):
+        raise EngineError("invalid_symbol_scope")
     if split == "test" and not spec.frozen:
         raise EngineError("test_requires_frozen_spec")
 
-    required_symbols = symbols_for_split(spec, split)
+    if symbol_scope == "holdout_only":
+        if split != "test":
+            raise EngineError("holdout_only_requires_test_split")
+        if not spec.symbol_holdout:
+            raise EngineError("holdout_only_requires_symbol_holdout")
+        required_symbols = spec.symbol_holdout
+    else:
+        required_symbols = symbols_for_split(spec, split)
     missing = [symbol for symbol in required_symbols if symbol not in symbol_data]
     if missing:
         raise EngineError(f"missing_symbol_data: {','.join(sorted(missing))}")
@@ -156,6 +173,7 @@ def run_study(
         "spec_sha256": spec.spec_sha256,
         "spec_frozen": spec.frozen,
         "split": split,
+        "symbol_scope": symbol_scope,
         "symbols": list(required_symbols),
         "symbol_holdout": list(spec.symbol_holdout),
         "train_test_cutoff": spec.train_test_cutoff.isoformat(),
@@ -208,16 +226,8 @@ def render_text(result: dict) -> str:
     ]
     guard = result.get("split_guard")
     if guard is not None:
-        if guard["guard_bypassed"]:
-            lines.append(
-                "UYARI: --no-split-guard aktif; BIST30 holdout split koruması bu "
-                "çalışma için KAPALI."
-            )
-        lines.append(
-            "Split guard: dosya="
-            + (guard["split_file"] or "uygulanmadı")
-            + ("" if guard["split_file_sha256"] is None else f" sha256={guard['split_file_sha256']}")
-        )
+        # First, so a --no-split-guard warning cannot be missed.
+        lines[:0] = render_guard_lines(guard)
     lines.append("")
     for horizon, stats in result["overall"].items():
         warn = " [UYARI: minimum olay eşiğinin altında]" if stats["below_min_events_warning"] else ""

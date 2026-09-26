@@ -27,21 +27,8 @@ import sys
 from typing import Any
 
 from fintr.data.period_capture import PeriodCapture, PeriodCaptureError, load_period_capture
-from fintr.evaluation.symbol_exclusions import (
-    DEFAULT_EXCLUSIONS_PATH,
-    SymbolExclusionsError,
-    exclusion_reason,
-    is_excluded,
-    load_default_symbol_exclusions,
-)
-from fintr.evaluation.symbol_split import (
-    NO_SPLIT_GUARD_WARNING,
-    SymbolSplitError,
-    is_holdout,
-    load_symbol_split,
-    resolve_default_split_path,
-    split_guard_report,
-)
+from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
+from fintr.evaluation.symbol_split import NO_SPLIT_GUARD_WARNING
 from fintr.features.custody_flow import (
     DEFAULT_MISSING_AKD_POLICY,
     DEFAULT_PAIR_TOLERANCE,
@@ -137,26 +124,13 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--split-file", type=Path, default=None,
-        help=(
-            "fintr_symbol_split_v1 file; a holdout symbol's capture is refused "
-            "by default. Default: resolved through configs/splits/current.json "
-            "if that pointer exists."
-        ),
-    )
-    parser.add_argument(
         "--no-split-guard", action="store_true",
         help=(
-            "Disable the holdout-split guard above. Exists only for non-BIST30 "
-            "exploratory work; using it on BIST30 symbols is reported loudly in "
-            "the output."
-        ),
-    )
-    parser.add_argument(
-        "--exclusions-file", type=Path, default=DEFAULT_EXCLUSIONS_PATH,
-        help=(
-            "fintr_symbol_exclusions_v1 file; an excluded symbol's capture is "
-            f"refused unconditionally -- no override flag (default: {DEFAULT_EXCLUSIONS_PATH})."
+            "Disable the frozen BIST 30 holdout-split guard (by default a holdout "
+            "symbol's capture is refused). Only for non-BIST 30 exploratory work; "
+            "the output's split_guard block says so loudly. The active split comes "
+            "only from configs/splits/current.json. Excluded symbols "
+            "(configs/exclusions/symbols.json) are always refused; no override."
         ),
     )
     return parser
@@ -266,35 +240,25 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        exclusions = load_default_symbol_exclusions(args.exclusions_file)
-    except SymbolExclusionsError as exc:
-        parser.error(f"invalid exclusions file: {exc}")
+        guards = load_active_guards(bypass_split=args.no_split_guard)
+    except SymbolGuardError as exc:
+        parser.error(str(exc))
         return 2
-    if is_excluded(exclusions, capture.symbol):
+    if guards.is_excluded(capture.symbol):
         parser.error(
             f"symbol {capture.symbol} is excluded "
-            f"({exclusion_reason(exclusions, capture.symbol)})"
+            f"({guards.exclusion_reason(capture.symbol)})"
         )
         return 2
-
-    split_path = args.split_file or resolve_default_split_path()
-    split = None
-    if split_path is not None:
-        try:
-            split = load_symbol_split(split_path)
-        except SymbolSplitError as exc:
-            parser.error(f"invalid split file: {exc}")
-            return 2
-    if args.no_split_guard:
-        print(NO_SPLIT_GUARD_WARNING, file=sys.stderr)
-    elif split is not None and is_holdout(split, capture.symbol):
+    if guards.blocks_holdout(capture.symbol):
         parser.error(
             f"symbol {capture.symbol} is a holdout symbol of the frozen split "
-            f"({split_path}, sha256={split.split_sha256}); pass --no-split-guard "
-            "for non-BIST30 exploratory work"
+            f"{guards.report()['split_file']} (sha256={guards.split.split_sha256})"
         )
         return 2
-    split_guard = split_guard_report(split_path, split, bypassed=args.no_split_guard)
+    if guards.split_guard_bypassed:
+        print(NO_SPLIT_GUARD_WARNING, file=sys.stderr)
+    split_guard = guards.report(processed_symbols=[capture.symbol])
 
     residual_result = compute_custody_residual(
         capture, lag=args.lag, missing_akd_policy=args.missing_akd_policy,

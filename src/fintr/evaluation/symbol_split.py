@@ -9,14 +9,17 @@ which never consult this module); what this guard prevents is their use for
 *analysis* -- ``scripts/run_study.py``, ``scripts/analyze_period.py``,
 ``scripts/custody_flow.py`` and the eval-manifest leakage guard.
 
-The active split is not a fixed filename: it is resolved through the
-current-split pointer file (``fintr_current_split_v1``,
-``configs/splits/current.json`` by default), because a split can be
-superseded (see ``configs/splits/bist30_2026_holdout_v1.json``'s
-``superseded_by``/``frozen: false`` after DSTKF was excluded and the pool
-redrawn as v2). ``load_symbol_split`` refuses to treat a superseded or
-unfrozen split file as active; a historical one can still be parsed for
-audit with ``require_active=False``.
+The active split is not a fixed filename and there is no CLI flag that
+names one: it is resolved only through the current-split pointer file
+(``fintr_current_split_v1``, ``configs/splits/current.json`` under the
+repository root), because a split can be superseded (see
+``configs/splits/bist30_2026_holdout_v1.json``'s ``superseded_by`` /
+``frozen: false`` after DSTKF was excluded and the pool redrawn as v2).
+``resolve_active_split`` fails closed: a missing or broken pointer, a
+missing split file, or a split that is unfrozen or carries
+``superseded_by`` is an error, never a silently disabled guard. A
+historical split can still be parsed for audit with
+``load_symbol_split(..., require_active=False)``.
 
 This module never verifies a source universe's or the exclusions file's
 recorded ``sha256`` against the actual file on disk -- those are recorded
@@ -45,7 +48,11 @@ from fintr.data.parsers.common import (
 
 SPLIT_SCHEMA = "fintr_symbol_split_v1"
 CURRENT_POINTER_SCHEMA = "fintr_current_split_v1"
-DEFAULT_CURRENT_POINTER_PATH = Path("configs/splits/current.json")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# Absolute, so the guard does not depend on the working directory. Tests
+# patch this module attribute with a synthetic pointer; there is
+# deliberately no CLI flag or environment variable that changes it.
+DEFAULT_CURRENT_POINTER_PATH = PROJECT_ROOT / "configs" / "splits" / "current.json"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -195,7 +202,9 @@ def require_split_active(split: SymbolSplit) -> None:
     not superseded, and frozen. A historical split (kept for audit, e.g.
     ``bist30_2026_holdout_v1.json`` after v2 superseded it) still parses
     fine; it just can never gate a script's enforcement."""
-    if split.superseded_by is not None:
+    # Presence of the key is enough (even ``null``): a split that was ever
+    # marked as superseded is never active again.
+    if split.superseded_by is not None or "superseded_by" in split.raw_document:
         raise SymbolSplitError("split_superseded")
     if not split.frozen:
         raise SymbolSplitError("split_not_frozen")
@@ -242,19 +251,28 @@ def load_current_split_pointer(path: Path = DEFAULT_CURRENT_POINTER_PATH) -> Pat
     return Path(current)
 
 
-def resolve_default_split_path(pointer_path: Path = DEFAULT_CURRENT_POINTER_PATH) -> Path | None:
-    """The active split file's path, resolved through the current-split
-    pointer -- never a hard-coded split filename.
+def resolve_active_split(pointer_path: Path | None = None) -> tuple[Path, SymbolSplit]:
+    """Resolve, load and require-active the split named by the pointer.
 
-    Returns ``None`` (no default; the guard is then a no-op unless the
-    caller passed an explicit ``--split-file``) only when the pointer file
-    itself does not exist. A pointer file that exists but is broken
-    (unreadable, wrong schema, missing ``current``) raises rather than
-    silently disabling the guard.
+    ``pointer_path`` defaults to ``DEFAULT_CURRENT_POINTER_PATH`` (read at
+    call time). A relative ``current`` is resolved against the repository
+    root the pointer lives in, i.e. ``pointer_path.parents[2]`` for the
+    ``<root>/configs/splits/current.json`` layout. Fails closed: every
+    problem raises ``SymbolSplitError``; nothing returns "no split".
     """
-    if not Path(pointer_path).is_file():
-        return None
-    return load_current_split_pointer(pointer_path)
+    pointer = Path(DEFAULT_CURRENT_POINTER_PATH if pointer_path is None else pointer_path)
+    if not pointer.is_file():
+        raise SymbolSplitError("current_split_pointer_missing")
+    target = load_current_split_pointer(pointer)
+    if not target.is_absolute():
+        try:
+            root = pointer.resolve().parents[2]
+        except IndexError:
+            raise SymbolSplitError("current_split_pointer_outside_repository_layout") from None
+        target = root / target
+    if not target.is_file():
+        raise SymbolSplitError("current_split_file_missing")
+    return target, load_symbol_split(target, require_active=True)
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -270,22 +288,8 @@ def is_development_symbol(split: SymbolSplit, symbol: str) -> bool:
 
 
 NO_SPLIT_GUARD_WARNING = (
-    "WARNING: --no-split-guard is set -- the frozen BIST30 holdout-symbol "
-    "guard is DISABLED for this run. This flag exists only for non-BIST30 "
-    "exploratory work; using it on BIST30 symbols bypasses the frozen "
-    "holdout protection."
+    "WARNING: --no-split-guard is set -- the frozen BIST 30 holdout-symbol "
+    "guard is DISABLED for this run. This flag exists only for non-BIST 30 "
+    "exploratory work; holdout symbols processed under it are listed in the "
+    "output. Symbol exclusions still apply (they have no override)."
 )
-
-
-def split_guard_report(
-    split_path: Path | None, split: SymbolSplit | None, *, bypassed: bool,
-) -> dict[str, Any]:
-    """The block every enforcement script embeds in its output/report to
-    state which split file (and its sha256) was applied, or that none
-    was."""
-    return {
-        "split_file": None if split_path is None else str(split_path),
-        "split_file_sha256": None if split is None else split.split_sha256,
-        "split_id": None if split is None else split.split_id,
-        "guard_bypassed": bypassed,
-    }

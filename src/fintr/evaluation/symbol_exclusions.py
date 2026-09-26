@@ -8,10 +8,13 @@ user's own assertion (see ``configs/exclusions/symbols.json``'s DSTKF
 entry); this module never independently verifies or restates it as a
 project finding.
 
-Unlike the holdout guard (which has ``--no-split-guard`` for non-BIST30
+Unlike the holdout guard (which has ``--no-split-guard`` for non-BIST 30
 exploratory work), an exclusion has **no override flag anywhere** in this
-project. Every enforcement point either refuses or skips an excluded
-symbol unconditionally.
+project -- not even a flag naming a different exclusions file. Every
+enforcement point either refuses or skips an excluded symbol
+unconditionally. An entry's optional ``retained_data`` note records what
+already-collected data was kept and why; it is informational only and never
+opens an exception in code.
 """
 
 from __future__ import annotations
@@ -33,7 +36,11 @@ from fintr.data.parsers.common import (
 
 
 EXCLUSIONS_SCHEMA = "fintr_symbol_exclusions_v1"
-DEFAULT_EXCLUSIONS_PATH = Path("configs/exclusions/symbols.json")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# Absolute, so the guard does not depend on the working directory. Tests
+# patch this module attribute with a synthetic file; there is deliberately
+# no CLI flag or environment variable that changes it.
+DEFAULT_EXCLUSIONS_PATH = PROJECT_ROOT / "configs" / "exclusions" / "symbols.json"
 
 
 class SymbolExclusionsError(ValueError):
@@ -47,6 +54,8 @@ class ExclusionEntry:
     decided_on: date
     scope: str
     reason: str
+    # Informational only (see module docstring); never consulted by a guard.
+    retained_data: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.symbol, str) or not self.symbol or self.symbol != self.symbol.upper():
@@ -59,6 +68,10 @@ class ExclusionEntry:
             raise SymbolExclusionsError("invalid_exclusion_scope")
         if not isinstance(self.reason, str) or not self.reason:
             raise SymbolExclusionsError("invalid_exclusion_reason")
+        if self.retained_data is not None and (
+            not isinstance(self.retained_data, str) or not self.retained_data
+        ):
+            raise SymbolExclusionsError("invalid_exclusion_retained_data")
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,11 +98,6 @@ class SymbolExclusions:
 
     def is_excluded(self, symbol: str) -> bool:
         return self.entry_for(symbol) is not None
-
-
-EMPTY_EXCLUSIONS = SymbolExclusions(
-    entries=(), file_sha256=None, raw_document={"schema": EXCLUSIONS_SCHEMA, "symbols": {}},
-)
 
 
 def parse_symbol_exclusions(document: Any, *, file_sha256: str | None = None) -> SymbolExclusions:
@@ -121,6 +129,10 @@ def parse_symbol_exclusions(document: Any, *, file_sha256: str | None = None) ->
                     reason=require_string(
                         require_field(item, "reason", item_path), f"{item_path}.reason",
                     ),
+                    retained_data=(
+                        None if item.get("retained_data") is None
+                        else require_string(item["retained_data"], f"{item_path}.retained_data")
+                    ),
                 )
             )
     except MarketDataParseError as exc:
@@ -137,13 +149,15 @@ def load_symbol_exclusions(path: Path) -> SymbolExclusions:
     return parse_symbol_exclusions(document, file_sha256=hashlib.sha256(raw_bytes).hexdigest())
 
 
-def load_default_symbol_exclusions(path: Path = DEFAULT_EXCLUSIONS_PATH) -> SymbolExclusions:
-    """Empty (no exclusions) if ``path`` does not exist; parsed and
-    validated otherwise. There is deliberately no flag anywhere that skips
-    this file when it does exist."""
-    if not Path(path).is_file():
-        return EMPTY_EXCLUSIONS
-    return load_symbol_exclusions(path)
+def load_active_symbol_exclusions(path: Path | None = None) -> tuple[Path, SymbolExclusions]:
+    """Load the project exclusions file (``DEFAULT_EXCLUSIONS_PATH``, read
+    at call time). Fails closed: a missing file is an error, not "no
+    exclusions" -- otherwise deleting or moving it would silently lift
+    every exclusion."""
+    target = Path(DEFAULT_EXCLUSIONS_PATH if path is None else path)
+    if not target.is_file():
+        raise SymbolExclusionsError("exclusions_file_missing")
+    return target, load_symbol_exclusions(target)
 
 
 def is_excluded(exclusions: SymbolExclusions, symbol: str) -> bool:

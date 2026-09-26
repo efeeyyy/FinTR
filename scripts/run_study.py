@@ -22,21 +22,8 @@ import tempfile
 from fintr.data.period_capture import PeriodCaptureError, load_period_capture
 from fintr.data.price_history import PriceHistoryCaptureError, load_price_history_capture
 from fintr.features.price_join import DEFAULT_ADJUSTMENT_RATIO_EPSILON, DEFAULT_VOLUME_RATIO_TOLERANCE
-from fintr.evaluation.symbol_exclusions import (
-    DEFAULT_EXCLUSIONS_PATH,
-    SymbolExclusionsError,
-    exclusion_reason,
-    is_excluded,
-    load_default_symbol_exclusions,
-)
-from fintr.evaluation.symbol_split import (
-    NO_SPLIT_GUARD_WARNING,
-    SymbolSplitError,
-    is_holdout,
-    load_symbol_split,
-    resolve_default_split_path,
-    split_guard_report,
-)
+from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
+from fintr.evaluation.symbol_split import NO_SPLIT_GUARD_WARNING
 from fintr.research.engine import EngineError, load_symbol_data
 from fintr.research.report import RunParameters, build_reproducibility_block, render_text, run_study
 from fintr.research.study_spec import StudySpecError, load_study_spec
@@ -114,29 +101,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--save", action="store_true",
                         help="write the JSON result under --out-dir; never overwrites")
     parser.add_argument(
-        "--split-file", type=Path, default=None,
-        help=(
-            "fintr_symbol_split_v1 file. --split train rejects any --data symbol "
-            "that is a holdout symbol of this split; --split test requires every "
-            "--data symbol to be a holdout symbol (in addition to the existing "
-            "frozen-spec gate). Default: resolved through "
-            "configs/splits/current.json if that pointer exists."
-        ),
-    )
-    parser.add_argument(
         "--no-split-guard", action="store_true",
         help=(
-            "Disable the holdout-split guard above. Exists only for non-BIST30 "
-            "exploratory work (e.g. a symbol outside the BIST30 pool); using it "
-            "on BIST30 symbols is reported loudly in the output."
-        ),
-    )
-    parser.add_argument(
-        "--exclusions-file", type=Path, default=DEFAULT_EXCLUSIONS_PATH,
-        help=(
-            "fintr_symbol_exclusions_v1 file; any --data symbol it lists is "
-            "refused unconditionally -- no override flag "
-            f"(default: {DEFAULT_EXCLUSIONS_PATH})."
+            "Disable the frozen BIST 30 holdout-split checks (see "
+            "docs/evaluation_protocol.md). Only for non-BIST 30 exploratory work; "
+            "the result's split_guard block and the text output say so loudly. "
+            "Symbol exclusions (configs/exclusions/symbols.json) have no override."
         ),
     )
     return parser
@@ -168,6 +138,54 @@ def _save(out_dir: Path, spec_id: str, split: str, payload: bytes) -> Path:
     raise RuntimeError("could_not_allocate_result_filename")
 
 
+def check_study_symbols(spec, data_symbols, *, split: str, guards) -> str | None:
+    """First reason the requested run violates the exclusions or the frozen
+    holdout split, or ``None``. Exclusions are checked unconditionally;
+    holdout rules are skipped only under ``--no-split-guard``.
+
+    train: no holdout symbol in the spec's train symbols or in ``--data``.
+    test: the spec must be frozen, must declare a non-empty ``symbol_holdout``
+    that is a subset of the split's holdout symbols, and every ``--data``
+    symbol must be a holdout symbol (the engine then evaluates only
+    ``symbol_holdout``; see ``symbol_scope``).
+    """
+    declared = spec.all_declared_symbols()
+    excluded = sorted(
+        {s for s in data_symbols if guards.is_excluded(s)}
+        | {s for s in declared if guards.is_excluded(s)}
+    )
+    if excluded:
+        reasons = "; ".join(f"{s}: {guards.exclusion_reason(s)}" for s in excluded)
+        return f"excluded symbol(s) {','.join(excluded)} ({reasons})"
+    if guards.split_guard_bypassed:
+        return None
+    if split == "train":
+        in_spec = sorted(s for s in spec.symbols if guards.is_holdout(s))
+        if in_spec:
+            return f"spec train symbols include holdout symbols ({','.join(in_spec)})"
+        in_data = sorted(s for s in data_symbols if guards.is_holdout(s))
+        if in_data:
+            return f"holdout symbols not allowed in --split train ({','.join(in_data)})"
+        return None
+    if not spec.frozen:
+        return "--split test requires a frozen spec (spec frozen=false)"
+    if not spec.symbol_holdout:
+        return "--split test requires the spec to declare symbol_holdout"
+    not_holdout_spec = sorted(s for s in spec.symbol_holdout if not guards.is_holdout(s))
+    if not_holdout_spec:
+        return (
+            "spec symbol_holdout lists symbols that are not holdout symbols of the "
+            f"frozen split ({','.join(not_holdout_spec)})"
+        )
+    not_holdout_data = sorted(s for s in data_symbols if not guards.is_holdout(s))
+    if not_holdout_data:
+        return (
+            "--split test accepts only holdout symbols of the frozen split "
+            f"({','.join(not_holdout_data)} are not)"
+        )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
 
@@ -177,57 +195,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Study failed: invalid spec ({exc})", file=sys.stderr)
         return 1
 
-    data_symbols = sorted({symbol for symbol, _, _ in args.data})
-
+    data_symbols = sorted({symbol.strip().upper() for symbol, _, _ in args.data})
     try:
-        exclusions = load_default_symbol_exclusions(args.exclusions_file)
-    except SymbolExclusionsError as exc:
-        print(f"Study failed: invalid exclusions file ({exc})", file=sys.stderr)
+        guards = load_active_guards(bypass_split=args.no_split_guard)
+    except SymbolGuardError as exc:
+        print(f"Study failed: {exc}", file=sys.stderr)
         return 1
-    excluded = [symbol for symbol in data_symbols if is_excluded(exclusions, symbol)]
-    if excluded:
-        for symbol in excluded:
-            print(
-                f"Study failed: symbol {symbol} is excluded "
-                f"({exclusion_reason(exclusions, symbol)})",
-                file=sys.stderr,
-            )
+    guard_problem = check_study_symbols(spec, data_symbols, split=args.split, guards=guards)
+    if guard_problem is not None:
+        print(
+            f"Study failed: {guard_problem}; split={guards.report()['split_file']} "
+            f"sha256={guards.split.split_sha256}",
+            file=sys.stderr,
+        )
         return 1
-
-    split_path = args.split_file or resolve_default_split_path()
-    split = None
-    if split_path is not None:
-        try:
-            split = load_symbol_split(split_path)
-        except SymbolSplitError as exc:
-            print(f"Study failed: invalid split file ({exc})", file=sys.stderr)
-            return 1
-    if args.no_split_guard:
+    if guards.split_guard_bypassed:
         print(NO_SPLIT_GUARD_WARNING, file=sys.stderr)
-    elif split is not None:
-        if args.split == "train":
-            violating = sorted(symbol for symbol in data_symbols if is_holdout(split, symbol))
-            if violating:
-                print(
-                    "Study failed: holdout symbols not allowed in --split train "
-                    f"({','.join(violating)}); split={split_path} "
-                    f"sha256={split.split_sha256}",
-                    file=sys.stderr,
-                )
-                return 1
-        else:
-            non_holdout = sorted(
-                symbol for symbol in data_symbols if not is_holdout(split, symbol)
-            )
-            if non_holdout:
-                print(
-                    "Study failed: --split test requires every --data symbol to be a "
-                    f"holdout symbol of the frozen split ({','.join(non_holdout)} are "
-                    f"not); split={split_path} sha256={split.split_sha256}",
-                    file=sys.stderr,
-                )
-                return 1
-    split_guard = split_guard_report(split_path, split, bypassed=args.no_split_guard)
+    split_guard = guards.report(processed_symbols=data_symbols)
+    # Under the guard a test run evaluates only the spec's symbol_holdout.
+    symbol_scope = (
+        "holdout_only" if args.split == "test" and not guards.split_guard_bypassed
+        else "declared"
+    )
 
     symbol_data = {}
     input_file_hashes: dict[str, str] = {}
@@ -254,7 +243,9 @@ def main(argv: list[str] | None = None) -> int:
         custody_scale_jump_ratio=args.custody_scale_jump_ratio,
     )
     try:
-        result = run_study(spec, symbol_data, split=args.split, params=params)
+        result = run_study(
+            spec, symbol_data, split=args.split, params=params, symbol_scope=symbol_scope,
+        )
     except EngineError as exc:
         print(f"Study failed: {exc}", file=sys.stderr)
         return 1

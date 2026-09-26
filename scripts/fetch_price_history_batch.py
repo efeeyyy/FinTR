@@ -14,6 +14,11 @@ source, and a zero-volume flat placeholder-bar count. Never a price or
 volume value. Without ``--save`` nothing is fetched or written; the table
 shows the plan only (``planned``/``skipped``), exactly like
 ``fetch_price_history.py --dry-run``.
+
+A symbol listed in ``configs/exclusions/symbols.json`` is never requested:
+it gets status ``skipped_excluded`` (no override flag). Holdout symbols of
+the frozen BIST 30 split are *not* blocked -- collecting held-out data is
+allowed; only analysing it is guarded (see docs/evaluation_protocol.md).
 """
 
 from __future__ import annotations
@@ -26,13 +31,7 @@ from pathlib import Path
 import time
 from typing import Any
 
-from fintr.evaluation.symbol_exclusions import (
-    DEFAULT_EXCLUSIONS_PATH,
-    SymbolExclusionsError,
-    exclusion_reason,
-    is_excluded,
-    load_default_symbol_exclusions,
-)
+from fintr.evaluation.symbol_guard import SymbolGuardError, exclusions_report, load_active_exclusions
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -85,15 +84,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--timeout", type=float, default=fetch.DEFAULT_TIMEOUT_SECONDS,
         help="Per-symbol network timeout in seconds, passed through to the underlying fetch.",
-    )
-    parser.add_argument(
-        "--exclusions-file", type=Path, default=DEFAULT_EXCLUSIONS_PATH,
-        help=(
-            "fintr_symbol_exclusions_v1 file; an excluded symbol is skipped "
-            "(status skipped_excluded) unconditionally -- no override flag "
-            f"(default: {DEFAULT_EXCLUSIONS_PATH}). Holdout symbols are never "
-            "blocked here: collecting held-out data is allowed."
-        ),
     )
     return parser
 
@@ -193,7 +183,7 @@ def _is_rate_limited(reason: str | None) -> bool:
 
 
 def _print_table(results: list[dict[str, Any]]) -> None:
-    header = f"{'SYMBOL':<10}{'STATUS':<10}{'BARS':>6}  {'DATE_SOURCE':<22}{'ZERO_VOL_FLAT':>14}  REASON"
+    header = f"{'SYMBOL':<10}{'STATUS':<18}{'BARS':>6}  {'DATE_SOURCE':<22}{'ZERO_VOL_FLAT':>14}  REASON"
     print(header)
     print("-" * len(header))
     for result in results:
@@ -202,7 +192,7 @@ def _print_table(results: list[dict[str, Any]]) -> None:
         zero_vol = result.get("zero_volume_flat_count")
         reason = result.get("reason") or "-"
         print(
-            f"{result['symbol']:<10}{result['status']:<10}"
+            f"{result['symbol']:<10}{result['status']:<18}"
             f"{bars if bars is not None else '-':>6}  "
             f"{date_source:<22}"
             f"{zero_vol if zero_vol is not None else '-':>14}  {reason}"
@@ -223,20 +213,22 @@ def main(argv: list[str] | None = None) -> int:
     symbols = _load_universe(args.universe, parser)
 
     try:
-        exclusions = load_default_symbol_exclusions(args.exclusions_file)
-    except SymbolExclusionsError as exc:
-        parser.error(f"--exclusions-file: {exc}")
+        exclusions_path, exclusions = load_active_exclusions()
+    except SymbolGuardError as exc:
+        parser.error(str(exc))
         return 2
+    excl = exclusions_report(exclusions_path, exclusions)
+    print(
+        f"Exclusions: {excl['exclusions_file']} (sha256={excl['exclusions_file_sha256']}; "
+        f"excluded: {', '.join(excl['excluded_symbols']) or 'none'})"
+    )
 
     results: list[dict[str, Any]] = []
     rate_limited = False
     previous_made_request = False
     for symbol in symbols:
-        if is_excluded(exclusions, symbol):
-            results.append({
-                "symbol": symbol, "status": "skipped_excluded",
-                "reason": exclusion_reason(exclusions, symbol),
-            })
+        if exclusions.is_excluded(symbol):
+            results.append({"symbol": symbol, "status": "skipped_excluded", "reason": "excluded_symbol"})
             continue
         if rate_limited:
             results.append({"symbol": symbol, "status": "skipped", "reason": "stopped_after_rate_limit"})

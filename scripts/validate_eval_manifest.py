@@ -3,7 +3,12 @@
 No network, no model call. Checks structural validity of the manifest and
 annotation formats (``fintr.evaluation.manifest``) and runs the leakage guard
 (``fintr.evaluation.leakage_guard``) against the bundled development-material
-registry. Prints a short report; exits nonzero on any violation.
+registry, the active frozen BIST 30 split (``configs/splits/current.json``:
+every case symbol must be a holdout symbol, else ``not_in_holdout_split``)
+and the symbol exclusions (``configs/exclusions/symbols.json``: an excluded
+symbol is ``excluded_symbol``, no override). Prints the split and
+exclusions files applied with their SHA-256, then a short report; exits
+nonzero on any violation.
 
 This script does NOT certify human-reviewed gold quality, independent
 permission/license verification, or genuinely held-out status beyond the
@@ -24,17 +29,7 @@ from fintr.evaluation.leakage_guard import (
     load_dev_registry,
 )
 from fintr.evaluation.manifest import ManifestError, parse_annotation, parse_manifest
-from fintr.evaluation.symbol_exclusions import (
-    DEFAULT_EXCLUSIONS_PATH,
-    SymbolExclusionsError,
-    load_default_symbol_exclusions,
-)
-from fintr.evaluation.symbol_split import (
-    SymbolSplitError,
-    load_symbol_split,
-    resolve_default_split_path,
-    split_guard_report,
-)
+from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards, render_guard_lines
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -54,22 +49,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--registry", type=Path, default=DEFAULT_REGISTRY_PATH,
         help="development-material registry JSON (default: bundled registry)",
-    )
-    parser.add_argument(
-        "--split-file", type=Path, default=None,
-        help=(
-            "fintr_symbol_split_v1 file; every case's symbol must be a holdout "
-            "symbol of this split (violation: not_in_holdout_split). Default: "
-            "resolved through configs/splits/current.json if that pointer exists."
-        ),
-    )
-    parser.add_argument(
-        "--exclusions-file", type=Path, default=DEFAULT_EXCLUSIONS_PATH,
-        help=(
-            "fintr_symbol_exclusions_v1 file; any case for an excluded symbol is "
-            "rejected (violation: excluded_symbol), unconditionally -- no override "
-            f"flag (default: {DEFAULT_EXCLUSIONS_PATH})."
-        ),
     )
     return parser
 
@@ -109,34 +88,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Validation failed: unreadable registry ({exc})", file=sys.stderr)
         return 1
 
-    split_path = args.split_file or resolve_default_split_path()
-    split = None
-    if split_path is not None:
-        try:
-            split = load_symbol_split(split_path)
-        except SymbolSplitError as exc:
-            print(f"Validation failed: invalid split file ({exc})", file=sys.stderr)
-            return 1
+    # Always the active split (configs/splits/current.json) and the project
+    # exclusions; neither has a flag, and there is no --no-split-guard here:
+    # an eval case must be a holdout symbol of the frozen split.
     try:
-        exclusions = load_default_symbol_exclusions(args.exclusions_file)
-    except SymbolExclusionsError as exc:
-        print(f"Validation failed: invalid exclusions file ({exc})", file=sys.stderr)
+        guards = load_active_guards()
+    except SymbolGuardError as exc:
+        print(f"Validation failed: {exc}", file=sys.stderr)
         return 1
-
-    guard = split_guard_report(split_path, split, bypassed=False)
-    print(
-        f"Split file: {guard['split_file'] or 'none applied'}"
-        + ("" if guard['split_file_sha256'] is None else f" (sha256={guard['split_file_sha256']})")
-    )
-    print(
-        "Exclusions file: "
-        + (str(args.exclusions_file) if exclusions.file_sha256 is not None else "none applied")
-        + ("" if exclusions.file_sha256 is None else f" (sha256={exclusions.file_sha256})")
-    )
+    for line in render_guard_lines(guards.report()):
+        print(line)
 
     problems: list[str] = [
         f"leakage: {violation.case_id}: {violation.reason}"
-        for violation in find_leakage_violations(cases, registry, split=split, exclusions=exclusions)
+        for violation in find_leakage_violations(
+            cases, registry, split=guards.split, exclusions=guards.exclusions,
+        )
     ]
 
     annotations_by_case: dict[str, int] = {}

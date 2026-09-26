@@ -43,6 +43,7 @@ from fintr.data.models import (
 from fintr.inference import (
     LiveContextLimits, build_live_analysis_context, build_live_analysis_prompt,
 )
+from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_exclusions
 from fintr.evaluation.live_capture import (
     DATA_PILOT_DIR,
     LivePilotCaptureError,
@@ -653,8 +654,16 @@ def _load_multi_symbols(
     return tuple(symbols)
 
 
+def _print_multi_symbol_table(rows: list[tuple[str, str, int]]) -> None:
+    print("")
+    print(f"{'Symbol':<16}{'Status':<34}Frames")
+    for symbol, status, frames_used in rows:
+        print(f"{symbol:<16}{status:<34}{frames_used}")
+
+
 def _print_multi_symbol_dry_run(
     args: argparse.Namespace, symbols: tuple[str, ...], start: date, end: date, today: date,
+    *, excluded: tuple[str, ...] = (),
 ) -> int:
     """Print the multi-symbol plan; never prompts for initData or opens a connection."""
     print("Dry run: argument validation passed; no initData prompt, no connection.")
@@ -676,6 +685,8 @@ def _print_multi_symbol_dry_run(
             + f"; target={target.relative_to(PROJECT_ROOT).as_posix()}"
             + f"; exists={target.exists()}"
         )
+    for symbol in excluded:
+        print(f"  {symbol}: skipped_excluded (configs/exclusions/symbols.json; no request)")
     note = _same_day_note(today, args)
     if note is not None:
         print(note)
@@ -685,6 +696,7 @@ def _print_multi_symbol_dry_run(
 
 async def _collect_multi_symbol(
     args: argparse.Namespace, symbols: tuple[str, ...], start: date, end: date, today: date,
+    *, excluded: tuple[str, ...] = (),
 ) -> int:
     """Capture one period packet per symbol, sequentially, one connection each.
 
@@ -717,7 +729,7 @@ async def _collect_multi_symbol(
     }
     secret_provider = _CachedSecretProvider(InteractiveSecretProvider())
 
-    rows: list[tuple[str, str, int]] = []
+    rows: list[tuple[str, str, int]] = [(symbol, "skipped_excluded", 0) for symbol in excluded]
     consecutive_session_failures = 0
     run_started = monotonic()
     remaining = list(symbols)
@@ -823,10 +835,7 @@ async def _collect_multi_symbol(
         if remaining:
             await asyncio.sleep(args.symbol_pause_seconds)
 
-    print("")
-    print(f"{'Symbol':<16}{'Status':<34}Frames")
-    for symbol, status, frames_used in rows:
-        print(f"{symbol:<16}{status:<34}{frames_used}")
+    _print_multi_symbol_table(rows)
 
     session_failure_stop = any(
         status == "skipped_session_failure_stop" for _, status, _ in rows
@@ -835,7 +844,7 @@ async def _collect_multi_symbol(
 
 
 async def _run_multi_symbol(
-    args: argparse.Namespace, parser: argparse.ArgumentParser, today: date,
+    args: argparse.Namespace, parser: argparse.ArgumentParser, today: date, exclusions,
 ) -> int:
     incompatible = (
         bool(args.symbol), args.akd_only, args.custodian_only, args.custodian_diff_only,
@@ -868,12 +877,22 @@ async def _run_multi_symbol(
     if not 60 <= args.max_wall_seconds <= 21600:
         parser.error("--max-wall-seconds must be between 60 and 21600 seconds")
 
-    symbols = _load_multi_symbols(args, parser)
+    requested = _load_multi_symbols(args, parser)
     start, end = args.start_date, args.end_date
+    # Excluded symbols are dropped here, before any initData prompt or
+    # connection, and reported as skipped_excluded (no override flag).
+    excluded = tuple(symbol for symbol in requested if exclusions.is_excluded(symbol))
+    symbols = tuple(symbol for symbol in requested if not exclusions.is_excluded(symbol))
+    for symbol in excluded:
+        print(f"{symbol}: skipped_excluded (configs/exclusions/symbols.json)")
 
     if args.dry_run:
-        return _print_multi_symbol_dry_run(args, symbols, start, end, today)
-    return await _collect_multi_symbol(args, symbols, start, end, today)
+        return _print_multi_symbol_dry_run(args, symbols, start, end, today, excluded=excluded)
+    if not symbols:
+        print("No symbols left after exclusions: no initData prompt, no connection.")
+        _print_multi_symbol_table([(symbol, "skipped_excluded", 0) for symbol in excluded])
+        return 0
+    return await _collect_multi_symbol(args, symbols, start, end, today, excluded=excluded)
 
 
 def _dry_run_persistence_target(
@@ -1419,6 +1438,19 @@ def _save_period_analysis_capture(packet: dict[str, object]) -> Path:
 
 async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     today = _reject_future_dates(args, parser)
+    # Exclusions are enforced before anything else that could prompt for
+    # initData or open a connection; there is no override flag. Holdout
+    # symbols are deliberately not checked: collecting them is allowed.
+    try:
+        _exclusions_path, exclusions = load_active_exclusions()
+    except SymbolGuardError as exc:
+        parser.error(str(exc))
+    if args.symbol and exclusions.is_excluded(args.symbol):
+        parser.error(
+            f"symbol {args.symbol.strip().upper()} is excluded by "
+            "configs/exclusions/symbols.json (no override); no initData prompt, "
+            "no connection"
+        )
     if args.capture_eval_context:
         parser.error(
             "--capture-eval-context is retired: this case was used for prompt/output "
@@ -1445,7 +1477,7 @@ async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         parser.error("--max-message-mib must be between 1 and 8")
 
     if args.symbols_file is not None or args.symbols is not None:
-        return await _run_multi_symbol(args, parser, today)
+        return await _run_multi_symbol(args, parser, today, exclusions)
 
     requests = _requests(args, parser)
     if args.capture_pilot_context:
