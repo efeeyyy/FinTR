@@ -78,3 +78,26 @@ için (hiçbir fiyat/hacim değeri yazdırmadan):
   --symbol AKFIS --start-date 2026-06-29 --end-date 2026-09-25 `
   --compare-capture data\interim\period_analysis\AKFIS\2026-06-29_2026-09-25.json
 ```
+
+## Toplu (batch) çekim
+
+`scripts/fetch_price_history_batch.py`, bir evren (universe) dosyasındaki
+(`configs/universe/*.json`, `{"symbols": [...]}` alanı zorunlu) her sembol
+için yukarıdaki tek-sembol çekim mantığını tekrar kullanır. Ekledikleri:
+istekler arası CLI'dan ayarlanabilir, alt sınırı 1,5 saniye olan bekleme
+(`--pacing-seconds`); hedef dosyası zaten var olan sembolleri atlama; bir
+sembolün başarısız olması durumunda diğerlerine devam etme; ve kaynak hız
+sınırlaması (HTTP 429) tespit edilirse kalan sembolleri hemen durdurup
+"hammer" etmeme. Çıktı yalnızca sembol, durum (`saved`/`skipped`/`planned`/
+`failed`), bar sayısı, `date_source` ve sıfır hacimli düz (placeholder) bar
+sayısından oluşan bir tablo yazdırır; hiçbir fiyat veya hacim değeri
+basmaz. `--save` verilmezse ağ bağlantısı açılmaz, yalnızca plan
+(`planned`/`skipped`) yazdırılır. En az bir sembol başarısız olursa çıkış
+kodu 1'dir.
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\fetch_price_history_batch.py `
+  --universe configs\universe\bist30.json `
+  --start-date 2023-01-02 --end-date 2026-09-25 --save
+```
