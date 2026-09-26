@@ -1,0 +1,16 @@
+{
+  "type": "custodian_data",
+  "data": {
+    "request_id": "synthetic-custodian-request",
+    "data": {
+      "date": "2026-09-22",
+      "results": [
+        {"custodian": "SYN1", "value": 123.4567890123456789, "percentage": 0.12345678901234567890123456789},
+        {"custodian": "SYN2", "value": 42, "percentage": 0.01}
+      ],
+      "source": "pg"
+    },
+    "processing_time_ms": 0.38,
+    "timestamp": 1790156873.1795838
+  }
+}

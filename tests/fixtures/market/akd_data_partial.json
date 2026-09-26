@@ -1,0 +1,19 @@
+{
+  "type": "akd_data",
+  "data": {
+    "request_id": "synthetic-akd-request",
+    "data": {
+      "results": [
+        {
+          "brokerage": "TEST",
+          "net": {"size": 120, "percentage": 0.25, "cost": 10.5},
+          "total": {"size": 240, "percentage": 0.5, "cost": 11.25, "volume": 2700.5}
+        }
+      ],
+      "as_of": "12:34:56",
+      "source": "live"
+    },
+    "processing_time_ms": 1.5,
+    "timestamp": 1700000000.25
+  }
+}

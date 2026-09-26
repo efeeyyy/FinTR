@@ -1,0 +1,31 @@
+{
+  "type": "custody_distribution_data",
+  "data": {
+    "request_id": "synthetic-distribution-request",
+    "timestamp": 1790000000.125,
+    "processing_time_ms": 1.25,
+    "data": {
+      "periods": [
+        "2025-06-30",
+        "2025-06-27",
+        "2025-06-20",
+        "2025-05-01",
+        "2025-03-15",
+        "2024-12-31"
+      ],
+      "data": [
+        {
+          "code": "TEST_A",
+          "values": [10, 20.125, 30.000000000000000001, 40, 50, 60],
+          "percentage": 0.123456789012345678901
+        },
+        {
+          "code": "TEST_B",
+          "values": [1, 0, 3, 4, 5, null],
+          "percentage": null
+        }
+      ],
+      "source": "pg"
+    }
+  }
+}

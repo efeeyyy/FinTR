@@ -1,0 +1,6 @@
+{
+  "type": "brokerages_data",
+  "data": {
+    "data": "[{\"code\":\"SYNTH-CODE-001\",\"title\":\"Synthetic Candidate Title\",\"short_title\":\"Synthetic\"}]"
+  }
+}

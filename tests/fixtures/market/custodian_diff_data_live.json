@@ -1,0 +1,33 @@
+{
+  "type": "custodian_diff_data",
+  "data": {
+    "request_id": "synthetic-diff-request",
+    "data": {
+      "start_date": "2026-09-14",
+      "end_date": "2026-09-22",
+      "results": [
+        {
+          "custodian": "SYN1",
+          "difference": -24.625,
+          "first_value": 100.125,
+          "last_value": 75.5,
+          "first_percentage": 12.34567890123456789,
+          "last_percentage": 9.876543210987654321,
+          "percentage_change": -2.469135690246913569
+        },
+        {
+          "custodian": "SYN2",
+          "difference": 0,
+          "first_value": 42,
+          "last_value": 42,
+          "first_percentage": 1.25,
+          "last_percentage": 1.25,
+          "percentage_change": 0
+        }
+      ],
+      "source": "pg"
+    },
+    "timestamp": 1700000000.123456789,
+    "processing_time_ms": 0.66
+  }
+}

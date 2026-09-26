@@ -10,6 +10,11 @@ from fintr.collector.client import (
     run_with_bounded_retry,
 )
 from fintr.collector.dispatcher import EventDispatcher
+from fintr.collector.evidence import (
+    LiveCollectionEvidence,
+    LiveEvidenceError,
+    build_live_collection_evidence,
+)
 from fintr.collector.events import (
     SUPPORTED_EVENT_TYPES,
     DecodedEvent,
@@ -40,6 +45,8 @@ __all__ = [
     "EventDecodeError",
     "EventDispatcher",
     "InteractiveSecretProvider",
+    "LiveCollectionEvidence",
+    "LiveEvidenceError",
     "MarketSnapshotAssembler",
     "ReplayTransport",
     "RequestRateLimiter",
@@ -47,6 +54,7 @@ __all__ = [
     "SecretProvider",
     "WebSocketCollector",
     "build_authenticated_url",
+    "build_live_collection_evidence",
     "decode_event_frame",
     "redact_text",
     "redact_url",

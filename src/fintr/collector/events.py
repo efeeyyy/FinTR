@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 import json
 from typing import Any, Mapping
 
@@ -10,6 +11,7 @@ from typing import Any, Mapping
 SUPPORTED_EVENT_TYPES: tuple[str, ...] = (
     "depth_update",
     "akd_snapshot",
+    "akd_data",  # Typed observed fields; request provenance remains separate.
     "custodian_data",
     "custodian_diff_data",
     "custody_distribution_data",
@@ -85,7 +87,7 @@ def decode_event_frame(frame: str | bytes | bytearray) -> DecodedEvent:
     if not isinstance(frame, str):
         raise EventDecodeError("frame must be str or bytes")
     try:
-        parsed = json.loads(frame)
+        parsed = json.loads(frame, parse_float=Decimal)
     except json.JSONDecodeError as exc:
         raise EventDecodeError("frame is not valid JSON") from exc
     root = _mapping(parsed, "event")

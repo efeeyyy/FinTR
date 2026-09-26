@@ -46,6 +46,31 @@ class DispatchResult:
     known: bool
     normalized: Any | None
     wrapper_type: str | None = None
+    # Recognized envelope whose full financial schema isn't verified yet.
+    normalization_pending: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SendObservation:
+    """Safe send lifecycle metadata; never contains payload or authentication."""
+
+    attempt: int
+    request_type: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptDiagnostic:
+    """Allowlisted failure details safe for smoke output."""
+
+    attempt: int
+    stage: str
+    category: str
+    event_type: str | None = None
+    field_path: str | None = None
+    expected_kind: str | None = None
+    actual_kind: str | None = None
+    shape_summary: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

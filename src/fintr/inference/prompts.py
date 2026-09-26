@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from fintr.inference.context import MarketAnalysisContext, render_market_context
+from fintr.inference.live_context import LiveAnalysisContext
+from fintr.inference.live_facts import LiveScopeFact, build_live_scope_facts
 
 
 MARKET_ANALYSIS_SYSTEM_PROMPT = """Sen Borsa İstanbul piyasa mikroyapısı
@@ -36,6 +38,13 @@ class AnalysisPrompt:
     user: str
 
 
+@dataclass(frozen=True, slots=True)
+class LiveFactSelectionPrompt:
+    system: str
+    user: str
+    facts: tuple[LiveScopeFact, ...]
+
+
 def build_analysis_prompt(context: MarketAnalysisContext) -> AnalysisPrompt:
     """Build message content without invoking a tokenizer or model."""
 
@@ -44,4 +53,29 @@ def build_analysis_prompt(context: MarketAnalysisContext) -> AnalysisPrompt:
         user=MARKET_ANALYSIS_USER_TEMPLATE.format(
             context=render_market_context(context).rstrip()
         ),
+    )
+
+
+def build_live_analysis_prompt(context: LiveAnalysisContext) -> LiveFactSelectionPrompt:
+    """Let the model select only from code-verified scope facts."""
+    if not isinstance(context, LiveAnalysisContext):
+        raise TypeError("context must be LiveAnalysisContext")
+    facts = build_live_scope_facts(context)
+    if len(facts) < 3:
+        raise ValueError("insufficient_verified_scope_facts")
+    mandatory = ",".join(fact.fact_id for fact in facts if fact.fact_id in {"A", "E"})
+    return LiveFactSelectionPrompt(
+        system=(
+            "Yalnız aşağıdaki doğrulanmış bulgu kimliklerinden üç tanesini seç. "
+            "Tek satırda sadece virgülle ayrılmış üç harf döndür; örnek biçim: "
+            "A,B,C. Açıklama, cümle, tarih veya başka karakter yazma."
+        ),
+        user=(
+            "İlk kısa kapsam özetinde en yararlı üç bulguyu seç. "
+            "Bu metinler kod tarafından doğrulanmıştır; yeniden yazma. "
+            f"Seçimde {mandatory} kimlikleri zorunludur.\n"
+            + "\n".join(f"{fact.fact_id}: {fact.text}" for fact in facts)
+            + "\nYanıt yalnız üç kimlik olsun."
+        ),
+        facts=facts,
     )

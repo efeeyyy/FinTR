@@ -132,7 +132,8 @@ zamanını taşıyabilmelidir.
 
 ## 6. Kapsam dışı
 
-- Canlı WebSocket bağlantısı, kimlik doğrulama ve veri sağlayıcı entegrasyonu;
+- Sürekli/otonom veri toplama ve ticari veri yayını; mevcut kısa ömürlü,
+  kullanıcı onaylı WebSocket sorguları kapsam içindedir;
 - dataset toplama, KAP scraping veya RAG;
 - training, PEFT/LoRA, TRL ve QLoRA;
 - emir iletimi, portföy yönetimi veya otomatik al/sat;
@@ -144,8 +145,8 @@ zamanını taşıyabilmelidir.
 - Sayısal sadakat ve sembol/tarih eşleşmesinde kritik hata toleransı sıfırdır.
 - AKD/takas karışıklığı ve desteklenmeyen fiyat tahmini ayrıca kritik hata olarak
   raporlanır.
-- Evaluation fixture'ları training verisine ve gelecekteki retrieval corpus'una
-  karıştırılmaz.
+- Evaluation fixture'ları analiz akışını veya prompt seçimini ayarlamak için
+  kullanılmaz; geliştirme pilotları bağımsız evaluation sayılmaz.
 - Parser ve feature formülleri LLM olmadan birim testlerinden geçmelidir.
 - Model değerlendirmesi `eval/rubrics/market_microstructure_v0.md` ile
   sürümlenmelidir.
@@ -154,7 +155,8 @@ zamanını taşıyabilmelidir.
 
 Sanitize edilmiş fixture'ların tümü stdlib veri modellerine parse edilmeli;
 eksik alan ve yanlış tip testleri açık hata üretmelidir. İstenen feature'lar
-deterministik biçimde hesaplanmalı ve formülleri belgelenmelidir. Mevcut
-quantized Qwen inference yolu değişmeden kalmalı; sonraki aşamada yalnızca
-normalize `MarketSnapshot` ve feature çıktısını kullanan context builder
-eklenmelidir.
+deterministik biçimde hesaplanmalı ve formülleri belgelenmelidir. Güncel veri
+önce kaynak, zaman ve yerel istek provenance'ı ile doğrulanmalı;
+ardından sınırlı analiz bağlamı Efe'nin daha güçlü yönetici modelle yapacağı
+incelemeyi desteklemelidir. Repository yerel model inference'ı, model eğitimi
+veya doğrudan model API çağrısı içermez.

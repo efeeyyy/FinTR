@@ -1,0 +1,44 @@
+{
+  "type": "custody_analysis_data",
+  "data": {
+    "request_id": "synthetic-analysis-request",
+    "data": {
+      "symbol": "AKFIS",
+      "dates": ["2026-09-22", "2026-09-21", "2026-09-19"],
+      "akd": {
+        "2026-09-22": [
+          {
+            "broker_code": "SYN1",
+            "net_size": -12.375,
+            "net_cost": 13.258,
+            "net_percentage": 22.840000000000001,
+            "total_size": 153.5,
+            "total_cost": 13.126
+          }
+        ],
+        "2026-09-19": []
+      },
+      "custody": {
+        "2026-09-22": [
+          {"broker_code": "SYN1", "lot_count": 25.125, "percentage": 3.820964628350891}
+        ],
+        "2026-09-21": []
+      },
+      "data_range": {
+        "requested_from": "2026-09-14",
+        "requested_to": "2026-09-23",
+        "actual_from": "2026-09-19"
+      },
+      "metadata": {
+        "2026-09-22": {
+          "retail_pct": null,
+          "institutional_pct": null,
+          "investor_count": null
+        },
+        "2026-09-21": {"retail_pct": null}
+      }
+    },
+    "timestamp": 1700000000.123456789,
+    "processing_time_ms": 38.47
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "type": "custody_stats_data",
+  "data": {
+    "request_id": null,
+    "cached": true,
+    "data": {
+      "retail_percentage": {
+        "format": {"decimals": 2, "suffix": "%"},
+        "data": [
+          {"date": "2030-01-02", "value": 12.34567890123456789, "label": null},
+          {"date": "2030-01-03", "value": null, "label": null}
+        ]
+      },
+      "institution_percentage": {
+        "format": {"decimals": 2, "suffix": "%"},
+        "data": [
+          {"date": "2030-01-02", "value": 87.65432109876543211, "label": null}
+        ]
+      },
+      "investor_count": {
+        "format": {"thousand": true},
+        "data": [
+          {"date": "2030-01-02", "value": 4321, "label": null},
+          {"date": "2030-01-03", "value": null, "label": null}
+        ]
+      }
+    }
+  }
+}
