@@ -709,3 +709,38 @@ class EarlyStopTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HandshakeRejectionDiagnosticTests(unittest.IsolatedAsyncioTestCase):
+    async def test_http_rejection_is_reported_with_status_only(self) -> None:
+        from websockets.datastructures import Headers
+        from websockets.exceptions import InvalidStatus
+        from websockets.http11 import Response
+
+        from fintr.collector.client import CollectorConnectionError, WebSocketCollector
+        from fintr.collector.models import CollectorRequest, RetryPolicy
+
+        class Provider:
+            def get_init_data(self) -> str:
+                return "query_id=SECRET-HANDSHAKE&hash=abc"
+
+        class Rejecting:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def __aenter__(self):
+                raise InvalidStatus(Response(401, "Unauthorized", Headers()))
+
+            async def __aexit__(self, *exc) -> bool:
+                return False
+
+        diagnostics = []
+        collector = WebSocketCollector(
+            Provider(), retry_policy=RetryPolicy(max_retries=0), connector=Rejecting,
+            diagnostic_observer=diagnostics.append,
+        )
+        with self.assertRaises(CollectorConnectionError) as captured:
+            await collector.collect((CollectorRequest("get_brokerages"),))
+        self.assertEqual([(d.stage, d.category) for d in diagnostics],
+                         [("connect", "handshake_rejected_http_401")])
+        self.assertNotIn("SECRET-HANDSHAKE", str(captured.exception) + repr(diagnostics))

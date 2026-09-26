@@ -13,7 +13,7 @@ from time import monotonic
 from typing import Any, Protocol, TypeVar
 
 from websockets.asyncio.client import connect
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from fintr.collector.dispatcher import EventDispatcher
 from fintr.collector.events import EventDecodeError, SUPPORTED_EVENT_TYPES, decode_event_frame
@@ -255,6 +255,14 @@ def _safe_field_path(
     if event_type == "custody_distribution_data":
         return re.sub(r"\[[0-9]+\]", "[index]", candidate)
     return candidate
+
+
+def _handshake_rejection_category(exc: InvalidStatus) -> str:
+    """Server refused the WebSocket upgrade; only the numeric HTTP status is kept."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int) and 100 <= status <= 599:
+        return f"handshake_rejected_http_{status}"
+    return "handshake_rejected"
 
 
 class CollectorAttemptError(RuntimeError):
@@ -728,6 +736,8 @@ class WebSocketCollector:
                             attempt, "connect",
                             "transport_error" if retryable else
                             "transport_closed" if isinstance(exc, ConnectionClosed)
+                            else _handshake_rejection_category(exc)
+                            if isinstance(exc, InvalidStatus)
                             else "internal_error",
                         ),
                         retryable=retryable,
