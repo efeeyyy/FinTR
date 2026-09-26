@@ -1,0 +1,26 @@
+{
+  "schema": "fintr_universe_v1",
+  "index": "XU030",
+  "effective_from": "2026-07-01",
+  "effective_to": "2026-09-30",
+  "as_of_announcement_date": "2026-06-19",
+  "source_urls": [
+    "https://infoyatirim.com/canli-borsa/xu030-bist-30-hisseleri",
+    "https://www.getmidas.com/canli-borsa/xu030-bist-30-hisseleri"
+  ],
+  "accessed_at_utc": "2026-09-26T00:00:00Z",
+  "retrieval_method": "secondary_web_sources_cross_checked; official KAP not accessible",
+  "symbols": [
+    "AEFES", "AKBNK", "ASELS", "ASTOR", "BIMAS", "DSTKF", "EKGYO", "ENKAI",
+    "EREGL", "FROTO", "GARAN", "GUBRF", "ISCTR", "KCHOL", "KRDMD", "MGROS",
+    "PETKM", "PGSUS", "SAHOL", "SASA", "SISE", "TAVHL", "TCELL", "THYAO",
+    "TOASO", "TRALT", "TTKOM", "TUPRS", "VAKBN", "YKBNK"
+  ],
+  "notes": [
+    "Survivorship-bias warning: this is a present-day snapshot of XU030 membership, not a point-in-time-accurate reconstruction of the index as it stood on 2026-07-01; secondary web sources do not reliably archive past composition, so this list should not be used to infer historical constituent status without independent confirmation.",
+    "Secondary-source status: KAP disclosures are not accessible in this environment; this list is cross-checked across two web sources (infoyatirim.com and getmidas.com) that returned an identical 30-symbol set, rather than official KAP data.",
+    "A third source, uzmanpara.milliyet.com.tr/canli-borsa/bist-30-hisseleri, disagreed on 3 of 30 tickers (it listed CIMSA, HEKTS, ULKER where infoyatirim/getmidas list DSTKF, GUBRF, VAKBN). This is resolved in favor of the infoyatirim/getmidas set: a user-supplied Borsa Istanbul periodic-change document (see the 2026-10-01_2026-12-31 file's 'derivation' field) shows DSTKF being removed from XU030 effective 2026-10-01, which is only consistent with DSTKF having been a current (2026-07-01..09-30) constituent -- confirming infoyatirim/getmidas and indicating the milliyet set was stale for this period.",
+    "infoyatirim.com and getmidas.com returned byte-for-byte identical 30-symbol sets and appear to share an underlying market-data feed; they are treated here as corroborating but not fully statistically independent sources."
+  ],
+  "permission": "user_asserted_2026-09-26_not_independently_verified"
+}

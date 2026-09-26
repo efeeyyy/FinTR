@@ -1,0 +1,83 @@
+{
+  "schema": "fintr_universe_v1",
+  "index": "XU030",
+  "effective_from": "2026-10-01",
+  "effective_to": "2026-12-31",
+  "as_of_announcement_date": "2026-09-21",
+  "source_urls": [
+    "https://infoyatirim.com/canli-borsa/xu030-bist-30-hisseleri",
+    "https://www.getmidas.com/canli-borsa/xu030-bist-30-hisseleri"
+  ],
+  "accessed_at_utc": "2026-09-26T00:00:00Z",
+  "retrieval_method": "secondary_web_sources_cross_checked; official KAP not accessible",
+  "derivation": {
+    "base": "configs/universe/bist30_2026-07-01_2026-09-30.json",
+    "change": {
+      "removed": [
+        {
+          "symbol": "DSTKF",
+          "name": "DESTEK FINANS FAKTORING"
+        }
+      ],
+      "added": [
+        {
+          "symbol": "TRMET",
+          "name": "TR ANADOLU METAL MADENCILIK"
+        }
+      ]
+    },
+    "reserves": [
+      "BTCIM",
+      "TURSG",
+      "OYAKC"
+    ],
+    "evidence": {
+      "document": "2026_4_Donemsel_Degisiklikler.pdf",
+      "provided_by": "user, 2026-09-26",
+      "original_file_sha256": "00e3eb129953f8af91607116b0e4f5e2ac4d69efa1f151e7f1c5e009f7202c75",
+      "wrapper_format": "The downloaded file is a Java-serialized byte[] (a KAP attachment download artifact), not a raw PDF: bytes 0-22 are the serialization stream header (magic AC ED 00 05, TC_ARRAY, '[B' class descriptor, ...), bytes 23-26 are a 4-byte big-endian payload length (0x0004310A = 274698), and the PDF payload starts at byte offset 27 with '%PDF-1.7' and ends with '%%EOF', matching the declared length exactly.",
+      "unwrapped_pdf_sha256": "2146117f7808923fbd176a8ebbe2beb7121496c71d5193f56e3a9f39195972ca",
+      "identification_caveat": "The per-index name on each change table is rendered as an image, not extractable text, so the table cannot be matched to 'XU030' by header text. It is identified as the BIST 30 table by document position and row-count structure: it is the first 1-added/1-removed/3-reserve table in the document, immediately followed by a 6-added/6-removed table (identified as BIST 50) and then a 27-added/27-removed table (identified as BIST 100), matching Borsa Istanbul's standard ordering (BIST 30, then BIST 50, then BIST 100) for these quarterly review documents. Caveat: the document contains at least two other 1-added/1-removed/3-reserve tables further down (each explicitly prefixed with the text label 'BIST' rather than an image), for different, unnamed sub-indices -- so the 1/1/3 row-count shape alone is not unique within the document; the BIST30 identification here relies on the combination of shape and being the first, unlabeled table at the top of the document, not on shape alone."
+    },
+    "manager_table_identification_check": "Manager cross-check 2026-09-26: of the three 1-in/1-out/3-reserve tables in the PDF, only the first is consistent with the 2026-07-01..09-30 constituents (TRMET not a constituent, DSTKF a constituent, no reserve is a constituent). The other two would add BIMAS or TOASO, which are already constituents, and one lists VAKBN (a constituent) as reserve, so neither can be the BIST 30 table."
+  },
+  "symbols": [
+    "AEFES",
+    "AKBNK",
+    "ASELS",
+    "ASTOR",
+    "BIMAS",
+    "EKGYO",
+    "ENKAI",
+    "EREGL",
+    "FROTO",
+    "GARAN",
+    "GUBRF",
+    "ISCTR",
+    "KCHOL",
+    "KRDMD",
+    "MGROS",
+    "PETKM",
+    "PGSUS",
+    "SAHOL",
+    "SASA",
+    "SISE",
+    "TAVHL",
+    "TCELL",
+    "THYAO",
+    "TOASO",
+    "TRALT",
+    "TRMET",
+    "TTKOM",
+    "TUPRS",
+    "VAKBN",
+    "YKBNK"
+  ],
+  "notes": [
+    "Not yet effective as of 2026-09-26 (today): this list applies from 2026-10-01, several days in the future relative to the session date.",
+    "Survivorship-bias warning: aside from the single DSTKF-for-TRMET change documented above, the remaining 29 symbols are carried over from the present-day secondary-source snapshot for 2026-07-01..09-30, not from a point-in-time-accurate historical reconstruction; see that file's notes for the same caveat.",
+    "Secondary-source status: KAP disclosures are not accessible in this environment. The base 30-symbol list is cross-checked across two web sources (infoyatirim.com and getmidas.com); the single documented change (DSTKF out, TRMET in) is sourced from a user-supplied Borsa Istanbul periodic-change document rather than official KAP data, with the identification caveats above.",
+    "A third web source (uzmanpara.milliyet.com.tr) disagreed with infoyatirim/getmidas on 3 of 30 base-period tickers; that disagreement is resolved in the base-period file using this document's confirmation that DSTKF was a current constituent being removed for this period."
+  ],
+  "permission": "user_asserted_2026-09-26_not_independently_verified"
+}
