@@ -171,3 +171,28 @@ $env:PYTHONPATH = "$PWD\src"
 olarak üzerine yazmadan kaydeder. Rapor girdi dosyası SHA-256'sını, varsa kod
 commit'ini, Python sürümünü ve `--lags`, `--detail-lag`, `--top` parametrelerini
 taşır.
+
+### Toplu mod (`--all`)
+
+`analyze_period.py capture_dosyasi.json` yerine `--all [ROOT]` verilirse (ikisi
+birlikte verilemez), `ROOT/<SYMBOL>/<YYYY-MM-DD>_<YYYY-MM-DD>.json` desenine
+uyan her kaydı bulur (varsayılan ROOT: `data/interim/period_analysis`);
+`*.report.json`, `index.json` ve desene uymayan başka dosyalar yok sayılır.
+Her kayıt aynı `--lags`/`--detail-lag`/`--top` ile ayrı ayrı doğrulanır ve
+raporlanır; doğrulaması başarısız bir kayıt sabit hata nedeniyle raporlanır ve
+diğerlerini durdurmaz. `--save` verilirse her kaydın raporu tek dosyalık moddaki
+gibi üzerine yazılmadan kaydedilir (mevcut rapor "skipped" sayılır, hata
+değildir).
+
+Çıktı; `--format json` ile sembol, dönem, `server_date_count`, şema sürümü
+(v1/v2), AKD mutabakat durum sayıları, takas farkı istisna sayısı, gecikme
+özetleri, kurum dizini var/yok ve rapor durumu (`saved`/`skipped`/`not_saved`/
+`failed`) içeren kısa bir çapraz-kayıt indeksidir; aksi halde kısa Türkçe metin
+özetidir. Tüm sayılar `build_period_report` çıktısından gelir. `--save` ile bu
+indeks ayrıca `ROOT/index.json` olarak da yazılır; tek kayıtlık raporların
+aksine bu dosya türetilmiş olduğu için her çalıştırmada **üzerine yazılır**.
+Herhangi bir kayıt doğrulaması başarısız olursa çıkış kodu 1'dir.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\analyze_period.py --all
+```

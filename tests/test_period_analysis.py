@@ -393,5 +393,117 @@ class AnalyzePeriodScriptTests(unittest.TestCase):
             self.assertIn("Analysis failed", errors.getvalue())
 
 
+def _write_capture(root: Path, symbol: str, start: str, end: str, document: dict) -> Path:
+    directory = root / symbol
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{start}_{end}.json"
+    path.write_text(smoke._compact_json(document), encoding="utf-8")
+    return path
+
+
+class AnalyzePeriodBatchTests(unittest.TestCase):
+    """--all discovers, validates, and indexes every capture under a root."""
+
+    def _run(self, argv: list[str]) -> tuple[int, dict]:
+        stdout, stderr = io.BytesIO(), io.StringIO()
+        with redirect_stderr(stderr), patch.object(
+            analyze.sys, "stdout", io.TextIOWrapper(stdout, encoding="utf-8"),
+        ) as wrapped:
+            code = analyze.main(argv)
+            wrapped.flush()
+        return code, json.loads(stdout.getvalue().decode("utf-8"))
+
+    def test_discovery_ignores_non_matching_and_stray_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            good = _write_capture(root, "AAA", "2026-01-05", "2026-01-08", _capture())
+            (root / "AAA" / "2026-01-05_2026-01-08.report.json").write_text("{}", encoding="utf-8")
+            (root / "AAA" / "notes.txt").write_text("x", encoding="utf-8")
+            (root / "AAA" / "badname.json").write_text("{}", encoding="utf-8")
+            (root / "AAA" / ".tmpfile.json").write_text("{}", encoding="utf-8")
+            (root / "stray.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(analyze.discover_captures(root), [good])
+
+    def test_missing_root_returns_no_captures(self):
+        self.assertEqual(analyze.discover_captures(Path("no-such-period-analysis-root")), [])
+
+    def test_mixed_valid_and_invalid_captures_all_processed_and_exit_1(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_capture(root, "AAA", "2026-01-05", "2026-01-08", _capture())
+            _write_capture(root, "BBB", "2026-01-05", "2026-01-08", _capture(_v2_packet()))
+            broken_dir = root / "CCC"
+            broken_dir.mkdir()
+            (broken_dir / "2026-01-05_2026-01-08.json").write_text("{}", encoding="utf-8")
+
+            code, index = self._run(["--all", str(root), "--format", "json"])
+            self.assertEqual(code, 1)
+            self.assertEqual(index["totals"], {
+                "captures": 3, "ok": 2, "failed": 1, "reports_saved": 0,
+                "reports_skipped": 0, "reports_not_saved": 2, "reports_failed": 0,
+            })
+            by_symbol = {e["symbol"]: e for e in index["captures"]}
+            self.assertEqual(by_symbol["CCC"]["status"], "failed")
+            self.assertIsNotNone(by_symbol["CCC"]["error"])
+            self.assertEqual(by_symbol["AAA"]["status"], "ok")
+            self.assertEqual(by_symbol["AAA"]["schema_version"], "v1")
+            self.assertEqual(by_symbol["BBB"]["schema_version"], "v2")
+            self.assertTrue(by_symbol["BBB"]["brokerage_directory_present"])
+            self.assertEqual(by_symbol["AAA"]["custodian_diff_exception_count"], 1)
+            lag2 = next(r for r in by_symbol["AAA"]["lag_summaries"] if r["lag"] == 2)
+            self.assertEqual((lag2["comparable"], lag2["exact_matches"]), (4, 3))
+
+    def test_save_writes_reports_and_index_then_skips_existing_on_rerun(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_capture(root, "AAA", "2026-01-05", "2026-01-08", _capture())
+
+            code, index = self._run(["--all", str(root), "--save", "--format", "json"])
+            self.assertEqual(code, 0)
+            self.assertEqual(index["totals"]["reports_saved"], 1)
+            report_path = root / "AAA" / "2026-01-05_2026-01-08.report.json"
+            self.assertTrue(report_path.exists())
+            index_path = root / "index.json"
+            self.assertTrue(index_path.exists())
+            self.assertEqual(json.loads(index_path.read_text(encoding="utf-8")), index)
+
+            code, index = self._run(["--all", str(root), "--save", "--format", "json"])
+            self.assertEqual(code, 0)
+            self.assertEqual(index["totals"]["reports_saved"], 0)
+            self.assertEqual(index["totals"]["reports_skipped"], 1)
+            self.assertEqual(index["captures"][0]["report"], "skipped")
+
+    def test_capture_and_all_are_mutually_exclusive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = _write_capture(root, "AAA", "2026-01-05", "2026-01-08", _capture())
+            with redirect_stderr(io.StringIO()) as errors, redirect_stdout(io.StringIO()):
+                code = analyze.main([str(path), "--all", str(root)])
+            self.assertEqual(code, 1)
+            self.assertIn("not both", errors.getvalue())
+
+    def test_missing_capture_and_missing_all_is_a_usage_error(self):
+        with self.assertRaises(SystemExit) as ctx:
+            with redirect_stderr(io.StringIO()):
+                analyze.main([])
+        self.assertNotEqual(ctx.exception.code, 0)
+
+    def test_text_index_is_short_turkish_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_capture(root, "AAA", "2026-01-05", "2026-01-08", _capture())
+            stdout, stderr = io.BytesIO(), io.StringIO()
+            with redirect_stderr(stderr), patch.object(
+                analyze.sys, "stdout", io.TextIOWrapper(stdout, encoding="utf-8"),
+            ) as wrapped:
+                code = analyze.main(["--all", str(root)])
+                wrapped.flush()
+            self.assertEqual(code, 0)
+            text = stdout.getvalue().decode("utf-8")
+            self.assertIn("Toplu dönem analizi", text)
+            self.assertIn("AAA 2026-01-05..2026-01-08", text)
+            self.assertIn("rapor=kaydedilmedi (--save yok)", text)
+
+
 if __name__ == "__main__":
     unittest.main()
