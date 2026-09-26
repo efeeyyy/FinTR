@@ -47,3 +47,13 @@ karşılaştırmaya katılmaz.
 
 Bu sonuçlar kısa ömürlü collector smoke'u için çevrimdışı regresyon kapısını
 kapatır; sürekli toplama veya doğrudan model API entegrasyonunu doğrulamaz.
+
+## Canlı denemeden önce
+
+Bu sayfadaki offline testler geçtikten sonra, gerçek bir canlı
+`live_collector_smoke.py` denemesi için adım adım kontrol listesi
+[docs/live_check_runbook.md](live_check_runbook.md) içindedir: Mini App'i
+kapatma, her planlanan komutun `--dry-run`'ını çalıştırma, önerilen
+`--timeout`/`--max-frames` gerekçesi, yakalama sonrası `analyze_period.py`
+ve `dev_registry.json` adımları, Mini App DevTools protokol gözlem kuralları
+ve script'in sabit hata mesajlarının anlamı.

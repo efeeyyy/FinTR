@@ -43,7 +43,9 @@ from fintr.inference import (
     LiveContextLimits, build_live_analysis_context, build_live_analysis_prompt,
 )
 from fintr.evaluation.live_capture import (
+    DATA_PILOT_DIR,
     LivePilotCaptureError,
+    PILOT_CAPTURE_FILENAME,
     capture_live_pilot_context,
     validate_context_contains_no_secrets,
 )
@@ -185,6 +187,15 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "Acknowledge that this connection may close the active Telegram Mini App "
             "session. Required for every live run."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help=(
+            "Validate arguments and print the planned requests, expected responses, "
+            "limits, and persistence target, then exit; never requires "
+            "--allow-session-takeover, never prompts for initData, never builds an "
+            "authenticated URL, and never opens a connection."
         ),
     )
     parser.add_argument(
@@ -394,6 +405,61 @@ def _period_analysis_requests(symbol: str, start: date, end: date):
         build_custody_analysis_request(symbol, start, end),
         build_custodian_diff_request(symbol, start, end),
     )
+
+
+def _dry_run_persistence_target(
+    args: argparse.Namespace, requests,
+) -> tuple[str, bool] | None:
+    """Relative POSIX path and on-disk existence for the one opt-in save target, if any."""
+    if args.save_period_analysis_context:
+        symbol = requests[1].data["company"]
+        target = (
+            PROJECT_ROOT / "data" / "interim" / "period_analysis" / symbol
+            / f"{args.start_date.isoformat()}_{args.end_date.isoformat()}.json"
+        )
+    elif args.capture_pilot_context:
+        target = DATA_PILOT_DIR / PILOT_CAPTURE_FILENAME
+    else:
+        return None
+    return target.relative_to(PROJECT_ROOT).as_posix(), target.exists()
+
+
+def _print_dry_run(
+    args: argparse.Namespace,
+    requests,
+    expected_events: set[str],
+    response_requirement: str,
+) -> int:
+    """Print the same plan a real run would send/expect; never touch secrets or the network."""
+    print("Dry run: argument validation passed; no initData prompt, no connection.")
+    print("Planned requests, in order:")
+    for request in requests:
+        print(f"  {request.request_type}: {request.to_json()}")
+    print(f"Expected responses ({response_requirement}): " + ", ".join(sorted(expected_events)))
+    print(
+        f"Limits: {args.max_events} total frames per attempt; "
+        f"{args.timeout:g}s per receive; at most 2 retries"
+    )
+    target = _dry_run_persistence_target(args, requests)
+    if target is None:
+        print("Persistent storage: disabled")
+    else:
+        relative_path, exists = target
+        label = (
+            "bounded AKFIS development pilot" if args.capture_pilot_context
+            else "validated period-analysis packet"
+        )
+        print(f"Persistent storage: opt-in requested for the {label}")
+        print(f"Persistence target: {relative_path}")
+        if exists:
+            print(
+                "Persistence target already exists: a real run would fail with "
+                "\"already exists\" (no overwrite)"
+            )
+        else:
+            print("Persistence target does not exist yet")
+    print("Dry run: no connection opened")
+    return 0
 
 
 def _period_response(results, event_type: str, response_type):
@@ -888,13 +954,14 @@ async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         parser.error(
             "--emit-analysis-context cannot be combined with --capture-pilot-context"
         )
-    if not args.allow_session_takeover:
+    if not args.dry_run and not args.allow_session_takeover:
         parser.error(
             f"{SESSION_TAKEOVER_WARNING} Close the Mini App first, then rerun with "
             "--allow-session-takeover."
         )
 
-    print(SESSION_TAKEOVER_WARNING)
+    if not args.dry_run:
+        print(SESSION_TAKEOVER_WARNING)
     if not 0 < args.timeout <= 30:
         parser.error("--timeout must be greater than 0 and at most 30 seconds")
     if not 1 <= args.max_events <= 50:
@@ -948,6 +1015,16 @@ async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     if args.emit_analysis_context and not args.validate_live_context:
         parser.error("--emit-analysis-context requires --validate-live-context")
     expected_events = {REQUEST_RESPONSE_EVENTS[request.request_type] for request in requests}
+    response_requirement = (
+        "all" if (
+            args.require_all_responses
+            or args.emit_period_analysis_context
+            or args.save_period_analysis_context
+        )
+        else "at least one"
+    )
+    if args.dry_run:
+        return _print_dry_run(args, requests, expected_events, response_requirement)
     config = CollectorConfig(
         receive_timeout_seconds=args.timeout,
         max_events=args.max_events,
@@ -997,14 +1074,6 @@ async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     display_url = redact_url(build_authenticated_url(config.endpoint, "display-only"))
     print(f"Endpoint: {display_url}")
     print("Planned requests (not proof of send): " + ", ".join(request.request_type for request in requests))
-    response_requirement = (
-        "all" if (
-            args.require_all_responses
-            or args.emit_period_analysis_context
-            or args.save_period_analysis_context
-        )
-        else "at least one"
-    )
     print(f"Expected responses ({response_requirement}): " + ", ".join(sorted(expected_events)))
     print(
         f"Limits: {args.max_events} total frames per attempt; "

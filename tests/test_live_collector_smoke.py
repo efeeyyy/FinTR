@@ -1315,6 +1315,132 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(smoke.PERIOD_ANALYSIS_CONTEXT_BEGIN, output)
             self.assertEqual(list(project_root.iterdir()), [])
 
+    async def test_dry_run_skips_session_takeover_secret_and_connector(self):
+        parser = smoke._parser()
+        args = parser.parse_args(("--dry-run",))
+        output = io.StringIO()
+        with (
+            patch.object(smoke, "WebSocketCollector") as collector,
+            patch.object(smoke, "InteractiveSecretProvider") as provider,
+            redirect_stdout(output),
+        ):
+            code = await smoke._run(args, parser)
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        collector.assert_not_called()
+        provider.assert_not_called()
+        self.assertNotIn("WARNING", rendered)
+        self.assertIn("Planned requests, in order:", rendered)
+        self.assertIn('get_brokerages: {"type":"get_brokerages"}', rendered)
+        self.assertIn("Expected responses (at least one): brokerages_data", rendered)
+        self.assertIn("Persistent storage: disabled", rendered)
+        self.assertIn("Dry run: no connection opened", rendered)
+
+    async def test_dry_run_prints_exact_period_request_payloads_in_order(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--dry-run", "--save-period-analysis-context",
+            "--symbol", "akfis", "--start-date", "2026-09-08",
+            "--end-date", "2026-09-29",
+        ))
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch.object(smoke, "PROJECT_ROOT", Path(temporary)),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider") as provider,
+                redirect_stdout(output),
+            ):
+                code = await smoke._run(args, parser)
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        collector.assert_not_called()
+        provider.assert_not_called()
+        lines = rendered.splitlines()
+        self.assertEqual(
+            [line.strip() for line in lines if line.strip().split(":", 1)[0] in (
+                "get_brokerages", "get_akd", "custody_analysis", "get_custodian_diff",
+            )],
+            [
+                'get_brokerages: {"type":"get_brokerages"}',
+                'get_akd: {"type":"get_akd","data":{"company":"AKFIS",'
+                '"start":"2026-09-08","end":"2026-09-29"}}',
+                'custody_analysis: {"type":"custody_analysis","data":{"symbol":"AKFIS",'
+                '"from_date":"2026-09-08","to_date":"2026-09-29"}}',
+                'get_custodian_diff: {"type":"get_custodian_diff","data":{"company":"AKFIS",'
+                '"start":"2026-09-08","end":"2026-09-29"}}',
+            ],
+        )
+        self.assertIn(
+            "Expected responses (all): akd_data, brokerages_data, "
+            "custodian_diff_data, custody_analysis_data",
+            rendered,
+        )
+        self.assertIn(
+            "Persistence target: data/interim/period_analysis/AKFIS/"
+            "2026-09-08_2026-09-29.json",
+            rendered,
+        )
+        self.assertIn("Persistence target does not exist yet", rendered)
+        self.assertIn("Dry run: no connection opened", rendered)
+
+    async def test_dry_run_reports_existing_period_capture_target(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--dry-run", "--save-period-analysis-context",
+            "--symbol", "AKFIS", "--start-date", "2026-09-08",
+            "--end-date", "2026-09-29",
+        ))
+        with tempfile.TemporaryDirectory() as temporary:
+            project_root = Path(temporary)
+            existing = (
+                project_root / "data" / "interim" / "period_analysis" / "AKFIS"
+                / "2026-09-08_2026-09-29.json"
+            )
+            existing.parent.mkdir(parents=True)
+            existing.write_text("{}", encoding="utf-8")
+            output = io.StringIO()
+            with (
+                patch.object(smoke, "PROJECT_ROOT", project_root),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider") as provider,
+                redirect_stdout(output),
+            ):
+                code = await smoke._run(args, parser)
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        collector.assert_not_called()
+        provider.assert_not_called()
+        self.assertIn(
+            "Persistence target: data/interim/period_analysis/AKFIS/"
+            "2026-09-08_2026-09-29.json",
+            rendered,
+        )
+        self.assertIn(
+            'Persistence target already exists: a real run would fail with '
+            '"already exists" (no overwrite)',
+            rendered,
+        )
+
+    async def test_dry_run_rejects_invalid_combo_like_a_real_run(self):
+        parser = smoke._parser()
+        args = parser.parse_args(("--dry-run", "--symbol", "AKFIS"))
+        error = io.StringIO()
+        with (
+            patch.object(smoke, "WebSocketCollector") as collector,
+            patch.object(smoke, "InteractiveSecretProvider") as provider,
+            redirect_stderr(error),
+        ):
+            with self.assertRaises(SystemExit) as captured:
+                await smoke._run(args, parser)
+        self.assertEqual(captured.exception.code, 2)
+        self.assertIn(
+            "--symbol requires --start-date, --end-date, --custody-date",
+            error.getvalue(),
+        )
+        collector.assert_not_called()
+        provider.assert_not_called()
+
     def test_period_analysis_capture_rejects_unsafe_symbol_before_path_creation(self):
         packet = {
             "schema": "fintr_period_analysis_handoff_v1",
