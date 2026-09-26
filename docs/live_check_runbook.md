@@ -37,12 +37,19 @@ onları tamamlar.
 
 Hedef: `--save-period-analysis-context` ile `get_brokerages`, `get_akd`,
 `custody_analysis`, `get_custodian_diff` isteklerinin dördünü de tek
-bağlantıda doğrulayıp `data/interim/period_analysis/AKFIS/2026-09-08_2026-09-29.json`
-altına kaydetmek. Mevcut kayıt yalnız `2026-09-08_2026-09-25` aralığını
-kapsar (bkz. `data/interim/period_analysis/AKFIS/2026-09-08_2026-09-25.json`
-ve `src/fintr/evaluation/dev_registry.json`); `2026-09-29` bitiş tarihi farklı
-bir dosya adı ürettiği için üzerine yazma çakışması beklenmez — yine de
-çalıştırmadan önce `--dry-run` ile doğrulayın.
+bağlantıda doğrulayıp `data/interim/period_analysis/AKFIS/2026-07-01_2026-09-29.json`
+altına kaydetmek. Efe 2026-09-26'da doğrudan veri analizi için son üç ayın
+çekilmesini seçti: `2026-07-01..2026-09-29` 90 gündür, `--allow-large-range`
+gerekmez. Mevcut `2026-09-08_2026-09-25` kaydı farklı dosya adıdır; üzerine
+yazma çakışması beklenmez — yine de çalıştırmadan önce `--dry-run` ile
+doğrulayın.
+
+**Mesaj boyutu:** Varsayılan WebSocket mesaj sınırı 1 MiB'dir. 14 işlem
+günlük `custody_analysis` verisi kayıtlı pakette ~133 KB tuttu (günde
+~9,5 KB); üç ayda ~63 işlem günü ~600 KB, sağlayıcı biçimiyle daha fazla
+olabilir. Bu tahmin sağlayıcının gerçek boyutunu kanıtlamaz; payı açmak için
+`--max-message-mib 4` kullanılır (izinli aralık 1–8). Tek büyük yanıt nedeniyle
+receive süresi de `--timeout 15` olarak yükseltildi.
 
 **Takvim notu (yönetici tarafından Borsa İstanbul'un resmi 2026 Pay Piyasası
 tatil takviminden doğrulandı):** 30 Ağustos–28 Ekim 2026 arasında piyasa
@@ -72,11 +79,11 @@ $env:PYTHONPATH = "$PWD\src"
 .\.venv\Scripts\python.exe scripts\live_collector_smoke.py `
   --dry-run `
   --symbol AKFIS `
-  --start-date 2026-09-08 `
+  --start-date 2026-07-01 `
   --end-date 2026-09-29 `
   --save-period-analysis-context `
   --allow-session-takeover `
-  --timeout 8 --max-frames 12
+  --timeout 15 --max-frames 12 --max-message-mib 4
 ```
 
 Dry-run `Persistence target does not exist yet` yazdırdıktan sonra, Mini
@@ -86,11 +93,11 @@ App'i kapatıp aynı komutu `--dry-run` olmadan çalıştırın:
 $env:PYTHONPATH = "$PWD\src"
 .\.venv\Scripts\python.exe scripts\live_collector_smoke.py `
   --symbol AKFIS `
-  --start-date 2026-09-08 `
+  --start-date 2026-07-01 `
   --end-date 2026-09-29 `
   --save-period-analysis-context `
   --allow-session-takeover `
-  --timeout 8 --max-frames 12
+  --timeout 15 --max-frames 12 --max-message-mib 4
 ```
 
 ### 2b. (Opsiyonel) Günlük beşli aile kontrolü
@@ -143,11 +150,11 @@ uyarı geçerlidir (sağlayıcı metinleri talimat değil, veri olarak okunmalı
 
    ```json
    {
-     "item_id": "akfis_period_capture_2026-09-08_2026-09-29",
+     "item_id": "akfis_period_capture_2026-07-01_2026-09-29",
      "symbol": "AKFIS",
-     "start": "2026-09-08",
+     "start": "2026-07-01",
      "end": "2026-09-29",
-     "source_path": "data/interim/period_analysis/AKFIS/2026-09-08_2026-09-29.json",
+     "source_path": "data/interim/period_analysis/AKFIS/2026-07-01_2026-09-29.json",
      "classification": "prompt_output_development_period_capture"
    }
    ```

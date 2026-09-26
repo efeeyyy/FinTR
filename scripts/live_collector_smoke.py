@@ -255,6 +255,11 @@ def _parser() -> argparse.ArgumentParser:
         "--max-frames", "--max-events", dest="max_events", type=int, default=8,
         help="Total frame limit per attempt, including control frames (default: 8; maximum: 50).",
     )
+    parser.add_argument(
+        "--max-message-mib", type=int, default=1,
+        help="Largest accepted WebSocket message in MiB (default: 1; maximum: 8); "
+             "raise only for long period ranges.",
+    )
     return parser
 
 
@@ -438,7 +443,8 @@ def _print_dry_run(
     print(f"Expected responses ({response_requirement}): " + ", ".join(sorted(expected_events)))
     print(
         f"Limits: {args.max_events} total frames per attempt; "
-        f"{args.timeout:g}s per receive; at most 2 retries"
+        f"{args.timeout:g}s per receive; {args.max_message_mib} MiB per message; "
+        "at most 2 retries"
     )
     target = _dry_run_persistence_target(args, requests)
     if target is None:
@@ -966,6 +972,8 @@ async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         parser.error("--timeout must be greater than 0 and at most 30 seconds")
     if not 1 <= args.max_events <= 50:
         parser.error("--max-events must be between 1 and 50")
+    if not 1 <= args.max_message_mib <= 8:
+        parser.error("--max-message-mib must be between 1 and 8")
 
     requests = _requests(args, parser)
     if args.capture_pilot_context:
@@ -1028,6 +1036,7 @@ async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     config = CollectorConfig(
         receive_timeout_seconds=args.timeout,
         max_events=args.max_events,
+        max_message_bytes=args.max_message_mib * 1_048_576,
     )
     send_observations: list[SendObservation] = []
 
@@ -1077,7 +1086,8 @@ async def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     print(f"Expected responses ({response_requirement}): " + ", ".join(sorted(expected_events)))
     print(
         f"Limits: {args.max_events} total frames per attempt; "
-        f"{args.timeout:g}s per receive; at most 2 retries"
+        f"{args.timeout:g}s per receive; {args.max_message_mib} MiB per message; "
+        "at most 2 retries"
     )
     if args.capture_pilot_context:
         print("Persistent storage: opt-in requested for the bounded AKFIS development pilot")

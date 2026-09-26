@@ -1441,6 +1441,29 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
         collector.assert_not_called()
         provider.assert_not_called()
 
+    async def test_max_message_mib_is_bounded_and_reaches_collector_config(self):
+        parser = smoke._parser()
+        for bad in ("0", "9"):
+            args = parser.parse_args(("--dry-run", "--max-message-mib", bad))
+            with redirect_stderr(io.StringIO()) as error, self.assertRaises(SystemExit):
+                await smoke._run(args, parser)
+            self.assertIn("--max-message-mib must be between 1 and 8", error.getvalue())
+
+        args = parser.parse_args((
+            "--symbol", "AKFIS", "--start-date", "2026-07-01", "--end-date", "2026-09-29",
+            "--save-period-analysis-context", "--allow-session-takeover",
+            "--max-message-mib", "4",
+        ))
+        with (
+            patch.object(smoke, "WebSocketCollector") as collector,
+            patch.object(smoke, "InteractiveSecretProvider"),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            collector.return_value.collect = AsyncMock(return_value=())
+            await smoke._run(args, parser)
+        self.assertEqual(collector.call_args.kwargs["config"].max_message_bytes, 4 * 1_048_576)
+        self.assertIn("4 MiB per message", output.getvalue())
+
     def test_period_analysis_capture_rejects_unsafe_symbol_before_path_creation(self):
         packet = {
             "schema": "fintr_period_analysis_handoff_v1",
