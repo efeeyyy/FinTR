@@ -34,6 +34,9 @@ data/eval/*
 !data/processed/.gitkeep
 !data/eval/.gitkeep
 
+# Machine-local agent permissions
+.claude/settings.local.json
+
 # IDE and OS
 .idea/
 .vscode/
