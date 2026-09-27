@@ -12,3 +12,17 @@ Birincil aile H1+H2 (Holm m=2); H3, H4 ikincil/tanımlayıcı.
 | `h4_concentrated_flow_close_discount_v1.json` | `prereg_bist30_h4_concentrated_flow_close_discount_v1` | `05786bb9a75e2ae3a556b24df439502c478da2fa815776f7db4e4ff9b4cb629f` |
 
 Bu dosyalar bundan sonra değiştirilmez; değişiklik yeni sürüm (v2) ve yeni ön kayıt gerektirir.
+
+## Kanonik spec hash'i (çalışma çıktılarındaki `spec_sha256`)
+
+Yukarıdaki SHA-256 dosyanın ham baytlarıdır. Çalışma çıktıları ise
+`fintr.research.study_spec.load_study_spec` tarafından hesaplanan kanonik JSON
+hash'ini kaydeder; bir çıktının hangi dondurulmuş spec ile üretildiğini doğrulamak için
+bu sütun kullanılır.
+
+| Dosya | kanonik SHA-256 |
+|---|---|
+| `h1_close_premium_vs_vwap_proxy_v1.json` | `0a93cb8fb6c512db4e727a5188cb720f9ec832d6dbd64ef33215e38ca546e7c2` |
+| `h2_close_discount_vs_vwap_proxy_v1.json` | `2adc380cf25f648afba622ed1e0eea5af5f442abecf0b8aa11d9e8d999acf29c` |
+| `h3_concentrated_flow_close_premium_v1.json` | `5f6e931205a54dc7ffdaea9f9e78744be3c6082cd5bdd5e0821d20aa2258941d` |
+| `h4_concentrated_flow_close_discount_v1.json` | `f66d7c90e7cac34921da76a8d5111091257199ffb09e5b2aafce388538209b4b` |
