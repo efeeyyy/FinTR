@@ -21,17 +21,19 @@ from fintr.data.period_capture import (
     PeriodCapture,
 )
 from fintr.data.price_history import DailyBar, PriceHistoryCapture, PriceHistoryCaptureMeta
+from fintr.features.price_join import DEFAULT_RATIO_REGIME_TOLERANCE
 from fintr.research.engine import (
     EngineError,
     EventOutcome,
     bootstrap_diff_ci,
     build_events,
     detect_custody_scale_jumps,
+    drop_ratio_regime_signal_dates,
     load_symbol_data,
     summarize_horizon,
 )
 from fintr.research.features import FeatureError, evaluate_feature, truncate_period_capture, validate_feature_params
-from fintr.research.report import RunParameters, run_study
+from fintr.research.report import RunParameters, render_text, run_study
 from fintr.research.study_spec import parse_study_spec
 
 
@@ -316,6 +318,139 @@ class CustodyScaleJumpTests(unittest.TestCase):
             ),
         )
         self.assertEqual(detect_custody_scale_jumps(capture, Decimal("3")), ())
+
+
+def _market_row_day(d: date) -> DatedMarketProxyValues:
+    """sum_total_size=40 -> implied_traded_lots=20, vwap_proxy=6 (see
+    tests/test_price_join.py's ``_ratio_regime_capture`` for the same
+    convention)."""
+    return DatedMarketProxyValues(d, (
+        DailyMarketProxyRow("AAA", Decimal(20), Decimal(6)),
+        DailyMarketProxyRow("BBB", Decimal(20), Decimal(6)),
+    ))
+
+
+def _ratio_regime_symbol_data(*, d2_volume: int, ratio_regime_tolerance: Decimal):
+    """TST with a k=3 ratio regime spanning D[2]/D[3] (vwap_proxy/3 = 2,
+    inside the bars' [1.8, 2.2]) and a plain, regime-free D[4]; D[4] carries
+    no market-proxy row at all, so it can never match a regime regardless of
+    its own price/volume. Enough tradeable bars follow for a horizon-1
+    event built from D[4]."""
+    capture = _capture(
+        server_dates=(D[2], D[3], D[4]),
+        daily_akd_market=(_market_row_day(D[2]), _market_row_day(D[3])),
+    )
+    bars = [
+        _bar(D[0], o=50, h=50, l=50, c=50, adj=50, v=1000),
+        _bar(D[1], o=50, h=50, l=50, c=50, adj=50, v=1000),
+        _bar(D[2], o=2, h="2.2", l="1.8", c=2, adj=2, v=d2_volume),
+        _bar(D[3], o=2, h="2.2", l="1.8", c=2, adj=2, v=60),  # implied_traded_lots(20)/60 = 1/3 exactly
+        _bar(D[4], o=100, h=100, l=100, c=200, adj=200, v=1000),
+        _bar(D[5], o=100, h=100, l=100, c=210, adj=210, v=1000),
+        _bar(D[6], o=100, h=100, l=100, c=220, adj=220, v=1000),
+    ]
+    return load_symbol_data(
+        "TST", capture, _price("TST", tuple(bars)),
+        adjustment_ratio_epsilon=Decimal("0.0005"), custody_scale_jump_ratio=Decimal("3"),
+        ratio_regime_tolerance=ratio_regime_tolerance,
+    )
+
+
+class RatioRegimeSignalDropTests(unittest.TestCase):
+    """docs/prereg/DECISIONS.md 'Dondurma öncesi veri kalitesi kuralı':
+    signal days inside a price_join ratio regime are dropped from both the
+    conditioned and the baseline set; the regime itself and the drop count
+    are reported; returns are otherwise untouched."""
+
+    def _data(self, tolerance: Decimal = DEFAULT_RATIO_REGIME_TOLERANCE):
+        return _ratio_regime_symbol_data(d2_volume=60, ratio_regime_tolerance=tolerance)
+
+    def test_regime_detected_spanning_both_days(self):
+        data = self._data()
+        self.assertEqual(len(data.ratio_regimes), 1)
+        regime = data.ratio_regimes[0]
+        self.assertEqual((regime.start, regime.end, regime.k, regime.day_count), (D[2], D[3], 3, 2))
+        self.assertEqual(data.ratio_regime_dates, frozenset({D[2], D[3]}))
+
+    def test_regime_days_dropped_from_both_conditioned_and_baseline(self):
+        data = self._data()
+        raw_signal_dates = (D[2], D[3], D[4])
+        kept, dropped = drop_ratio_regime_signal_dates(raw_signal_dates, data.ratio_regime_dates)
+        self.assertEqual(kept, (D[4],))
+        self.assertEqual(dropped, 2)
+        spec = parse_study_spec(_spec_doc(entry_timing="next_open"))
+        conditioned, baseline = build_events(
+            data, spec, horizon=1, cost_bps=Decimal(0), signal_dates=kept,
+        )
+        self.assertEqual([event.signal_date for event in conditioned], [D[4]])
+        self.assertEqual([event.signal_date for event in baseline], [D[4]])
+
+    def test_regime_free_date_is_unaffected(self):
+        data = self._data()
+        kept, _ = drop_ratio_regime_signal_dates((D[2], D[3], D[4]), data.ratio_regime_dates)
+        spec = parse_study_spec(_spec_doc(entry_timing="next_open"))
+        conditioned, _ = build_events(data, spec, horizon=1, cost_bps=Decimal(0), signal_dates=kept)
+        event = conditioned[0]
+        self.assertFalse(event.dropped)
+        self.assertEqual(event.entry_date, D[5])
+        self.assertEqual(event.exit_date, D[6])
+        expected = Decimal(220) / Decimal(100) - 1  # exit close / entry open, D[4]'s own event, untouched
+        self.assertEqual(event.gross_return, expected)
+
+    def test_tolerance_parameter_changes_the_detected_regime(self):
+        # d2_volume=61 (not exactly k=3): a loose tolerance still matches it
+        # into the regime; a tight one does not (only D[3] remains, alone).
+        lenient = _ratio_regime_symbol_data(d2_volume=61, ratio_regime_tolerance=Decimal("0.02"))
+        strict = _ratio_regime_symbol_data(d2_volume=61, ratio_regime_tolerance=Decimal("0.001"))
+        self.assertEqual(lenient.ratio_regime_dates, frozenset({D[2], D[3]}))
+        self.assertEqual(strict.ratio_regime_dates, frozenset({D[3]}))
+        _, lenient_dropped = drop_ratio_regime_signal_dates((D[2], D[3], D[4]), lenient.ratio_regime_dates)
+        _, strict_dropped = drop_ratio_regime_signal_dates((D[2], D[3], D[4]), strict.ratio_regime_dates)
+        self.assertEqual(lenient_dropped, 2)
+        self.assertEqual(strict_dropped, 1)
+
+    def test_reported_in_run_study_result_and_text(self):
+        spec = parse_study_spec(_spec_doc(entry_timing="next_open"))
+        params = RunParameters(
+            cost_bps=Decimal(0), volume_ratio_tolerance=Decimal("0.5"),
+            adjustment_ratio_epsilon=Decimal("0.0005"), custody_scale_jump_ratio=Decimal("3"),
+            ratio_regime_tolerance=DEFAULT_RATIO_REGIME_TOLERANCE,
+        )
+        result = run_study(spec, {"TST": self._data()}, split="train", params=params)
+        quality = result["ratio_regime_quality"]["TST"]
+        self.assertEqual(quality["regimes"], [{
+            "start": D[2].isoformat(), "end": D[3].isoformat(), "k": 3, "day_count": 2,
+            "label": "probable_retroactive_price_adjustment",
+        }])
+        self.assertEqual(quality["dropped_signal_dates"], 2)
+        self.assertEqual(result["parameters"]["ratio_regime_tolerance"], str(DEFAULT_RATIO_REGIME_TOLERANCE))
+        text = render_text(result)
+        self.assertIn("Rejim veri kalitesi", text)
+        self.assertIn("TST: rejim=1", text)
+        self.assertIn("düşülen_sinyal_günü=2", text)
+
+    def test_regime_free_data_is_unaffected_end_to_end(self):
+        """No ratio-regime market rows at all: identical to pre-rule
+        behavior (nothing dropped, empty regimes reported)."""
+        bars = tuple(_bar(D[i], o=100 + i, h=100 + i, l=100 + i, c=200 + i, adj=200 + i, v=1000) for i in range(10))
+        capture = _capture(server_dates=(D[2], D[3]))
+        data = load_symbol_data(
+            "TST", capture, _price("TST", bars),
+            adjustment_ratio_epsilon=Decimal("0.0005"), custody_scale_jump_ratio=Decimal("3"),
+        )
+        self.assertEqual(data.ratio_regimes, ())
+        self.assertEqual(data.ratio_regime_dates, frozenset())
+        kept, dropped = drop_ratio_regime_signal_dates((D[2], D[3]), data.ratio_regime_dates)
+        self.assertEqual(kept, (D[2], D[3]))
+        self.assertEqual(dropped, 0)
+        spec = parse_study_spec(_spec_doc(entry_timing="next_open"))
+        params = RunParameters(
+            cost_bps=Decimal(0), volume_ratio_tolerance=Decimal("0.5"),
+            adjustment_ratio_epsilon=Decimal("0.0005"), custody_scale_jump_ratio=Decimal("3"),
+        )
+        result = run_study(spec, {"TST": data}, split="train", params=params)
+        self.assertEqual(result["ratio_regime_quality"]["TST"], {"regimes": [], "dropped_signal_dates": 0})
+        self.assertEqual(result["overall"]["1"]["event_count"], 2)
 
 
 class FrozenSpecGateTests(unittest.TestCase):

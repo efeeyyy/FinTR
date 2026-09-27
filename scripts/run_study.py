@@ -21,7 +21,11 @@ import tempfile
 
 from fintr.data.period_capture import PeriodCaptureError, load_period_capture
 from fintr.data.price_history import PriceHistoryCaptureError, load_price_history_capture
-from fintr.features.price_join import DEFAULT_ADJUSTMENT_RATIO_EPSILON, DEFAULT_VOLUME_RATIO_TOLERANCE
+from fintr.features.price_join import (
+    DEFAULT_ADJUSTMENT_RATIO_EPSILON,
+    DEFAULT_RATIO_REGIME_TOLERANCE,
+    DEFAULT_VOLUME_RATIO_TOLERANCE,
+)
 from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
 from fintr.evaluation.symbol_split import NO_SPLIT_GUARD_WARNING
 from fintr.research.capture_merge import CaptureMergeError, CaptureSource, merge_period_captures
@@ -100,6 +104,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--custody-scale-jump-ratio", type=_ratio_above_one,
                         default=DEFAULT_CUSTODY_SCALE_JUMP_RATIO,
                         help=f"default: {DEFAULT_CUSTODY_SCALE_JUMP_RATIO}")
+    parser.add_argument(
+        "--ratio-regime-tolerance", type=_non_negative_decimal,
+        default=DEFAULT_RATIO_REGIME_TOLERANCE,
+        help=(
+            "tolerance for price_join's probable_retroactive_price_adjustment "
+            "ratio-regime detection (integer k >= 2); signal dates inside a "
+            "detected regime are dropped from both the conditioned and "
+            "baseline sets for that symbol (docs/prereg/DECISIONS.md); "
+            f"default: {DEFAULT_RATIO_REGIME_TOLERANCE}"
+        ),
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR,
                         help=f"default: {DEFAULT_OUT_DIR}")
@@ -260,6 +275,7 @@ def main(argv: list[str] | None = None) -> int:
                 symbol, merged.capture, price,
                 adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
                 custody_scale_jump_ratio=args.custody_scale_jump_ratio,
+                ratio_regime_tolerance=args.ratio_regime_tolerance,
             )
         except (OSError, PeriodCaptureError, PriceHistoryCaptureError, EngineError,
                 CaptureMergeError) as exc:
@@ -272,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
         cost_bps=args.cost_bps, volume_ratio_tolerance=args.volume_ratio_tolerance,
         adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
         custody_scale_jump_ratio=args.custody_scale_jump_ratio,
+        ratio_regime_tolerance=args.ratio_regime_tolerance,
     )
     try:
         result = run_study(

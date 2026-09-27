@@ -30,13 +30,18 @@ import statistics
 
 from fintr.data.period_capture import PeriodCapture
 from fintr.data.price_history import DailyBar, PriceHistoryCapture
-from fintr.features.price_join import classify_price_bar, join_price_history
+from fintr.features.price_join import (
+    DEFAULT_RATIO_REGIME_TOLERANCE,
+    RatioRegime,
+    classify_price_bar,
+    join_price_history,
+)
 from fintr.research.conditions import evaluate_condition
 from fintr.research.features import truncate_period_capture
 from fintr.research.study_spec import BlockBootstrapConfig, StudySpec
 
 
-FORMULA_VERSION = "study_engine_v2"  # v2: E1 block bootstrap + hypothesis_test block
+FORMULA_VERSION = "study_engine_v3"  # v3: ratio-regime signal-date drop (docs/prereg/DECISIONS.md)
 
 FORMULAS: dict[str, str] = {
     "entry_price": (
@@ -110,6 +115,19 @@ FORMULAS: dict[str, str] = {
         "custody data over a range spanning such a d (min_date < d <= "
         "max_date) is dropped and counted, never silently kept"
     ),
+    "ratio_regime_signal_date_drop": (
+        "docs/prereg/DECISIONS.md 'Dondurma öncesi veri kalitesi kuralı': a "
+        "symbol's signal dates falling inside one of its "
+        "fintr.features.price_join.join_price_history(...).ratio_regimes "
+        "(probable_retroactive_price_adjustment, integer k >= 2, "
+        "ratio_regime_tolerance) are removed from both the conditioned and "
+        "the baseline signal-date set before any event is built for that "
+        "symbol/split -- a lot/volume unit-scale mismatch, not a return "
+        "computation, so returns themselves (Yahoo's own internally "
+        "consistent series) are never adjusted; only which signal days are "
+        "evaluated. The dropped count and the regimes found are reported "
+        "per symbol (see report.run_study's ratio_regime_quality block)."
+    ),
 }
 
 
@@ -127,6 +145,8 @@ class SymbolData:
     close_by_date: dict[date, Decimal]
     adjustment_boundary_dates: frozenset[date]
     custody_scale_jump_dates: tuple[date, ...]
+    ratio_regimes: tuple[RatioRegime, ...]
+    ratio_regime_dates: frozenset[date]
 
 
 def detect_custody_scale_jumps(capture: PeriodCapture, ratio_threshold: Decimal) -> tuple[date, ...]:
@@ -167,6 +187,7 @@ def tradeable_price_bars(price: PriceHistoryCapture) -> tuple[DailyBar, ...]:
 def load_symbol_data(
     symbol: str, capture: PeriodCapture, price: PriceHistoryCapture, *,
     adjustment_ratio_epsilon: Decimal, custody_scale_jump_ratio: Decimal,
+    ratio_regime_tolerance: Decimal = DEFAULT_RATIO_REGIME_TOLERANCE,
 ) -> SymbolData:
     if capture.symbol != symbol:
         raise EngineError("capture_symbol_mismatch")
@@ -179,7 +200,10 @@ def load_symbol_data(
     # SYMBOL= entry.
     tradeable_bars = tradeable_price_bars(price)
     close_by_date = {bar.trade_date: bar.close for bar in price.bars if bar.close is not None}
-    joined = join_price_history(capture, price, adjustment_ratio_epsilon=adjustment_ratio_epsilon)
+    joined = join_price_history(
+        capture, price, adjustment_ratio_epsilon=adjustment_ratio_epsilon,
+        ratio_regime_tolerance=ratio_regime_tolerance,
+    )
     return SymbolData(
         symbol=symbol,
         capture=capture,
@@ -189,7 +213,23 @@ def load_symbol_data(
         close_by_date=close_by_date,
         adjustment_boundary_dates=frozenset(joined.adjustment_boundary_dates),
         custody_scale_jump_dates=detect_custody_scale_jumps(capture, custody_scale_jump_ratio),
+        ratio_regimes=joined.ratio_regimes,
+        ratio_regime_dates=frozenset(joined.ratio_regime_dates),
     )
+
+
+def drop_ratio_regime_signal_dates(
+    signal_dates: tuple[date, ...], ratio_regime_dates: frozenset[date],
+) -> tuple[tuple[date, ...], int]:
+    """Signal dates minus those inside a price_join ratio regime, plus how
+    many were dropped (see ``FORMULAS["ratio_regime_signal_date_drop"]``).
+
+    Applied to one symbol's signal dates before either the conditioned or
+    the baseline event set is built for it, so a regime day is excluded
+    from both -- ``build_events`` never sees it.
+    """
+    kept = tuple(d for d in signal_dates if d not in ratio_regime_dates)
+    return kept, len(signal_dates) - len(kept)
 
 
 @dataclass(frozen=True, slots=True)
