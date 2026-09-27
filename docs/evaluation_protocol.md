@@ -75,3 +75,59 @@ değerler taşıyan bir şablon çifti içerir (bkz. `eval/cases/README.md`).
 Bu araçların geçmesi insan işini bitirmez: gerçek gold vakaların bağımsız
 insan annotation'ı, ikinci gözden geçirme, baseline yanıtları ve sürümlü
 metric artefact'ı hâlâ insan tarafından üretilmelidir.
+
+## Dondurulmuş BIST 30 hisse ayrımı ve dışlama listesi (kodla zorunlu)
+
+**Etkin ayrım yalnızca `configs/splits/current.json` işaretçisiyle çözülür**
+(`fintr_current_split_v1`; şu an `configs/splits/bist30_2026_holdout_v2.json`).
+Hiçbir script'te ayrım dosyası veya dışlama dosyası seçen bir bayrak yoktur;
+yollar repo köküne göre mutlaktır (çalışma dizininden bağımsız).
+`fintr.evaluation.symbol_split.resolve_active_split` kapalı-güvenli çalışır:
+işaretçi yoksa/bozuksa, gösterdiği dosya yoksa, ayrım `frozen: false` ise
+veya `superseded_by` alanı taşıyorsa (değeri `null` olsa bile) hata verir —
+koruma sessizce kapanmaz. Eski bir ayrım (ör. v1) yalnız denetim için
+`load_symbol_split(..., require_active=False)` ile okunabilir. Etkin ayrım
+dışlanmış bir hisse içeriyorsa (`split_contains_excluded_symbol`) de hata
+verilir. Kaynak evren/dışlama dosyalarının ayrımda kayıtlı SHA-256'ları
+yeniden doğrulanmaz (kayıtlı provenance'tır); raporlanan SHA-256, uygulanan
+ayrım dosyasının kendi baytlarınındır.
+
+Her analiz/çalışma/doğrulama çıktısı `split_guard` bloğunu
+(`fintr_symbol_guard_report_v1`) taşır ya da metin olarak basar:
+`split_file`, `split_file_sha256`, `split_id`, `split_pointer`,
+`exclusions_file`, `exclusions_file_sha256`, `excluded_symbols`,
+`guard_bypassed`, `bypass_warning`, `bypassed_holdout_symbols`.
+
+Holdout kuralları (`holdout_symbols`):
+
+| Araç | Varsayılan | `--all`/toplu | `--no-split-guard` |
+| --- | --- | --- | --- |
+| `scripts/run_study.py --split train` | spec'in `symbols`'ında veya `--data`'da holdout hisse → red | — | holdout kontrolü kapalı |
+| `scripts/run_study.py --split test` | yalnız `frozen: true` spec; spec'in boş olmayan `symbol_holdout`'u ayrımın holdout'unun alt kümesi olmalı; `--data` yalnız holdout hisse; motor yalnız `symbol_holdout`'u değerlendirir (`symbol_scope: holdout_only`) | — | holdout kontrolü kapalı (spec'in beyan ettiği tüm semboller) |
+| `scripts/analyze_period.py` | holdout capture → red | `skipped_holdout` | holdout işlenir |
+| `scripts/custody_flow.py` | holdout capture → red | — | holdout işlenir |
+| `scripts/validate_eval_manifest.py` | holdout listesinde olmayan her vaka → `not_in_holdout_split` | — | bayrak yok |
+| `scripts/fetch_price_history*.py`, `scripts/live_collector_smoke.py` | **engellenmez** — holdout verisi toplanabilir | — | — |
+
+`--no-split-guard` yalnız BIST 30 dışı keşif içindir. Kullanıldığında
+stderr'e uyarı basılır, metin çıktısı `!!! UYARI: --no-split-guard AKTİF`
+satırıyla başlar ve JSON'da `guard_bypassed: true`, `bypass_warning` ve bu
+koşuda koruma kapalıyken işlenen holdout hisseler
+(`bypassed_holdout_symbols`) yazılır. Bayrak ayrımın yüklenmesini atlamaz
+(bozuk ayrım yine hata verir) ve dışlamaları asla kapatmaz.
+
+Dışlama kuralları (`configs/exclusions/symbols.json`,
+`fintr_symbol_exclusions_v1`): dışlanan hisse **her yerde, geçersiz kılma
+seçeneği olmadan** reddedilir veya atlanır — `run_study` (`--data` veya
+spec'in beyan ettiği semboller), `analyze_period` (tekli: red; `--all`:
+`skipped_excluded`), `custody_flow`, `validate_eval_manifest`
+(`excluded_symbol`), `fetch_price_history.py` (dry-run dahil, URL kurulmadan
+red), `fetch_price_history_batch.py` (`skipped_excluded`, istek yok) ve
+`live_collector_smoke.py` (tek hisse: initData istenmeden ve bağlantı
+açılmadan red; çoklu hisse: `skipped_excluded`). Dosya yoksa bu da hatadır
+(`exclusions_file_missing`). Bir kaydın `retained_data` notu yalnız bilgi
+amaçlıdır (hangi yerel verinin neden tutulduğunu kaydeder); kodda hiçbir
+istisna açmaz.
+
+Testler: `tests/test_symbol_guard.py` (yalnız geçici dizinde sentetik ayrım,
+işaretçi, dışlama, capture, manifest ve evren dosyaları).

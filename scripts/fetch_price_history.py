@@ -7,6 +7,11 @@ Source: ``https://query1.finance.yahoo.com/v8/finance/chart/<SYMBOL>.IS``, an
 
 No retries beyond a small bounded count, a response size cap, and a fixed
 User-Agent header. ``--dry-run`` never touches the network.
+
+A symbol listed in ``configs/exclusions/symbols.json`` is refused before any
+URL is built or connection opened, in every mode (no override flag).
+Holdout symbols of the frozen BIST 30 split are not blocked: collection is
+allowed, analysis is guarded (see docs/evaluation_protocol.md).
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from fintr.data.price_history import (
     normalized_payload,
     parse_chart_json,
 )
+from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_exclusions
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -300,6 +306,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     today = _today()
     _validate_args(args, parser, today)
+    try:
+        _exclusions_path, exclusions = load_active_exclusions()
+    except SymbolGuardError as exc:
+        parser.error(str(exc))
+    if exclusions.is_excluded(args.symbol):
+        parser.error(
+            f"symbol {args.symbol} is excluded by configs/exclusions/symbols.json "
+            "(no override); nothing fetched"
+        )
 
     url = build_request_url(args.symbol, args.start_date, args.end_date)
     path = target_path(args.symbol, args.start_date, args.end_date)

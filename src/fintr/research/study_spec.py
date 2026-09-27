@@ -38,6 +38,11 @@ SPEC_SCHEMA = "fintr_study_spec_v1"
 
 ALLOWED_ENTRY_TIMINGS = ("next_open", "next_close")
 ALLOWED_ADJUSTMENT_POLICIES = ("use_adjusted", "drop")
+ALLOWED_PREDICTED_DIRECTIONS = ("negative", "positive")
+FAMILY_ROLE_PRIMARY = "primary"
+FAMILY_ROLE_SECONDARY_DESCRIPTIVE = "secondary_descriptive"
+ALLOWED_FAMILY_ROLES = (FAMILY_ROLE_PRIMARY, FAMILY_ROLE_SECONDARY_DESCRIPTIVE)
+ALLOWED_MULTIPLE_COMPARISONS = ("holm",)
 
 
 class StudySpecError(ValueError):
@@ -62,6 +67,82 @@ class BootstrapConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class BlockBootstrapConfig:
+    """E1: moving block bootstrap over sorted distinct signal dates.
+
+    Optional top-level ``block_bootstrap`` spec block; there is no default --
+    a spec without it gets no block bootstrap (``None`` in the result), never
+    a silently assumed block length, resample count or seed.
+    """
+
+    block_length_signal_dates: int
+    resamples: int
+    seed: int
+
+    def __post_init__(self) -> None:
+        for name in ("block_length_signal_dates", "resamples", "seed"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise StudySpecError(f"invalid_block_bootstrap_{name}")
+        if self.block_length_signal_dates < 1:
+            raise StudySpecError("invalid_block_bootstrap_block_length_signal_dates")
+        if self.resamples < 1:
+            raise StudySpecError("invalid_block_bootstrap_resamples")
+
+
+@dataclass(frozen=True, slots=True)
+class PreregistrationInfo:
+    """The machine-read subset of an optional ``preregistration`` block.
+
+    Only these keys are validated and used (one-sided p direction, primary
+    horizon, minimum-event rule, multiple-comparison family); every other
+    key in the block stays documentation, but the whole block is still part
+    of ``spec_sha256``. ``family_role == "primary"`` iff ``hypothesis_id`` is
+    listed in ``primary_family_members``; a ``secondary_descriptive``
+    hypothesis never enters the Holm family (``fintr.research.family``).
+    """
+
+    hypothesis_id: str
+    family_id: str
+    family_role: str
+    primary_family_members: tuple[str, ...]
+    family_size: int
+    multiple_comparison: str
+    familywise_alpha: Decimal
+    predicted_direction: str
+    primary_horizon_trading_days: int
+    min_events_primary: int
+    min_distinct_signal_dates_primary: int
+    sesoi_difference: Decimal
+
+    def __post_init__(self) -> None:
+        if not self.hypothesis_id or not self.family_id:
+            raise StudySpecError("invalid_preregistration_ids")
+        if self.family_role not in ALLOWED_FAMILY_ROLES:
+            raise StudySpecError("invalid_preregistration_family_role")
+        members = self.primary_family_members
+        if not members or len(set(members)) != len(members) or any(not m for m in members):
+            raise StudySpecError("invalid_preregistration_primary_family_members")
+        if self.family_size != len(members):
+            raise StudySpecError("preregistration_family_size_mismatch")
+        if (self.family_role == FAMILY_ROLE_PRIMARY) != (self.hypothesis_id in members):
+            raise StudySpecError("preregistration_family_role_membership_mismatch")
+        if self.multiple_comparison not in ALLOWED_MULTIPLE_COMPARISONS:
+            raise StudySpecError("invalid_preregistration_multiple_comparison")
+        if not (Decimal(0) < self.familywise_alpha < Decimal(1)):
+            raise StudySpecError("invalid_preregistration_familywise_alpha")
+        if self.predicted_direction not in ALLOWED_PREDICTED_DIRECTIONS:
+            raise StudySpecError("invalid_preregistration_predicted_direction")
+        for name in ("primary_horizon_trading_days", "min_events_primary",
+                     "min_distinct_signal_dates_primary"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise StudySpecError(f"invalid_preregistration_{name}")
+        if self.sesoi_difference < 0:
+            raise StudySpecError("invalid_preregistration_sesoi_difference")
+
+
+@dataclass(frozen=True, slots=True)
 class StudySpec:
     spec_id: str
     description: str
@@ -77,6 +158,8 @@ class StudySpec:
     condition: ConditionNode
     spec_sha256: str
     raw_document: dict[str, Any]
+    block_bootstrap: BlockBootstrapConfig | None = None
+    preregistration: PreregistrationInfo | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.spec_id, str) or not self.spec_id:
@@ -101,6 +184,12 @@ class StudySpec:
             raise StudySpecError("invalid_min_event_warning_threshold")
         if self.adjustment_boundary_policy not in ALLOWED_ADJUSTMENT_POLICIES:
             raise StudySpecError("invalid_adjustment_boundary_policy")
+        if (self.preregistration is not None
+                and self.preregistration.primary_horizon_trading_days not in self.horizons_trading_days):
+            raise StudySpecError("preregistration_primary_horizon_not_in_horizons")
+        if self.preregistration is not None and self.block_bootstrap is None:
+            # The pre-registered primary test is E1; no silent i.i.d. fallback.
+            raise StudySpecError("preregistration_requires_block_bootstrap")
 
     def all_declared_symbols(self) -> tuple[str, ...]:
         """Every symbol the spec ever needs data for (train + holdout)."""
@@ -132,6 +221,60 @@ def _int_tuple(raw: Any, path: str) -> tuple[int, ...]:
             raise StudySpecError(f"{path}[{index}]: expected an integer")
         result.append(item)
     return tuple(result)
+
+
+def _require_int(value: Any, path: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise StudySpecError(f"{path}: expected an integer")
+    return value
+
+
+def _parse_block_bootstrap(raw: Any) -> BlockBootstrapConfig | None:
+    if raw is None:
+        return None
+    block = require_mapping(raw, "spec.block_bootstrap")
+    if block.get("method") != "moving_block_by_signal_date":
+        raise StudySpecError("unsupported_block_bootstrap_method")
+    return BlockBootstrapConfig(
+        block_length_signal_dates=require_field(
+            block, "block_length_signal_dates", "spec.block_bootstrap"),
+        resamples=require_field(block, "resamples", "spec.block_bootstrap"),
+        seed=require_field(block, "seed", "spec.block_bootstrap"),
+    )
+
+
+def _parse_preregistration(raw: Any) -> PreregistrationInfo | None:
+    if raw is None:
+        return None
+    path = "spec.preregistration"
+    block = require_mapping(raw, path)
+
+    def field(name: str) -> Any:
+        return require_field(block, name, path)
+
+    return PreregistrationInfo(
+        hypothesis_id=require_string(field("hypothesis_id"), f"{path}.hypothesis_id"),
+        family_id=require_string(field("family_id"), f"{path}.family_id"),
+        family_role=require_string(field("family_role"), f"{path}.family_role"),
+        primary_family_members=_string_tuple(
+            field("primary_family_members"), f"{path}.primary_family_members"),
+        family_size=_require_int(field("family_size"), f"{path}.family_size"),
+        multiple_comparison=require_string(
+            field("multiple_comparison"), f"{path}.multiple_comparison"),
+        familywise_alpha=_require_decimal_string(
+            field("familywise_alpha"), f"{path}.familywise_alpha"),
+        predicted_direction=require_string(
+            field("predicted_direction"), f"{path}.predicted_direction"),
+        primary_horizon_trading_days=_require_int(
+            field("primary_horizon_trading_days"), f"{path}.primary_horizon_trading_days"),
+        min_events_primary=_require_int(
+            field("min_events_primary"), f"{path}.min_events_primary"),
+        min_distinct_signal_dates_primary=_require_int(
+            field("min_distinct_signal_dates_primary"),
+            f"{path}.min_distinct_signal_dates_primary"),
+        sesoi_difference=_require_decimal_string(
+            field("sesoi_difference"), f"{path}.sesoi_difference"),
+    )
 
 
 def parse_study_spec(document: Any) -> StudySpec:
@@ -184,6 +327,8 @@ def parse_study_spec(document: Any) -> StudySpec:
             condition=parse_condition(require_field(root, "condition", "spec"), "spec.condition"),
             spec_sha256=spec_sha256,
             raw_document=document,
+            block_bootstrap=_parse_block_bootstrap(root.get("block_bootstrap")),
+            preregistration=_parse_preregistration(root.get("preregistration")),
         )
     except MarketDataParseError as exc:
         raise StudySpecError(f"invalid_spec_field: {exc.field_path or 'unknown'}") from None

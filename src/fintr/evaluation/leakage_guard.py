@@ -37,6 +37,8 @@ from fintr.data.parsers.common import (
     require_string,
 )
 from fintr.evaluation.manifest import EvalCase, ManifestError
+from fintr.evaluation.symbol_exclusions import SymbolExclusions, is_excluded
+from fintr.evaluation.symbol_split import SymbolSplit, is_holdout
 
 
 REGISTRY_SCHEMA_VERSION = "fintr_dev_registry_v1"
@@ -137,12 +139,18 @@ def load_dev_registry(path: Path = DEFAULT_REGISTRY_PATH) -> tuple[DevRegistryEn
 
 def find_leakage_violations(
     cases: tuple[EvalCase, ...], registry: tuple[DevRegistryEntry, ...],
+    *, split: SymbolSplit | None = None, exclusions: SymbolExclusions | None = None,
 ) -> tuple[LeakageViolation, ...]:
     """Return every violation found; does not stop at the first one.
 
     Checked, in order per case: development-only source path, development
     registry symbol match (company-level, regardless of date), duplicate
-    case_id, duplicate capture checksum, duplicate leakage group.
+    case_id, duplicate capture checksum, duplicate leakage group, and --
+    only when the corresponding argument is supplied -- a frozen BIST 30
+    holdout-split violation (``not_in_holdout_split``: the case symbol is
+    not in ``split.holdout_symbols``) and a symbol-exclusions violation
+    (``excluded_symbol``). ``scripts/validate_eval_manifest.py`` always
+    supplies both, from the active split and the project exclusions file.
     """
     if not isinstance(cases, tuple) or any(not isinstance(case, EvalCase) for case in cases):
         raise ManifestError("invalid_cases")
@@ -150,6 +158,10 @@ def find_leakage_violations(
         not isinstance(entry, DevRegistryEntry) for entry in registry
     ):
         raise ManifestError("invalid_registry")
+    if split is not None and not isinstance(split, SymbolSplit):
+        raise ManifestError("invalid_split")
+    if exclusions is not None and not isinstance(exclusions, SymbolExclusions):
+        raise ManifestError("invalid_exclusions")
 
     violations: list[LeakageViolation] = []
     seen_case_ids: set[str] = set()
@@ -176,14 +188,21 @@ def find_leakage_violations(
             violations.append(LeakageViolation(case.case_id, "duplicate_leakage_group"))
         seen_leakage_groups.add(case.leakage_group)
 
+        if split is not None and not is_holdout(split, case.symbol):
+            violations.append(LeakageViolation(case.case_id, "not_in_holdout_split"))
+
+        if exclusions is not None and is_excluded(exclusions, case.symbol):
+            violations.append(LeakageViolation(case.case_id, "excluded_symbol"))
+
     return tuple(violations)
 
 
 def assert_no_leakage(
     cases: tuple[EvalCase, ...], registry: tuple[DevRegistryEntry, ...],
+    *, split: SymbolSplit | None = None, exclusions: SymbolExclusions | None = None,
 ) -> None:
     """Raise on the first violation found; callers wanting a full report use
     ``find_leakage_violations`` instead."""
-    violations = find_leakage_violations(cases, registry)
+    violations = find_leakage_violations(cases, registry, split=split, exclusions=exclusions)
     if violations:
         raise LeakageError(violations[0].reason)

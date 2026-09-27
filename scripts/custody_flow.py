@@ -23,9 +23,12 @@ import argparse
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 from fintr.data.period_capture import PeriodCapture, PeriodCaptureError, load_period_capture
+from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
+from fintr.evaluation.symbol_split import NO_SPLIT_GUARD_WARNING
 from fintr.features.custody_flow import (
     DEFAULT_MISSING_AKD_POLICY,
     DEFAULT_PAIR_TOLERANCE,
@@ -118,6 +121,16 @@ def _parser() -> argparse.ArgumentParser:
             "retail/institutional lot series flags as provisional "
             f"(default: {DEFAULT_PROVISIONAL_LAST_CUSTODY_DAYS}; 0 disables "
             "marking); same policy as fintr.features.period."
+        ),
+    )
+    parser.add_argument(
+        "--no-split-guard", action="store_true",
+        help=(
+            "Disable the frozen BIST 30 holdout-split guard (by default a holdout "
+            "symbol's capture is refused). Only for non-BIST 30 exploratory work; "
+            "the output's split_guard block says so loudly. The active split comes "
+            "only from configs/splits/current.json. Excluded symbols "
+            "(configs/exclusions/symbols.json) are always refused; no override."
         ),
     )
     return parser
@@ -226,6 +239,27 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"invalid capture: {exc}")
         return 2
 
+    try:
+        guards = load_active_guards(bypass_split=args.no_split_guard)
+    except SymbolGuardError as exc:
+        parser.error(str(exc))
+        return 2
+    if guards.is_excluded(capture.symbol):
+        parser.error(
+            f"symbol {capture.symbol} is excluded "
+            f"({guards.exclusion_reason(capture.symbol)})"
+        )
+        return 2
+    if guards.blocks_holdout(capture.symbol):
+        parser.error(
+            f"symbol {capture.symbol} is a holdout symbol of the frozen split "
+            f"{guards.report()['split_file']} (sha256={guards.split.split_sha256})"
+        )
+        return 2
+    if guards.split_guard_bypassed:
+        print(NO_SPLIT_GUARD_WARNING, file=sys.stderr)
+    split_guard = guards.report(processed_symbols=[capture.symbol])
+
     residual_result = compute_custody_residual(
         capture, lag=args.lag, missing_akd_policy=args.missing_akd_policy,
     )
@@ -236,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
 
     output: dict[str, Any] = {
         "symbol": capture.symbol,
+        "split_guard": split_guard,
         "custody_residual": _residual_to_json(residual_result),
         "same_day_pairs": _pairs_to_json(pair_result),
         "estimated_retail_lots": _retail_lots_to_json(retail_lots_result),

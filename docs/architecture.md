@@ -425,6 +425,52 @@ tutulur. `custody_change` özelliği "yabancı takas" gibi bir sınıflandırmay
 doğrulamaz; yalnız spec'in verdiği kod kümesini toplar -- bağımsız
 doğrulanmış bir takas sınıflandırması bu repo'da yoktur.
 
+### Ön kayıt motor ön koşulları: E1 blok bootstrap, Holm ailesi, E4 birleştirme
+
+Problem: `docs/prereg/` tasarımı birincil testi sinyal tarihine göre
+hareketli blok bootstrap (E1) olarak tanımlıyor, motor ise yalnız i.i.d.
+bootstrap üretiyordu (aynı gün hisseler arası ve örtüşen 5 günlük
+pencerelerdeki bağımlılığı yok sayar). Holm ailesi yalnız belgede
+yazılıydı; `run_study.py` sembol başına tek capture alıyor ve aynı sembol
+tekrar verilirse sessizce üzerine yazıyordu; `--cost-bps` yardım metni
+"round-trip" diyor, formül taraf başına uyguluyordu.
+
+Alternatifler: (a) i.i.d. bootstrap'ı blok bootstrap ile değiştirmek --
+eski sonuçlarla karşılaştırılabilirliği bozar; reddedildi, i.i.d. ikincil
+tanılama olarak kaldı. (b) Blok bootstrap'ı sembol bazında yapmak --
+aynı günün piyasa ortak şokunu hesaba katmaz; reddedildi, birim sinyal
+tarihidir. (c) Dairesel/durağan bootstrap -- ön kayıt "hareketli blok"
+diyor; en dar okuma olan dairesel olmayan hareketli blok seçildi. (d) Holm'u
+her spec'i ayrı çalıştıran `run_study.py` içinde yapmak -- tek çalıştırma
+ailenin diğer p'lerini bilmez; aile spec'lerin `preregistration`
+bloğunda tanımlanır, karar kaydedilmiş sonuçlardan ayrı bir CLI ile
+verilir. (e) E4'te kod bazında birleştirme veya boşluk doldurma --
+kanıtsız varsayım ekler; reddedildi.
+
+Karar: `study_spec` isteğe bağlı `block_bootstrap` bloğunu ve
+`preregistration` bloğunun bir alt kümesini doğrular (varsayılan yok;
+`preregistration` varsa `block_bootstrap` zorunlu). `engine.
+moving_block_bootstrap` havuzlanmış olayları sinyal tarihine göre gruplar,
+aynı tarihin tüm olaylarını birlikte çeker ve koşullu/baseline
+ortalamalarını aynı çekilmiş tarihlerden hesaplar; tek yönlü p yalnız ön
+kayıtlı yön için raporlanır. `report.build_hypothesis_test` birincil vade
+özetini ve Holm girdisini (asgari olay sağlanmazsa 1) üretir;
+`research.family.evaluate_primary_family` + `scripts/evaluate_study_family.py`
+Holm'u yalnız `primary` üyelere uygular, `secondary_descriptive`
+hipotezleri düzeltmesiz listeler. `research.capture_merge` aynı sembolün
+capture'larını "daha geç `captured_at_utc` tarihin tamamını kazanır"
+kuralıyla birleştirir; zaman ve dönem sırası çelişirse reddeder, ek yeri
+boşluklarını ve girdi hash'lerini `capture_merge` bloğunda raporlar.
+`--cost-bps` yardım metni ve belgeler taraf başına olarak düzeltildi;
+formül değişmedi. `formula_version` `study_engine_v2` oldu.
+
+Sonuç: Ön kayıtlı birincil test tekrar üretilebilir (seed, B, blok uzunluğu
+spec'te ve sonuçta). Blok bootstrap bağımlılığı yalnız kısmen yakalar
+(blok uzunluğu 5, vade 5 ile örtüşmeyi kapsar; daha uzun süren rejimleri
+kapsamaz). E4 zaman/dönem sırası çelişkisinde veri yeniden alınmalıdır.
+Lag feature'ları boşluk üzerinden bitişik tarih gibi okur; rapor edilir,
+engellenmez.
+
 ### Kurumsal aksiyon kaydı, düzeltilmiş görünüm ve sürümlü rapor adlandırması
 
 Problem: Bir bedelsiz/split gibi kurumsal aksiyon geçmiş AKD/takas
@@ -477,3 +523,34 @@ durumlarından biriyle açıkça raporlanır. Geçen bir tutarlılık kontrolü,
 girilen aksiyonun doğruluğunun bağımsız kanıtı değildir -- yalnızca bu
 formülle uyumlu olduğunu gösterir; bu sınır hem kodda hem
 `docs/corporate_actions.md`'de tekrarlanır.
+
+### Dondurulmuş hisse ayrımı ve dışlama korumaları
+
+Problem: BIST 30 holdout hisseleri (`configs/splits/`) ve kullanıcı kararıyla
+dışlanan hisseler (`configs/exclusions/symbols.json`) yalnız belgelerde
+kalırsa bir analiz, çalışma veya eval doğrulaması onları sessizce
+kullanabilir; ayrım da (v1 → v2) yenilenebildiği için sabit bir dosya adı
+güvenilir değildir.
+
+Alternatifler: (a) her script'e `--split-file`/`--exclusions-file` bayrağı --
+ilk WIP böyleydi, ama bir bayrak etkin ayrımı atlamaya veya boş bir dışlama
+dosyasıyla dışlamayı kaldırmaya izin verir; reddedildi. (b) eksik
+işaretçi/dışlama dosyasında korumayı kapatmak (cwd'ye göreli varsayılanlar) --
+başka bir dizinden çalıştırınca koruma sessizce kapanıyordu; reddedildi.
+(c) toplamayı da holdout için engellemek -- holdout verisinin toplanması
+gereklidir (tek seferlik değerlendirme için); yalnız kullanım korunur.
+
+Karar: `fintr.evaluation.symbol_guard.load_active_guards` etkin ayrımı
+yalnız `configs/splits/current.json` üzerinden, dışlamaları yalnız
+`configs/exclusions/symbols.json`'dan, repo köküne göre mutlak yollarla ve
+kapalı-güvenli yükler; `frozen: false` veya `superseded_by` taşıyan ayrım
+etkin olamaz. Analiz/çalışma/eval araçları holdout ve dışlama kurallarını,
+toplama araçları yalnız dışlamayı uygular. `--no-split-guard` yalnız holdout
+kontrolünü kapatır ve çıktıda belirgin biçimde raporlanır; dışlamanın
+geçersiz kılma seçeneği yoktur. `run_study --split test` motoru
+`symbol_scope="holdout_only"` ile çalıştırır.
+
+Sonuç: Her çıktı uygulanan ayrım ve dışlama dosyasını SHA-256'larıyla
+kaydeder. Bozuk/eksik işaretçi, ayrım veya dışlama dosyası tüm korunan
+araçları durdurur (bilinçli). Kurallar ve tablo:
+[`docs/evaluation_protocol.md`](evaluation_protocol.md).

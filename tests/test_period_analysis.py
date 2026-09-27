@@ -794,7 +794,8 @@ class AnalyzePeriodBatchTests(unittest.TestCase):
             code, index = self._run(["--all", str(root), "--format", "json"])
             self.assertEqual(code, 1)
             self.assertEqual(index["totals"], {
-                "captures": 3, "ok": 2, "failed": 1, "reports_saved": 0,
+                "captures": 3, "ok": 2, "skipped_holdout": 0, "skipped_excluded": 0,
+                "failed": 1, "reports_saved": 0,
                 "reports_skipped": 0, "reports_not_saved": 2, "reports_failed": 0,
             })
             by_symbol = {e["symbol"]: e for e in index["captures"]}

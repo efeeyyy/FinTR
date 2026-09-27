@@ -28,7 +28,8 @@ değil, açıkça işaretlenmiş varsayımlardır.
    sürümün görülmüş sonuçları varsa bu açıkça belirtilir.
 4. **Motor ön koşulları.** Train çalıştırılmadan önce E1 (birincil test) ve
    E4 (çoklu capture birleştirme) motor yetenekleri uygulanıp test edilir
-   (bkz. "Motor yetenekleri"). Motor v1'in i.i.d. bootstrap güven aralığı
+   (bkz. "Motor yetenekleri"; `engine-prereqs` dalında uygulandı,
+   `tests/test_study_prereqs.py`). Motorun i.i.d. bootstrap güven aralığı
    yalnız ikincil tanılamadır; tek başına doğrulayıcı sonuç sayılmaz.
 5. **Train (geliştirme hisseleri).** `scripts/run_study.py --split train
    --cost-bps 10 --save`; yalnız `configs/splits/bist30_2026_holdout_v2.json`
@@ -40,7 +41,11 @@ değil, açıkça işaretlenmiş varsayımlardır.
 6. **Tek seferlik holdout testi.** Tüm dört hipotez, train sonucundan
    bağımsız olarak (etkiye göre eleme yok) test aşamasına gider:
    `--split test` (motor tanımı: sinyal tarihleri `>= 2026-10-01`, tüm
-   bildirilen semboller = 20 geliştirme + 10 holdout). Test dönemi
+   bildirilen semboller = 20 geliştirme + 10 holdout). **Açık çelişki:**
+   `holdout-guard` dalıyla gelen CLI koruması `--split test`'te yalnız
+   holdout sembollerini kabul eder ve motoru `symbol_scope="holdout_only"`
+   ile çalıştırır (bkz. `docs/study_engine.md`); bu tanımla çelişir ve
+   dondurmadan önce Efe'nin karara bağlaması gerekir (E5 ile birlikte). Test dönemi
    **ileriye dönük** toplanır: sinyal penceresi `2026-10-01..2027-03-31`,
    fiyat verisi pencere sonundan en az 25 tradeable bar sonrasına kadar.
    Test bir kez çalıştırılır; sonuç ne olursa olsun raporlanır.
@@ -58,16 +63,20 @@ girmez; DSTKF (`configs/exclusions/symbols.json`) hiçbir listede yoktur.
 | Train/test sınırı | `train_test_cutoff: 2026-10-01` (endeks dönem değişikliğinin yürürlük günü; test dönemi henüz gerçekleşmemiş, ileriye dönük) |
 | Zamanlama | Sinyal `t` kapanışından sonra hesaplanır (motor `t`'ye kırpılmış capture ile çalışır); giriş `t`'den sonraki ilk tradeable barın **açılışı** (`next_open`); çıkış girişten `h` tradeable bar sonraki kapanış |
 | Vadeler | 1, 5, 10, 20 işlem günü; **birincil vade 5** (diğerleri ikincil/tanımlayıcı) |
-| Maliyet | `--cost-bps 10`. Motor formülü `net = gross − 2 × cost_bps/10000` olduğu için bu **taraf başına** 10 bps = gidiş-dönüş 20 bps'dir (kaynaklı bir komisyon değeri değil, varsayım). Not: `scripts/run_study.py --cost-bps` yardım metni "round-trip" diyor, formül ise taraf başına uyguluyor; bu tutarsızlık ayrıca düzeltilmelidir. Maliyet koşullu ve baseline olaylardan aynı miktarda düşüldüğü için birincil fark metriğini **değiştirmez**; yalnız mutlak net getirileri etkiler. |
+| Maliyet | `--cost-bps 10`. Motor formülü `net = gross − 2 × cost_bps/10000` olduğu için bu **taraf başına** 10 bps = gidiş-dönüş 20 bps'dir (kaynaklı bir komisyon değeri değil, varsayım). `scripts/run_study.py --cost-bps` yardım metni ve sonuç JSON'u (`parameters.transaction_cost_basis`) artık "taraf başına (gidiş-dönüş = 2×)" der; formül değişmedi. Maliyet koşullu ve baseline olaylardan aynı miktarda düşüldüğü için birincil fark metriğini **değiştirmez**; yalnız mutlak net getirileri etkiler. |
 | Düzeltme sınırı | `adjustment_boundary_policy: "drop"` (temettü/sermaye artırımı sınırını kesen pencere hem koşullu hem baseline'da düşer; sayılar raporlanır) |
 | Birincil metrik | `Δ_5 = overall["5"].difference_mean` = ortalama(koşullu net getiri) − ortalama(baseline net getiri), baseline = aynı sembollerin kapsamdaki tüm sinyal günleri (koşullu kümenin üst kümesi) |
-| Birincil test (tek) | Tek yönlü, **sinyal tarihine göre hareketli blok bootstrap** (E1): kapsamdaki sinyal tarihleri sıralanır, uzunluğu 5 olan ardışık tarih blokları iadeli çekilir (aynı tarihteki tüm sembol olayları birlikte), her örneklemde koşullu ve baseline ortalaması aynı yeniden örneklenmiş tarihlerden hesaplanır; `B = 9999`, seed `20261001`. Beklenen yön negatifse `p = (1 + #{Δ*_b ≥ 0}) / (B + 1)`, pozitifse `p = (1 + #{Δ*_b ≤ 0}) / (B + 1)` |
-| Çoklu karşılaştırma | **Holm (1979)**, aile = H1–H4 (m = 4), aile bazında α = 0.05. p'ler küçükten büyüğe `p(1)..p(4)`; `p(i) ≤ 0.05/(4 − i + 1)` sağlandıkça reddedilir, ilk başarısızlıkta durulur. Holm keyfi bağımlılık altında geçerlidir (H3 ⊂ H1 ve H4 ⊂ H2 olay kümeleri güçlü bağımlıdır). Train ve test aşamaları ayrı ayrı Holm'lanır; doğrulayıcı karar yalnız test aşamasınındır. |
+| Birincil test (tek) | Tek yönlü, **sinyal tarihine göre hareketli blok bootstrap** (E1): kapsamdaki sinyal tarihleri sıralanır, uzunluğu 5 olan ardışık tarih blokları iadeli çekilir (aynı tarihteki tüm sembol olayları birlikte), her örneklemde koşullu ve baseline ortalaması aynı yeniden örneklenmiş tarihlerden hesaplanır; `B = 9999`, seed `20261001` (spec'te `block_bootstrap`, sonuçta `overall[h].block_bootstrap_difference`). Beklenen yön negatifse `p = (1 + #{Δ*_b ≥ 0}) / (B + 1)`, pozitifse `p = (1 + #{Δ*_b ≤ 0}) / (B + 1)`. Uygulama ayrıntıları (motor, `fintr.research.engine.FORMULAS`): tarih ekseni = birincil vadede düşürülmemiş en az bir koşullu veya baseline olayı olan sinyal tarihleri (N); `ceil(N/5)` blok başlangıcı `0..N−5` arasından çekilir, birleşim N tarihe kesilir (dairesel değil); ortalamalar olay ağırlıklıdır; çekilen tarihlerde hiç koşullu olay yoksa `Δ*_b` tanımsızdır, sayılır ve p'de beklenen yönü **desteklemeyen** tarafa yazılır (muhafazakâr); yüzdelikler tanımlı `Δ*_b`'ler üzerinden en yakın sıra (`sorted[ceil(q·n) − 1]`). |
+| Çoklu karşılaştırma | **Holm (1979)**, birincil aile = **yalnız H1 ve H2 (m = 2)**, aile bazında α = 0.05 (Efe kararı, [DECISIONS.md](DECISIONS.md) 2026-09-27). p'ler küçükten büyüğe `p(1), p(2)`; `p(1) ≤ 0.025` ise H(1) reddedilir ve `p(2) ≤ 0.05` ise H(2) de reddedilir; ilk başarısızlıkta durulur. **H3 ve H4 `secondary_descriptive`'dir: Holm'a girmez, m'yi değiştirmez**, E1 p'leri düzeltilmemiş ve yalnız tanımlayıcı raporlanır. Aile spec'lerin `preregistration` bloğunda (`family_role`, `primary_family_members`, `family_size`, `familywise_alpha`) tanımlıdır ve yükleyici tarafından doğrulanır; karar `scripts/evaluate_study_family.py` ile kaydedilmiş sonuçlardan verilir (eksik birincil üye hata verir). Train ve test aşamaları ayrı ayrı Holm'lanır; doğrulayıcı karar yalnız test aşamasınındır. |
 | Asgari olay | Birincil vadede düşmeler sonrası ≥ 100 koşullu olay **ve** ≥ 30 farklı sinyal tarihi. Altında kalırsa sonuç "belirsiz — yetersiz olay"dır ve Holm'da `p = 1` alınır (aile boyutu değişmez). |
 | SESOI | `δ = 0.0025` (5 günde 25 bps). Gidiş-dönüş maliyet varsayımının (20 bps) biraz üstü seçildi; bundan küçük bir fark bu tasarımda pratikte ayırt edilemez kabul edilir. Ön kayıt kararıdır, kaynaklı değer değildir. |
-| Motor v1 bootstrap | Spec'lerde `confidence_level: 0.975`, `resamples: 2000`: m = 4 için Holm'un en katı adımındaki tek yönlü 0.0125 düzeyine karşılık gelen iki yönlü aralık. i.i.d. olduğu için yalnız ikincil tanılamadır. |
+| i.i.d. bootstrap (ikincil) | Spec'lerde `confidence_level: 0.95`, `resamples: 2000`: m = 2 için Holm'un en katı adımındaki tek yönlü 0.025 düzeyine karşılık gelen iki yönlü aralık (m = 4 iken 0.975 idi; aile kararıyla birlikte güncellendi). i.i.d. olduğu için yalnız ikincil tanılamadır; motor yalnız havuzlanmış (`overall`) blokta E1 hesaplar, sembol bazında yalnız bu aralık vardır. |
 
 ### Sonuç sınıfları (test aşaması, her hipotez için)
+
+Bu sınıflar yalnız birincil aile üyeleri (H1, H2) içindir; H3/H4
+`descriptive_only` olarak raporlanır. `scripts/evaluate_study_family.py`
+sınıfları aşağıdaki kurallarla üretir (`fintr.research.family.FORMULAS`).
 
 - **Desteklendi:** Holm birincil testi beklenen yönde reddeder.
 - **Yanlışlandı:** Holm reddetmez **ve** E1 bootstrap dağılımından tek yönlü
@@ -83,16 +92,17 @@ Diğer vadeler (1/10/20), sembol bazında kırılım, motor v1 i.i.d. CI, hit
 rate/medyan, piyasaya göre düzeltilmiş fark (E2), yalnız-holdout-sembolleri
 havuzu (E5), endeks dönem değişikliği günleri ve yarım gün seansları hariç
 duyarlılık, maliyet 0/25 bps duyarlılığı (farkı değiştirmez; yalnız mutlak
-getiriler). H3 − H1 ve H4 − H2 etki farkı yalnız tanımlayıcı olarak raporlanır.
+getiriler). H3 ve H4'ün E1 sonuçları (düzeltilmemiş p, Δ, yüzdelikler) ve
+H3 − H1, H4 − H2 etki farkı yalnız tanımlayıcı olarak raporlanır.
 
 ## Hipotezler
 
-| ID | Spec | Koşul (özet) | Birincil vade | Beklenen yön | Yanlışlama |
-|---|---|---|---|---|---|
-| [H1](H1.md) | `h1_close_premium_vs_vwap_proxy_v1.json` | `-0.10 ≤ vwap_proxy_vs_close ≤ -0.01` (kapanış VWAP proxy'sinin ~%1+ üstünde) | 5 | Δ < 0 | Δ*'ın 5. yüzdeliği > −0.0025 |
-| [H2](H2.md) | `h2_close_discount_vs_vwap_proxy_v1.json` | `0.01 ≤ vwap_proxy_vs_close ≤ 0.10` (kapanış ~%1+ altında) | 5 | Δ > 0 | Δ*'ın 95. yüzdeliği < +0.0025 |
-| [H3](H3.md) | `h3_concentrated_flow_close_premium_v1.json` | `top1_akd_net_share_of_volume ≥ 0.10` ve H1 koşulu | 5 | Δ < 0 | Δ*'ın 5. yüzdeliği > −0.0025 |
-| [H4](H4.md) | `h4_concentrated_flow_close_discount_v1.json` | `top1_akd_net_share_of_volume ≥ 0.10` ve H2 koşulu | 5 | Δ > 0 | Δ*'ın 95. yüzdeliği < +0.0025 |
+| ID | Spec | Rol | Koşul (özet) | Birincil vade | Beklenen yön | Yanlışlama |
+|---|---|---|---|---|---|---|
+| [H1](H1.md) | `h1_close_premium_vs_vwap_proxy_v1.json` | birincil (Holm) | `-0.10 ≤ vwap_proxy_vs_close ≤ -0.01` (kapanış VWAP proxy'sinin ~%1+ üstünde) | 5 | Δ < 0 | Δ*'ın 5. yüzdeliği > −0.0025 |
+| [H2](H2.md) | `h2_close_discount_vs_vwap_proxy_v1.json` | birincil (Holm) | `0.01 ≤ vwap_proxy_vs_close ≤ 0.10` (kapanış ~%1+ altında) | 5 | Δ > 0 | Δ*'ın 95. yüzdeliği < +0.0025 |
+| [H3](H3.md) | `h3_concentrated_flow_close_premium_v1.json` | ikincil/tanımlayıcı | `top1_akd_net_share_of_volume ≥ 0.10` ve H1 koşulu | 5 | Δ < 0 | — (tanımlayıcı) |
+| [H4](H4.md) | `h4_concentrated_flow_close_discount_v1.json` | ikincil/tanımlayıcı | `top1_akd_net_share_of_volume ≥ 0.10` ve H2 koşulu | 5 | Δ > 0 | — (tanımlayıcı) |
 
 Neden yalnız dört ve neden takas yok: motorun kod-bağımsız özellikleri
 yalnız `top1_akd_net_share_of_volume` ve `vwap_proxy_vs_close`'dur.
@@ -123,12 +133,40 @@ test'iyle eklenip ayrı bir ön kayıt sürümünde kullanılmalıdır.
 
 | ID | Gereken | Neden | Durum |
 |---|---|---|---|
-| E1 | Sinyal tarihine göre hareketli blok bootstrap, tek yönlü p ve tek yönlü sınırlar; farklı sinyal tarihi sayısı | Olaylar aynı gün hisseler arası ve 5 günlük örtüşen pencerelerle bağımlıdır; motor v1'in i.i.d. bootstrap'ı varyansı küçümser | **Train'den önce zorunlu** |
+| E1 | Sinyal tarihine göre hareketli blok bootstrap, tek yönlü p ve tek yönlü sınırlar; farklı sinyal tarihi sayısı | Olaylar aynı gün hisseler arası ve 5 günlük örtüşen pencerelerle bağımlıdır; motor v1'in i.i.d. bootstrap'ı varyansı küçümser | **Uygulandı** (`engine.moving_block_bootstrap`; spec `block_bootstrap`; sonuç `block_bootstrap_difference`, `hypothesis_test`) |
 | E2 | Piyasaya göre düzeltilmiş getiri: olay getirisi − aynı giriş/çıkış tarihlerinde kapsamdaki tüm sembollerin eşit ağırlıklı ortalaması | Olaylar zamanda kümelenirse ham fark piyasa zamanlamasını da ölçer | İkincil analiz için önerilir |
 | E3 | Spec'te test penceresi bitişi (`test_end`) ve train fiyat bitişi zorlaması | Motor şimdi yalnız `>= cutoff` uygular; pencere operatör disipliniyle sınırlanıyor | Önerilir (yoksa operatör kontrol listesi) |
-| E4 | Sembol başına birden çok dönem capture'ını birleştirme: tekrar eden tarihlerde sonraki capture öncelikli (son gün takas revizyonu), ek yerlerindeki boşlukların raporlanması, girdi hash'leri | AKD/takas istek başına ~3 ay; `run_study.py` sembol başına tek capture alıyor | **Train'den önce zorunlu** |
+| E4 | Sembol başına birden çok dönem capture'ını birleştirme: tekrar eden tarihlerde sonraki capture öncelikli (son gün takas revizyonu), ek yerlerindeki boşlukların raporlanması, girdi hash'leri | AKD/takas istek başına ~3 ay; `run_study.py` sembol başına tek capture alıyor | **Uygulandı, dar yorumla** (`research.capture_merge`; aşağıya bkz.) |
 | E5 | Sembol alt kümesi (yalnız holdout) için havuzlanmış istatistik | Motor test split'i geliştirme + holdout'u birlikte havuzlar | İkincil analiz için önerilir |
 | E6 | Olay bazında çıktı (sembol, sinyal, giriş/çıkış, net getiri, düşme nedeni) | Denetlenebilirlik ve E1'in bağımsız doğrulanması | Önerilir |
+
+### E4 yorumu (belirsizlikler açıkça)
+
+Tanım üç noktada belirsizdi; en dar yorum uygulandı:
+
+- **"Sonraki capture"**: `captured_at_utc`'si daha geç olan capture. Aynı
+  sıranın istek dönemi (`start`, `end`) sırasıyla da tutması şarttır;
+  ikisi çelişirse (ör. eski bir dönemin sonradan geri doldurulması) veya
+  iki capture aynı zamanı taşırsa birleştirme **reddedilir** — hangi
+  okumanın kastedildiği tahmin edilmez.
+- **Öncelik birimi**: tarih bazında bütün kayıt. Bir tarihi taşıyan en
+  geç capture o tarihin tüm dated serilerini (`daily_akd_net`,
+  `daily_akd_market`, `daily_custody_lots`, `metadata`) verir; kod bazında
+  karıştırma yoktur. Dönem toplamları (`period_akd_net`, `custodian_diff`)
+  birleştirilemez ve birleşik capture'da boştur (hiçbir motor feature'ı
+  okumaz).
+- **Boşluk raporu**: yalnız rapor, doldurma/interpolasyon yok. Her ek
+  yerinde istek dönemleri arası takvim günü ve fiyat dosyasındaki
+  tradeable günlerden hiçbir capture'da olmayanlar
+  (`capture_merge[SYMBOL].seams[].missing_tradeable_dates`). Capture içi
+  eksik günler raporlanmaz. Lag kullanan feature'lar (`custody_change`,
+  `flow_run_length`) boşluk üzerinden bitişik sunucu tarihleri gibi
+  okur; H1–H4 bunları kullanmaz.
+
+Kullanım: aynı sembol için `--data` birden çok kez, aynı fiyat dosyasıyla
+verilir; her girdi dosyasının SHA-256'sı `SYMBOL:period_capture:<i>`
+anahtarıyla, çakışan tarihler ve hangi serinin revize edildiği
+`capture_merge` bloğunda kaydedilir.
 
 ## Ortak karıştırıcılar ve azaltma
 
@@ -184,13 +222,13 @@ test'iyle eklenip ayrı bir ön kayıt sürümünde kullanılmalıdır.
 ## Güç / fizibilite (varsayıma dayalı)
 
 Varsayımlar (veriden değil, yalnız ölçek fikri için): 5 günlük getirinin
-standart sapması `σ_5 ≈ %5`; tek yönlü düzey `0.0125` (Holm'un en katı
-adımı, z = 2.24), güç 0.80 (z = 0.84). En küçük saptanabilir etki
-`MDE ≈ 3.08 × σ_5 / √n_eff`:
+standart sapması `σ_5 ≈ %5`; tek yönlü düzey `0.025` (m = 2 Holm'un en
+katı adımı, z = 1.96; m = 4 iken 0.0125, z = 2.24 idi), güç 0.80
+(z = 0.84). En küçük saptanabilir etki `MDE ≈ 2.80 × σ_5 / √n_eff`:
 
 | n_eff | 30 | 50 | 100 | 200 | 400 |
 |---|---|---|---|---|---|
-| MDE (5 gün) | ~%2.8 | ~%2.2 | ~%1.5 | ~%1.1 | ~%0.8 |
+| MDE (5 gün) | ~%2.6 | ~%2.0 | ~%1.4 | ~%1.0 | ~%0.7 |
 
 `n_eff` ham olay sayısından belirgin küçüktür: aynı gün birçok sembolde
 tetiklenen olaylar piyasa faktörü üzerinden korelelidir ve ardışık günlerin
@@ -198,11 +236,11 @@ tetiklenen olaylar piyasa faktörü üzerinden korelelidir ve ardışık günler
 beklenebilir (varsayım).
 
 - **~60 işlem günü × 20 hisse = ~1.200 sembol-gün.** Koşul günlerin %10'unda
-  tutarsa ~120 olay, `n_eff` ~15–40 → MDE %2.5–4. Yalnız çok büyük etkiler
+  tutarsa ~120 olay, `n_eff` ~15–40 → MDE ~%2.2–3.6. Yalnız çok büyük etkiler
   görülebilir; H3/H4 (daha seyrek) büyük olasılıkla 100 olay eşiğinin altında
   kalır. **Yeterli değil.**
 - **~250 işlem günü × 20 hisse = ~5.000 sembol-gün.** %10 sıklıkta ~500 olay,
-  `n_eff` ~50–170 → MDE ~%1.2–2.2. H1/H2 için sınırda; H3/H4 koşul
+  `n_eff` ~50–170 → MDE ~%1.1–2.0. H1/H2 için sınırda; H3/H4 koşul
   sıklığına bağlı (bilinmiyor).
 - **Test: ~125 işlem günü × 30 hisse = ~3.750 sembol-gün**; benzer büyüklük.
 
@@ -212,6 +250,11 @@ etkileri saptayabilir ve "belirsiz" sonuç olası bir çıktıdır. Olay sayıs�
 koşul sıklığına göre sonradan gevşetilmemesi bu yüzden önemlidir.
 
 ## Efe'nin kararları (dondurmadan önce)
+
+2026-09-27 yanıtları [DECISIONS.md](DECISIONS.md)'dedir (1: eşikler sabit;
+2: pencere onaylandı; 3: E1 ve E4 dondurmadan önce — uygulandı; 4: birincil
+aile yalnız H1–H2, H3/H4 ikincil/tanımlayıcı). Aşağıdaki liste kayıt için
+korunmuştur.
 
 1. Dört hipotez, eşikler (`0.01`, `0.10` bant, `top1 ≥ 0.10`) ve birincil
    vade 5 onaylanıyor mu? Alternatif: eşikleri **yalnız feature dağılımına**
@@ -228,17 +271,32 @@ koşul sıklığına göre sonradan gevşetilmemesi bu yüzden önemlidir.
 
 ```bash
 pip install websockets
-PYTHONPATH=src python -m unittest tests.test_prereg_specs -v
+PYTHONPATH=src python -m unittest discover -s tests -p "test_prereg_specs.py" -v
+PYTHONPATH=src python -m unittest discover -s tests -p "test_study_prereqs.py" -v
+```
+
+Train sonrası aile kararı (kaydedilmiş dört sonuçtan; H3/H4 Holm dışı
+listelenir):
+
+```bash
+PYTHONPATH=src python scripts/evaluate_study_family.py \
+  --result data/interim/studies/prereg_bist30_h1_close_premium_vs_vwap_proxy_v1_train.json \
+  --result data/interim/studies/prereg_bist30_h2_close_discount_vs_vwap_proxy_v1_train.json \
+  --result data/interim/studies/prereg_bist30_h3_concentrated_flow_close_premium_v1_train.json \
+  --result data/interim/studies/prereg_bist30_h4_concentrated_flow_close_discount_v1_train.json
 ```
 
 `tests/test_prereg_specs.py` her spec'i `fintr.research.study_spec.
 load_study_spec` ile yükler; `frozen: false`, açıklama öneki, sembollerin
 dondurulmuş split'le eşitliği (split dosyası SHA-256'sı dahil), DSTKF'nin
 yokluğu, ortak tasarımın aile içinde aynılığı, `preregistration` bloğunun
-tutarlılığı ve koşulların yalnız mevcut motor feature'larını kullandığını
-denetler. `preregistration` bloğu `fintr_study_spec_v1` yükleyicisi
-tarafından okunmaz ama `spec_sha256`'ya dahildir; böylece birincil vade,
-yön, test ve çalıştırma parametreleri de spec hash'ine bağlanır.
+tutarlılığı, birincil ailenin H1/H2 (m = 2) olduğunu, H3/H4'ün
+`secondary_descriptive` olduğunu, E1 parametrelerini ve koşulların yalnız
+mevcut motor feature'larını kullandığını denetler. `preregistration`
+bloğunun bir alt kümesi (hipotez kimliği, aile rolü/üyeleri/boyutu, α, yön,
+birincil vade, asgari olay/tarih, SESOI) yükleyici tarafından okunur ve
+doğrulanır; bloğun tamamı `spec_sha256`'ya dahildir. `preregistration`
+taşıyan bir spec `block_bootstrap` olmadan yüklenmez.
 
 ## Kaynaklar
 

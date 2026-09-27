@@ -223,6 +223,20 @@ tabidir ve `--max-wall-seconds` (varsayılan 1800s / 30 dakika) toplam
 `--symbol-pause-seconds` (varsayılan 3, üst sınır 30) kadar sabit bir
 bekleme vardır.
 
+**Holdout ve dışlama (2026-09-27'de eklendi):** Dondurulmuş BIST 30
+ayrımının (`configs/splits/current.json`) holdout hisseleri toplamada
+**engellenmez** — veri toplanabilir; yalnız analiz/çalışma araçları onları
+reddeder (bkz. [evaluation_protocol.md](evaluation_protocol.md)).
+`configs/exclusions/symbols.json`'daki hisseler ise geçersiz kılma seçeneği
+olmadan toplanmaz: `--symbol` ile tek hisse modunda script initData
+istemeden ve bağlantı açmadan hata verir; `--symbols`/`--symbols-file`
+çoklu modunda (dry-run dahil) o hisse istek gönderilmeden
+**`skipped_excluded`** olarak atlanır ve özet tabloda görünür. Listedeki
+tüm hisseler dışlanmışsa initData hiç sorulmaz. Aynı kural
+`fetch_price_history.py` (red) ve `fetch_price_history_batch.py`
+(`skipped_excluded`) için de geçerlidir. Dışlama kaydındaki `retained_data`
+notu yalnız bilgi amaçlıdır; toplamaya istisna açmaz.
+
 **Örnek çalıştırma — 2026-06-29..2026-09-25 aralığı, BIST30 evreni:**
 
 Önce dry-run (initData istemez, bağlantı açmaz; her sembol için planlanan

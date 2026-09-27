@@ -22,7 +22,10 @@ import tempfile
 from fintr.data.period_capture import PeriodCaptureError, load_period_capture
 from fintr.data.price_history import PriceHistoryCaptureError, load_price_history_capture
 from fintr.features.price_join import DEFAULT_ADJUSTMENT_RATIO_EPSILON, DEFAULT_VOLUME_RATIO_TOLERANCE
-from fintr.research.engine import EngineError, load_symbol_data
+from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
+from fintr.evaluation.symbol_split import NO_SPLIT_GUARD_WARNING
+from fintr.research.capture_merge import CaptureMergeError, CaptureSource, merge_period_captures
+from fintr.research.engine import EngineError, load_symbol_data, tradeable_price_bars
 from fintr.research.report import RunParameters, build_reproducibility_block, render_text, run_study
 from fintr.research.study_spec import StudySpecError, load_study_spec
 
@@ -77,13 +80,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data", type=_data_mapping, action="append", required=True, dest="data",
         metavar="SYMBOL=PERIOD_CAPTURE_PATH,PRICE_HISTORY_PATH",
-        help="repeatable; one entry per symbol the spec needs (declared symbols plus "
-             "symbol_holdout, if --split test)",
+        help="repeatable; at least one entry per symbol the spec needs (declared symbols "
+             "plus symbol_holdout, if --split test). Repeat a symbol with several period "
+             "captures (same price history path) to merge them (E4: later captured_at_utc "
+             "wins a whole date; seams/gaps are reported under capture_merge)",
     )
     parser.add_argument("--split", choices=("train", "test"), default="train",
                         help="test refuses to run unless the spec's frozen flag is true")
     parser.add_argument("--cost-bps", type=_non_negative_decimal, default=Decimal(0),
-                        help="round-trip transaction cost assumption in basis points (default: 0)")
+                        help="transaction cost assumption in basis points PER SIDE, charged at "
+                             "entry and at exit: net = gross - 2 * bps / 10000 (round-trip = "
+                             "2 x this value; default: 0)")
     parser.add_argument("--volume-ratio-tolerance", type=_non_negative_decimal,
                         default=DEFAULT_VOLUME_RATIO_TOLERANCE,
                         help=f"default: {DEFAULT_VOLUME_RATIO_TOLERANCE}")
@@ -98,6 +105,15 @@ def _parser() -> argparse.ArgumentParser:
                         help=f"default: {DEFAULT_OUT_DIR}")
     parser.add_argument("--save", action="store_true",
                         help="write the JSON result under --out-dir; never overwrites")
+    parser.add_argument(
+        "--no-split-guard", action="store_true",
+        help=(
+            "Disable the frozen BIST 30 holdout-split checks (see "
+            "docs/evaluation_protocol.md). Only for non-BIST 30 exploratory work; "
+            "the result's split_guard block and the text output say so loudly. "
+            "Symbol exclusions (configs/exclusions/symbols.json) have no override."
+        ),
+    )
     return parser
 
 
@@ -127,6 +143,54 @@ def _save(out_dir: Path, spec_id: str, split: str, payload: bytes) -> Path:
     raise RuntimeError("could_not_allocate_result_filename")
 
 
+def check_study_symbols(spec, data_symbols, *, split: str, guards) -> str | None:
+    """First reason the requested run violates the exclusions or the frozen
+    holdout split, or ``None``. Exclusions are checked unconditionally;
+    holdout rules are skipped only under ``--no-split-guard``.
+
+    train: no holdout symbol in the spec's train symbols or in ``--data``.
+    test: the spec must be frozen, must declare a non-empty ``symbol_holdout``
+    that is a subset of the split's holdout symbols, and every ``--data``
+    symbol must be a holdout symbol (the engine then evaluates only
+    ``symbol_holdout``; see ``symbol_scope``).
+    """
+    declared = spec.all_declared_symbols()
+    excluded = sorted(
+        {s for s in data_symbols if guards.is_excluded(s)}
+        | {s for s in declared if guards.is_excluded(s)}
+    )
+    if excluded:
+        reasons = "; ".join(f"{s}: {guards.exclusion_reason(s)}" for s in excluded)
+        return f"excluded symbol(s) {','.join(excluded)} ({reasons})"
+    if guards.split_guard_bypassed:
+        return None
+    if split == "train":
+        in_spec = sorted(s for s in spec.symbols if guards.is_holdout(s))
+        if in_spec:
+            return f"spec train symbols include holdout symbols ({','.join(in_spec)})"
+        in_data = sorted(s for s in data_symbols if guards.is_holdout(s))
+        if in_data:
+            return f"holdout symbols not allowed in --split train ({','.join(in_data)})"
+        return None
+    if not spec.frozen:
+        return "--split test requires a frozen spec (spec frozen=false)"
+    if not spec.symbol_holdout:
+        return "--split test requires the spec to declare symbol_holdout"
+    not_holdout_spec = sorted(s for s in spec.symbol_holdout if not guards.is_holdout(s))
+    if not_holdout_spec:
+        return (
+            "spec symbol_holdout lists symbols that are not holdout symbols of the "
+            f"frozen split ({','.join(not_holdout_spec)})"
+        )
+    not_holdout_data = sorted(s for s in data_symbols if not guards.is_holdout(s))
+    if not_holdout_data:
+        return (
+            "--split test accepts only holdout symbols of the frozen split "
+            f"({','.join(not_holdout_data)} are not)"
+        )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
 
@@ -136,24 +200,73 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Study failed: invalid spec ({exc})", file=sys.stderr)
         return 1
 
+    data_symbols = sorted({symbol.strip().upper() for symbol, _, _ in args.data})
+    try:
+        guards = load_active_guards(bypass_split=args.no_split_guard)
+    except SymbolGuardError as exc:
+        print(f"Study failed: {exc}", file=sys.stderr)
+        return 1
+    guard_problem = check_study_symbols(spec, data_symbols, split=args.split, guards=guards)
+    if guard_problem is not None:
+        print(
+            f"Study failed: {guard_problem}; split={guards.report()['split_file']} "
+            f"sha256={guards.split.split_sha256}",
+            file=sys.stderr,
+        )
+        return 1
+    if guards.split_guard_bypassed:
+        print(NO_SPLIT_GUARD_WARNING, file=sys.stderr)
+    split_guard = guards.report(processed_symbols=data_symbols)
+    # Under the guard a test run evaluates only the spec's symbol_holdout.
+    symbol_scope = (
+        "holdout_only" if args.split == "test" and not guards.split_guard_bypassed
+        else "declared"
+    )
+
+    grouped: dict[str, list[tuple[Path, Path]]] = {}
+    for symbol, period_path, price_path in args.data:
+        grouped.setdefault(symbol, []).append((period_path, price_path))
+
     symbol_data = {}
     input_file_hashes: dict[str, str] = {}
-    for symbol, period_path, price_path in args.data:
+    capture_merge: dict[str, dict] = {}
+    for symbol, entries in grouped.items():
+        price_paths = {price_path for _, price_path in entries}
+        if len(price_paths) != 1:
+            print(
+                f"Study failed: {symbol} has conflicting price history paths "
+                f"({', '.join(sorted(str(p) for p in price_paths))})",
+                file=sys.stderr,
+            )
+            return 1
+        price_path = entries[0][1]
         try:
-            period_bytes = period_path.read_bytes()
             price_bytes = price_path.read_bytes()
-            capture = load_period_capture(period_path)
             price = load_price_history_capture(price_path)
+            sources = []
+            for index, (period_path, _) in enumerate(entries):
+                period_bytes = period_path.read_bytes()
+                period_sha256 = hashlib.sha256(period_bytes).hexdigest()
+                key = f"{symbol}:period_capture" + ("" if len(entries) == 1 else f":{index}")
+                input_file_hashes[key] = period_sha256
+                sources.append(CaptureSource(
+                    load_period_capture(period_path), label=str(period_path),
+                    file_sha256=period_sha256,
+                ))
+            merged = merge_period_captures(
+                sources, tradeable_dates=[bar.trade_date for bar in tradeable_price_bars(price)],
+            )
             symbol_data[symbol] = load_symbol_data(
-                symbol, capture, price,
+                symbol, merged.capture, price,
                 adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
                 custody_scale_jump_ratio=args.custody_scale_jump_ratio,
             )
-        except (OSError, PeriodCaptureError, PriceHistoryCaptureError, EngineError) as exc:
+        except (OSError, PeriodCaptureError, PriceHistoryCaptureError, EngineError,
+                CaptureMergeError) as exc:
             print(f"Study failed: could not load data for {symbol} ({exc})", file=sys.stderr)
             return 1
-        input_file_hashes[f"{symbol}:period_capture"] = hashlib.sha256(period_bytes).hexdigest()
         input_file_hashes[f"{symbol}:price_history"] = hashlib.sha256(price_bytes).hexdigest()
+        capture_merge[symbol] = merged.report
 
     params = RunParameters(
         cost_bps=args.cost_bps, volume_ratio_tolerance=args.volume_ratio_tolerance,
@@ -161,11 +274,15 @@ def main(argv: list[str] | None = None) -> int:
         custody_scale_jump_ratio=args.custody_scale_jump_ratio,
     )
     try:
-        result = run_study(spec, symbol_data, split=args.split, params=params)
+        result = run_study(
+            spec, symbol_data, split=args.split, params=params, symbol_scope=symbol_scope,
+        )
     except EngineError as exc:
         print(f"Study failed: {exc}", file=sys.stderr)
         return 1
 
+    result["split_guard"] = split_guard
+    result["capture_merge"] = capture_merge
     result["reproducibility"] = build_reproducibility_block(
         project_root=PROJECT_ROOT, spec=spec, input_files=input_file_hashes,
         seed=spec.bootstrap.seed,

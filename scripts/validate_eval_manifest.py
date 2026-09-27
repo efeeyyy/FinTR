@@ -3,7 +3,12 @@
 No network, no model call. Checks structural validity of the manifest and
 annotation formats (``fintr.evaluation.manifest``) and runs the leakage guard
 (``fintr.evaluation.leakage_guard``) against the bundled development-material
-registry. Prints a short report; exits nonzero on any violation.
+registry, the active frozen BIST 30 split (``configs/splits/current.json``:
+every case symbol must be a holdout symbol, else ``not_in_holdout_split``)
+and the symbol exclusions (``configs/exclusions/symbols.json``: an excluded
+symbol is ``excluded_symbol``, no override). Prints the split and
+exclusions files applied with their SHA-256, then a short report; exits
+nonzero on any violation.
 
 This script does NOT certify human-reviewed gold quality, independent
 permission/license verification, or genuinely held-out status beyond the
@@ -24,6 +29,7 @@ from fintr.evaluation.leakage_guard import (
     load_dev_registry,
 )
 from fintr.evaluation.manifest import ManifestError, parse_annotation, parse_manifest
+from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards, render_guard_lines
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -82,9 +88,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Validation failed: unreadable registry ({exc})", file=sys.stderr)
         return 1
 
+    # Always the active split (configs/splits/current.json) and the project
+    # exclusions; neither has a flag, and there is no --no-split-guard here:
+    # an eval case must be a holdout symbol of the frozen split.
+    try:
+        guards = load_active_guards()
+    except SymbolGuardError as exc:
+        print(f"Validation failed: {exc}", file=sys.stderr)
+        return 1
+    for line in render_guard_lines(guards.report()):
+        print(line)
+
     problems: list[str] = [
         f"leakage: {violation.case_id}: {violation.reason}"
-        for violation in find_leakage_violations(cases, registry)
+        for violation in find_leakage_violations(
+            cases, registry, split=guards.split, exclusions=guards.exclusions,
+        )
     ]
 
     annotations_by_case: dict[str, int] = {}
