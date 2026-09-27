@@ -1,6 +1,6 @@
 ---
 name: sonnet-low
-description: Cheap worker, difficulty LOW: the task is fully specified and mechanical — locating code, reading/summarizing a few files, running the test suite, a script or a dry-run and reporting results, checking artifacts' metadata, trivial doc edits. No design decisions.
+description: Use ONLY when Efe explicitly asks for sonnet-low (otherwise use sonnet-medium). Cheap worker, difficulty LOW: the task is fully specified and mechanical — locating code, reading/summarizing a few files, running the test suite, a script or a dry-run and reporting results, checking artifacts' metadata, trivial doc edits. No design decisions.
 model: sonnet
 effort: low
 ---
