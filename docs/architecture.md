@@ -471,6 +471,50 @@ kapsamaz). E4 zaman/dönem sırası çelişkisinde veri yeniden alınmalıdır.
 Lag feature'ları boşluk üzerinden bitişik tarih gibi okur; rapor edilir,
 engellenmez.
 
+### Dondurma öncesi veri kalitesi kuralı: ratio-regime sinyal günü düşürme
+
+Problem: `docs/prereg/DECISIONS.md`'de kaydedildiği gibi, yönetici oturumunda
+yalnız AKD-türevi lot / Yahoo hacim oranına bakılarak (getiri okunmadan) 20
+geliştirme hissesinden birinde (BIMAS) 159 günlük bir dönemde oran tam 0,5
+bulundu: Yahoo'nun geriye dönük 1'e 2 ölçek düzeltmesi ile AKD'nin
+düzeltilmemiş lotları arasında birim uyumsuzluğu. `fintr.features.
+price_join.join_price_history` bunu zaten `ratio_regime`
+(`probable_retroactive_price_adjustment`, tam sayılı k >= 2, `vwap_proxy/k`
+ile korobore edilmiş) olarak tespit ediyordu, ama motor
+(`fintr.research.engine`/`report.run_study`) bu tespiti hiç okumuyordu: bir
+rejim içindeki günler sinyal olarak koşullu ve baseline kümelerine
+düzeltilmemiş oranla karışık birimde giriyordu.
+
+Alternatifler: (a) rejim içindeki günlerde getiriyi yeniden ölçeklemek --
+AGENTS.md'nin "hesaplanan değerleri kaynak değerlerden ayır" ve "kaynakta
+olmayan rakam üretme" kurallarını ihlal eder, ayrıca hangi seri
+(AKD lot mu, Yahoo hacim mi) "doğru" kabul edileceğine dair kanıtsız bir
+varsayım gerektirir; reddedildi. (b) yalnız exit penceresi rejime denk gelen
+olayları düşürmek -- getiriler Yahoo'nun kendi içinde tutarlı serisinden
+hesaplandığından (fiyat kendisi yeniden ölçeklenmiyor, yalnız AKD/hacim
+oranı bozuluyor) gereksiz veri kaybı yaratırdı; reddedildi. (c) rejimi
+sessizce yok saymak -- veri kalitesi sorununu gizler; reddedildi.
+
+Karar: `fintr.research.engine.load_symbol_data` artık `join_price_history`'nin
+`ratio_regime_tolerance` parametresiyle (varsayılan
+`fintr.features.price_join.DEFAULT_RATIO_REGIME_TOLERANCE`, `run_study.py`'de
+açık bir CLI parametresi) ürettiği `ratio_regimes`/`ratio_regime_dates`'i
+`SymbolData`'ya taşır; `report.run_study`,
+`engine.drop_ratio_regime_signal_dates` ile her sembolün rejim içindeki
+sinyal günlerini hem koşullu hem baseline kümesinden, olay inşasından önce
+düşürür. Getiri formülü değişmedi -- yalnız hangi sinyal günlerinin
+değerlendirildiği değişti. Sonuç `ratio_regime_quality[SEMBOL]` altında
+bulunan rejimleri (start/end/k/day_count) ve düşülen sinyal günü sayısını
+raporlar; metin çıktısı aynı bilgiyi sembol bazında yazar. `formula_version`
+`study_engine_v3` oldu.
+
+Sonuç: Rejimsiz semboller/dönemler öncekiyle birebir aynı sonucu üretir
+(boş rejim listesi, 0 düşülen gün). Bir rejim tespit edildiğinde onun
+içindeki sinyal günleri hem birincil hem ikincil analizden çıkar; bu,
+gücü azaltabilir ama birim uyumsuzluğunu sessizce sonuca karıştırmaz.
+Tolerans gevşetilir/sıkılaştırılırsa hangi günlerin rejime girdiği değişir;
+bu her koşuda sonuçta açıkça yazılır.
+
 ### Kurumsal aksiyon kaydı, düzeltilmiş görünüm ve sürümlü rapor adlandırması
 
 Problem: Bir bedelsiz/split gibi kurumsal aksiyon geçmiş AKD/takas

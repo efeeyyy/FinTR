@@ -18,11 +18,13 @@ import sys
 from pathlib import Path
 
 from fintr.evaluation.symbol_guard import render_guard_lines
+from fintr.features.price_join import DEFAULT_RATIO_REGIME_TOLERANCE
 from fintr.research.engine import (
     FORMULA_VERSION,
     EngineError,
     SymbolData,
     build_events,
+    drop_ratio_regime_signal_dates,
     signal_dates_for_split,
     summarize_horizon,
     symbols_for_split,
@@ -172,6 +174,17 @@ class RunParameters:
     volume_ratio_tolerance: Decimal
     adjustment_ratio_epsilon: Decimal
     custody_scale_jump_ratio: Decimal
+    ratio_regime_tolerance: Decimal = DEFAULT_RATIO_REGIME_TOLERANCE
+
+
+def _ratio_regime_payload(regime) -> dict:
+    return {
+        "start": regime.start.isoformat(),
+        "end": regime.end.isoformat(),
+        "k": regime.k,
+        "day_count": regime.day_count,
+        "label": regime.label,
+    }
 
 
 def run_study(
@@ -212,9 +225,17 @@ def run_study(
         raise EngineError(f"missing_symbol_data: {','.join(sorted(missing))}")
 
     per_symbol: dict[str, dict[int, tuple[list, list]]] = {}
+    ratio_regime_quality: dict[str, dict] = {}
     for symbol in required_symbols:
         data = symbol_data[symbol]
-        signal_dates = signal_dates_for_split(data.capture, spec.train_test_cutoff, split)
+        raw_signal_dates = signal_dates_for_split(data.capture, spec.train_test_cutoff, split)
+        signal_dates, dropped_regime_count = drop_ratio_regime_signal_dates(
+            raw_signal_dates, data.ratio_regime_dates,
+        )
+        ratio_regime_quality[symbol] = {
+            "regimes": [_ratio_regime_payload(regime) for regime in data.ratio_regimes],
+            "dropped_signal_dates": dropped_regime_count,
+        }
         per_symbol[symbol] = {
             horizon: build_events(
                 data, spec, horizon=horizon, cost_bps=params.cost_bps, signal_dates=signal_dates,
@@ -270,7 +291,9 @@ def run_study(
             "volume_ratio_tolerance": str(params.volume_ratio_tolerance),
             "adjustment_ratio_epsilon": str(params.adjustment_ratio_epsilon),
             "custody_scale_jump_ratio": str(params.custody_scale_jump_ratio),
+            "ratio_regime_tolerance": str(params.ratio_regime_tolerance),
         },
+        "ratio_regime_quality": ratio_regime_quality,
         "overall": {str(horizon): _horizon_payload(stats) for horizon, stats in overall_by_horizon.items()},
         "hypothesis_test": (
             None if spec.preregistration is None else build_hypothesis_test(
@@ -292,6 +315,10 @@ def run_study(
             "custody_change özelliği 'yabancı takas' gibi bir sınıflandırmayı "
             "doğrulamaz; yalnız spec'in verdiği kod kümesinin toplam lot "
             "değişimini ölçer.",
+            "ratio_regime içindeki sinyal günleri hem koşullu hem baseline "
+            "kümesinden düşülür (docs/prereg/DECISIONS.md); getiriler "
+            "Yahoo'nun kendi içinde tutarlı serisinden hesaplandığı için "
+            "ayrıca etkilenmez, yalnız sinyal günü seçimi değişir.",
         ),
     }
 
@@ -367,6 +394,22 @@ def render_text(result: dict) -> str:
             f"asgari_olay_sağlandı={'evet' if test['min_events_met'] else 'hayır'}, "
             f"p_tek_yönlü={test['p_value_one_sided']}, p_holm_girdisi={test['p_value_for_holm']}",
         ]
+    regime_quality = result.get("ratio_regime_quality") or {}
+    if regime_quality:
+        lines += [
+            "",
+            f"Rejim veri kalitesi (ratio_regime_tolerance="
+            f"{result['parameters']['ratio_regime_tolerance']}):",
+        ]
+        for symbol, report in regime_quality.items():
+            regimes = report["regimes"]
+            regime_text = "; ".join(
+                f"{r['start']}..{r['end']} k={r['k']} gün={r['day_count']}" for r in regimes
+            ) or "yok"
+            lines.append(
+                f"  {symbol}: rejim={len(regimes)} ({regime_text}), "
+                f"düşülen_sinyal_günü={report['dropped_signal_dates']}"
+            )
     merges = result.get("capture_merge") or {}
     merged_lines = [
         f"  {symbol}: capture={report['capture_count']}, çakışan_tarih={len(report['overlap_dates'])}, "

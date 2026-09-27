@@ -74,6 +74,36 @@ redefinition, not one broker's ordinary flow. A conditioned event whose
 condition read custody data spanning such a date is dropped and counted
 (`dropped_custody_scale_jump`), never silently kept.
 
+## Ratio-regime signal-date drop (data quality, pre-freeze)
+
+`docs/prereg/DECISIONS.md` ("Dondurma öncesi veri kalitesi kuralı"): a lot
+size vs. Yahoo-volume unit mismatch was found on one development symbol
+(BIMAS, ~159 days at ratio exactly 0.5 -- Yahoo's retroactive 1:2 scale
+correction against AKD's un-rescaled lots). `fintr.features.price_join.
+join_price_history` already detects this as a `ratio_regime` (a maximal run
+of consecutive joined days whose `volume_ratio` settles on a constant `1/k`,
+integer `k >= 2`, corroborated by `vwap_proxy/k` falling inside the bar's
+`[low, high]`; tolerance `ratio_regime_tolerance`, default `0.01`) --
+`probable_retroactive_price_adjustment`, a hypothesis, not a verified
+corporate action.
+
+`fintr.research.engine.load_symbol_data` now runs this detection per symbol
+(`ratio_regime_tolerance`, a `run_study.py` CLI parameter, default
+`fintr.features.price_join.DEFAULT_RATIO_REGIME_TOLERANCE` printed in the
+result's `parameters` block) and `fintr.research.report.run_study` removes
+every signal date that falls inside a detected regime from **both** the
+conditioned and the baseline signal-date set for that symbol
+(`fintr.research.engine.drop_ratio_regime_signal_dates`) before any event is
+built -- the population, not the return formula, changes. Returns come from
+Yahoo's own internally consistent series, so the exit window is never
+separately excluded for landing inside a regime.
+
+The result's `ratio_regime_quality[SYMBOL]` reports the regimes found
+(`start`, `end`, `k`, `day_count`) and how many of that symbol's in-scope
+signal dates were dropped; the text summary prints the same per symbol. A
+symbol with no detected regime reports an empty list and a zero drop count
+-- identical to the engine's behavior before this rule existed.
+
 ## Split and pre-registration gate
 
 `train`: entry dates before `train_test_cutoff`, symbols excluding
@@ -227,8 +257,9 @@ only), the E1 block bootstrap (`block_bootstrap_difference`, see above),
 the number of distinct conditioned signal dates, the applied per-side
 transaction-cost assumption (bps, see above), and warnings when the event
 count is below `min_event_warning_threshold`. Per-symbol breakdown mirrors
-the overall block without E1. The JSON artifact
-(`fintr_study_result_v1`, `formula_version: study_engine_v2`) is written
+the overall block without E1. `ratio_regime_quality` (see above) reports the
+per-symbol regime/drop-count data-quality block. The JSON artifact
+(`fintr_study_result_v1`, `formula_version: study_engine_v3`) is written
 under `data/interim/studies/` without overwriting, and carries a
 reproducibility block: code commit, spec SHA-256, per-input-file SHA-256,
 the i.i.d. and block bootstrap seeds/resamples, and the Python version.
