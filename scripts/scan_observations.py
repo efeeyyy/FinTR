@@ -1,0 +1,329 @@
+"""CLI: offline observation scanner over saved period captures + price history.
+
+No network, no Telegram, no model call. Reports which pre-registered H1-H4
+conditions (``configs/scanner/rules_v1.json``) hold for development symbols
+on one or more as_of server dates. This is an observation notice, not a
+study and not a signal -- it emits no score, rank, return or target. See
+``docs/scanner.md``. Never reads ``data/interim/studies/``.
+"""
+
+from __future__ import annotations
+
+import argparse
+from datetime import date
+from decimal import Decimal, InvalidOperation
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+
+from fintr.data.period_capture import PeriodCaptureError, load_period_capture
+from fintr.data.price_history import PriceHistoryCaptureError, load_price_history_capture
+from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
+from fintr.features.price_join import DEFAULT_ADJUSTMENT_RATIO_EPSILON, DEFAULT_RATIO_REGIME_TOLERANCE
+from fintr.research.engine import tradeable_price_bars
+from fintr.scanner.freshness import build_freshness_report
+from fintr.scanner.observe import evaluate_rule_for_symbol
+from fintr.scanner.report import build_document, freshness_payload, observation_payload, render_text
+from fintr.scanner.rules import ScannerRulesError, load_scanner_rules
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_RULES_FILE = Path("configs/scanner/rules_v1.json")
+DEFAULT_PERIOD_DIR = Path("data/interim/period_analysis")
+DEFAULT_PRICE_DIR = Path("data/interim/price_history")
+DEFAULT_OUT_DIR = Path("data/interim/scanner")
+DEFAULT_CUSTODY_SCALE_JUMP_RATIO = Decimal("3")
+
+# Same filename shape/matching logic as scripts/analyze_period.py --all.
+_CAPTURE_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.json$")
+_PRICE_CAPTURE_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.json$")
+
+
+def find_period_capture(root: Path, symbol: str) -> Path | None:
+    """Most-recent-ending ``<S>_<E>.json`` capture under ``root/<symbol>/``."""
+    symbol_dir = root / symbol
+    if not symbol_dir.is_dir():
+        return None
+    candidates: list[tuple[date, str, Path]] = []
+    for entry in sorted(symbol_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        match = _CAPTURE_NAME_RE.match(entry.name)
+        if not match:
+            continue
+        end = date.fromisoformat(match.group(2))
+        candidates.append((end, entry.name, entry))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[-1][2]
+
+
+def discover_price_history(root: Path, symbol: str, start: date, end: date) -> Path | None:
+    """Best covering saved price-history file (same logic as analyze_period.py)."""
+    symbol_dir = root / symbol
+    if not symbol_dir.is_dir():
+        return None
+    candidates: list[tuple[int, str, Path]] = []
+    for entry in sorted(symbol_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        match = _PRICE_CAPTURE_NAME_RE.match(entry.name)
+        if not match:
+            continue
+        file_start = date.fromisoformat(match.group(1))
+        file_end = date.fromisoformat(match.group(2))
+        if file_start > file_end or file_start > start or file_end < end:
+            continue
+        candidates.append(((file_end - file_start).days, entry.name, entry))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2]
+
+
+def _decimal(value: str) -> Decimal:
+    try:
+        number = Decimal(value)
+    except InvalidOperation as exc:
+        raise argparse.ArgumentTypeError("expected a decimal number") from exc
+    if not number.is_finite():
+        raise argparse.ArgumentTypeError("expected a finite decimal number")
+    return number
+
+
+def _date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected YYYY-MM-DD") from exc
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected a positive integer") from exc
+    if number < 1:
+        raise argparse.ArgumentTypeError("expected a positive integer")
+    return number
+
+
+def _symbol_list(value: str) -> list[str]:
+    symbols = [item.strip().upper() for item in value.split(",") if item.strip()]
+    if not symbols:
+        raise argparse.ArgumentTypeError("expected a comma-separated list of symbols")
+    return symbols
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Offline observation scanner over saved period captures and price "
+                     "history; no network, no Telegram, no model call. See docs/scanner.md.",
+    )
+    parser.add_argument(
+        "--as-of", type=_date, default=None,
+        help="default: each symbol's own common last AKD/price server day",
+    )
+    parser.add_argument(
+        "--lookback-days", type=_positive_int, default=1,
+        help="scan this many trailing server dates per symbol, ending at --as-of "
+             "(or its default); default: 1",
+    )
+    parser.add_argument(
+        "--symbols", type=_symbol_list, default=None,
+        help="comma-separated; default: the active split's development symbols",
+    )
+    parser.add_argument("--period-dir", type=Path, default=DEFAULT_PERIOD_DIR,
+                         help=f"default: {DEFAULT_PERIOD_DIR}")
+    parser.add_argument("--price-dir", type=Path, default=DEFAULT_PRICE_DIR,
+                         help=f"default: {DEFAULT_PRICE_DIR}")
+    parser.add_argument("--rules-file", type=Path, default=DEFAULT_RULES_FILE,
+                         help=f"default: {DEFAULT_RULES_FILE}")
+    parser.add_argument("--adjustment-ratio-epsilon", type=_decimal,
+                         default=DEFAULT_ADJUSTMENT_RATIO_EPSILON,
+                         help=f"default: {DEFAULT_ADJUSTMENT_RATIO_EPSILON}")
+    parser.add_argument("--custody-scale-jump-ratio", type=_decimal,
+                         default=DEFAULT_CUSTODY_SCALE_JUMP_RATIO,
+                         help=f"default: {DEFAULT_CUSTODY_SCALE_JUMP_RATIO}")
+    parser.add_argument("--ratio-regime-tolerance", type=_decimal,
+                         default=DEFAULT_RATIO_REGIME_TOLERANCE,
+                         help=f"default: {DEFAULT_RATIO_REGIME_TOLERANCE}")
+    parser.add_argument("--format", choices=("text", "json"), default="text")
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR,
+                         help=f"default: {DEFAULT_OUT_DIR}")
+    parser.add_argument(
+        "--save", action="store_true",
+        help=f"write {DEFAULT_OUT_DIR}/<as_of>/observations.json; never overwrites",
+    )
+    return parser
+
+
+def _save(out_dir: Path, as_of_label: str, payload: bytes) -> Path:
+    target_dir = out_dir / as_of_label
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / "observations.json"
+    if target.exists():
+        raise FileExistsError(target)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=".scanner-", suffix=".tmp", dir=target_dir, delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return target
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+
+    try:
+        rules = load_scanner_rules(args.rules_file, project_root=PROJECT_ROOT)
+    except ScannerRulesError as exc:
+        print(f"Scan failed: invalid rules file ({exc})", file=sys.stderr)
+        return 1
+    rules_file_sha256 = hashlib.sha256(args.rules_file.read_bytes()).hexdigest()
+
+    try:
+        guards = load_active_guards()
+    except SymbolGuardError as exc:
+        print(f"Scan failed: {exc}", file=sys.stderr)
+        return 1
+
+    requested = sorted(set(args.symbols)) if args.symbols is not None else sorted(
+        guards.split.development_symbols
+    )
+
+    excluded = sorted(symbol for symbol in requested if guards.is_excluded(symbol))
+    if excluded:
+        print(f"Scan failed: excluded symbol(s) requested ({','.join(excluded)})", file=sys.stderr)
+        return 1
+    holdout = sorted(symbol for symbol in requested if guards.is_holdout(symbol))
+    if holdout:
+        print(
+            f"Scan failed: holdout symbol(s) requested ({','.join(holdout)}); holdout "
+            "analysis is forbidden until the one-shot holdout test",
+            file=sys.stderr,
+        )
+        return 1
+
+    symbols_payload: dict[str, dict] = {}
+    for symbol in requested:
+        capture_path = find_period_capture(args.period_dir, symbol)
+        if capture_path is None:
+            print(f"Scan failed: no period capture found for {symbol} under {args.period_dir}",
+                  file=sys.stderr)
+            return 1
+        try:
+            capture_bytes = capture_path.read_bytes()
+            capture = load_period_capture(capture_path)
+        except (OSError, PeriodCaptureError) as exc:
+            print(f"Scan failed: could not load period capture for {symbol} ({exc})", file=sys.stderr)
+            return 1
+
+        price_path = discover_price_history(args.price_dir, capture.symbol, capture.start, capture.end)
+        if price_path is None:
+            print(f"Scan failed: no price history found for {symbol} under {args.price_dir}",
+                  file=sys.stderr)
+            return 1
+        try:
+            price_bytes = price_path.read_bytes()
+            price = load_price_history_capture(price_path)
+        except (OSError, PriceHistoryCaptureError) as exc:
+            print(f"Scan failed: could not load price history for {symbol} ({exc})", file=sys.stderr)
+            return 1
+
+        tradeable_dates = tuple(bar.trade_date for bar in tradeable_price_bars(price))
+        if args.as_of is not None:
+            reference_date = args.as_of
+            as_of_source = "explicit"
+        else:
+            last_akd = capture.server_dates[-1] if capture.server_dates else None
+            last_price = tradeable_dates[-1] if tradeable_dates else None
+            if last_akd is None or last_price is None:
+                print(
+                    f"Scan failed: {symbol} has no AKD or no price data to default --as-of from",
+                    file=sys.stderr,
+                )
+                return 1
+            reference_date = min(last_akd, last_price)
+            as_of_source = "default_common_last_day"
+
+        eligible_dates = tuple(d for d in capture.server_dates if d <= reference_date)
+        as_of_dates = eligible_dates[-args.lookback_days:]
+        if not as_of_dates:
+            print(f"Scan failed: {symbol} has no server date on/before {reference_date}",
+                  file=sys.stderr)
+            return 1
+
+        scans = []
+        for as_of in as_of_dates:
+            freshness = build_freshness_report(capture, price, as_of=as_of)
+            observations = [
+                evaluate_rule_for_symbol(
+                    rule, capture, price, as_of=as_of,
+                    adjustment_ratio_epsilon=args.adjustment_ratio_epsilon,
+                    custody_scale_jump_ratio=args.custody_scale_jump_ratio,
+                    ratio_regime_tolerance=args.ratio_regime_tolerance,
+                )
+                for rule in rules
+            ]
+            scans.append({
+                "as_of": as_of.isoformat(),
+                "freshness": freshness_payload(freshness),
+                "observations": [observation_payload(obs) for obs in observations],
+            })
+
+        symbols_payload[symbol] = {
+            "as_of_source": as_of_source,
+            "input_files": {
+                "period_capture": {
+                    "path": str(capture_path),
+                    "sha256": hashlib.sha256(capture_bytes).hexdigest(),
+                },
+                "price_history": {
+                    "path": str(price_path),
+                    "sha256": hashlib.sha256(price_bytes).hexdigest(),
+                },
+            },
+            "scans": scans,
+        }
+
+    document = build_document(
+        project_root=PROJECT_ROOT, rules_file=str(args.rules_file), rules_file_sha256=rules_file_sha256,
+        split_guard=guards.report(processed_symbols=requested), symbols=symbols_payload,
+    )
+    payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+    if args.save:
+        all_as_of = sorted({
+            scan["as_of"] for block in symbols_payload.values() for scan in block["scans"]
+        })
+        label = all_as_of[-1] if all_as_of else "unknown"
+        try:
+            saved = _save(args.out_dir, label, payload)
+        except FileExistsError:
+            print("Scan failed: output file already exists (no overwrite)", file=sys.stderr)
+            return 1
+        print(f"Observations saved: {saved}", file=sys.stderr)
+
+    if args.format == "json":
+        sys.stdout.buffer.write(payload)
+    else:
+        sys.stdout.buffer.write(render_text(document).encode("utf-8"))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
