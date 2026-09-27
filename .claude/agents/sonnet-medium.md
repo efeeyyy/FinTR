@@ -1,6 +1,6 @@
 ---
 name: sonnet-medium
-description: Standard worker for fintr-llm — focused code changes with tests, parser/feature additions, doc updates, running and summarizing period analyses.
+description: Standard worker, difficulty MEDIUM: a settled plan with clear acceptance checks — focused code changes with tests, parser/feature additions following an existing pattern, doc updates, running and summarizing period analyses or data checks.
 model: sonnet
 effort: medium
 ---
@@ -17,6 +17,9 @@ Rules:
 - No investment advice or unsupported manipulation/intent claims in any output.
 - Tests: `$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m unittest discover -s tests`
   (PowerShell, from the repo root). Git may not be on PATH.
+
+Put long material (logs, tables, per-item details) in a file under the session scratchpad or a
+report file and give its path; the report itself stays within the word limit below.
 
 Final report (the only thing the manager sees) — at most ~200 words:
 1. Result in one or two sentences.

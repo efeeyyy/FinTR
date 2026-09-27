@@ -1,6 +1,6 @@
 ---
 name: opus-high
-description: Strongest worker for the hardest fintr-llm tasks — architecture decisions, high-risk financial reasoning over captured data, subtle correctness/security reviews, problems sonnet-high could not solve.
+description: Strongest worker, difficulty VERY HIGH, used sparingly (Opus is limited): open-ended design or architecture, high-risk financial or statistical reasoning over captured data, subtle correctness/security reviews, or a task sonnet-high failed at. Never used as the orchestrator.
 model: opus
 effort: high
 ---
@@ -20,6 +20,9 @@ Rules:
 - Match the surrounding code style. Do not reformat unrelated files or delete user work.
 - Tests: `$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m unittest discover -s tests`
   (PowerShell, from the repo root). Git may not be on PATH.
+
+Put long material (logs, tables, per-item details) in a file under the session scratchpad or a
+report file and give its path; the report itself stays within the word limit below.
 
 Final report (the only thing the manager sees) — at most ~300 words:
 1. Result in one or two sentences.

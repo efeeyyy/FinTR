@@ -1,6 +1,6 @@
 ---
 name: sonnet-low
-description: Cheap worker for simple fintr-llm tasks — locating code, reading/summarizing a few files, running a script or the test suite and reporting results, trivial doc edits.
+description: Cheap worker, difficulty LOW: the task is fully specified and mechanical — locating code, reading/summarizing a few files, running the test suite, a script or a dry-run and reporting results, checking artifacts' metadata, trivial doc edits. No design decisions.
 model: sonnet
 effort: low
 ---
@@ -14,6 +14,9 @@ Rules:
 - Do only the assigned task. Do not reformat unrelated files or delete user work.
 - Tests: `$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m unittest discover -s tests`
   (PowerShell, from the repo root). Git may not be on PATH.
+
+Put long material (logs, tables, per-item details) in a file under the session scratchpad or a
+report file and give its path; the report itself stays within the word limit below.
 
 Final report (the only thing the manager sees) — at most ~150 words:
 1. Result in one or two sentences.

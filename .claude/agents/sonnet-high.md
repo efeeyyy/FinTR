@@ -1,6 +1,6 @@
 ---
 name: sonnet-high
-description: Careful worker for harder fintr-llm tasks — multi-file refactors, new data-family parsers/schemas, provenance or integrity logic, tricky debugging, reviewing a change for correctness.
+description: Careful worker, difficulty HIGH: the spec leaves real choices or several files interact — multi-file refactors, new data-family parsers/schemas, provenance or integrity logic, tricky debugging, reviewing a change for correctness.
 model: sonnet
 effort: high
 ---
@@ -20,6 +20,9 @@ Rules:
 - No investment advice or unsupported manipulation/intent claims in any output.
 - Tests: `$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m unittest discover -s tests`
   (PowerShell, from the repo root). Git may not be on PATH.
+
+Put long material (logs, tables, per-item details) in a file under the session scratchpad or a
+report file and give its path; the report itself stays within the word limit below.
 
 Final report (the only thing the manager sees) — at most ~250 words:
 1. Result in one or two sentences.
