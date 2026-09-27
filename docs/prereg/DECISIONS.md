@@ -21,3 +21,17 @@ karşılandıktan ve geliştirme verisi toplandıktan sonra, getirilere bakılma
 5. **Geliştirme verisi:** ~1 yıllık AKD/takas verisi toplanır (3 aylık veri güç
    açısından yetersiz). Holdout sembollerinin verisi de toplanır ama geliştirmede
    kullanılmaz; DSTKF dışlanmıştır.
+
+## 2026-09-27 — Dondurma öncesi veri kalitesi kuralı (getirilere bakılmadan)
+
+Kaynak: yönetici oturumu; yalnız AKD-türevi lot / Yahoo hacim oranına bakıldı,
+hiçbir getiri okunmadı. 20 geliştirme hissesinin 19'unda oran ≈ 1 (tek sapma
+kesinleşmemiş son gün). BIMAS'ta 2025-09-26..2026-05-13 arası 159 günde oran
+tam 0,5: Yahoo'nun geriye dönük ölçek düzeltmesi (1'e 2) ile AKD'nin düzeltilmemiş
+lotları arasında ölçek uyumsuzluğu.
+
+Kural (spec'ler dondurulmadan önce motora eklenir): `price_join` oran rejimi
+(`probable_retroactive_price_adjustment`, tam sayılı k ≥ 2) içindeki sinyal
+günleri hem koşullu hem baseline kümesinden düşülür; düşülen gün sayısı sembol
+bazında raporlanır. Getiriler Yahoo'nun kendi içinde tutarlı serisinden
+hesaplandığı için çıkış penceresi rejim içinde kalan olaylar ayrıca düşülmez.
