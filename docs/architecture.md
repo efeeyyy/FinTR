@@ -598,3 +598,58 @@ Sonuç: Her çıktı uygulanan ayrım ve dışlama dosyasını SHA-256'larıyla
 kaydeder. Bozuk/eksik işaretçi, ayrım veya dışlama dosyası tüm korunan
 araçları durdurur (bilinçli). Kurallar ve tablo:
 [`docs/evaluation_protocol.md`](evaluation_protocol.md).
+
+### Çevrimdışı gözlem tarayıcısı (`fintr.scanner`, aşama 2 adım 1)
+
+Problem: Ön kayıtlı H1–H4 dondurulduktan sonra (`docs/prereg/FREEZE.md`),
+kaydedilmiş bir günün hangi geliştirme hissesinde hangi koşulu sağladığını
+görmenin tek yolu `run_study.py`'yi elle çalıştırıp istatistiksel çıktıyı
+yorumlamaktı -- bu hem tek bir günü sormak için gereğinden ağır hem de
+getiri/istatistik üretimiyle "bu gün şu koşulu sağladı" gözlemini aynı
+çıktıda karıştırıyordu, ki AGENTS.md'nin yatırım tavsiyesi/al-sat sinyali
+üretmeme sınırına yakın bir alan.
+
+Alternatifler: (a) yeni bir kural dili (serbest metin veya ayrı bir DSL) --
+`fintr.research.conditions`'ın kapalı JSON gramerini tekrar icat eder,
+AGENTS.md'nin "no free text, no model call" kısıtını yeniden kanıtlamayı
+gerektirir ve iki paralel koşul temsilinin sürüklenmesi riskini doğurur;
+reddedildi. (b) mevcut `condition` grammar'ını olduğu gibi kullanmak, ama
+tarayıcıya kendi eşik/parametrelerini eklemesine izin vermek -- ön kayıt
+disiplinini (AGENTS.md "kaynakta olmayan rakam üretme", `docs/prereg/
+FREEZE.md`) ihlal eder: tarayıcı sonradan ayarlanabilir bir eşikle "en iyi
+sonucu bulana kadar dene" aracına dönüşebilirdi; reddedildi. (c) mevcut
+grammar'ı, yalnız dondurulmuş spec dosyalarının `condition` alanından
+okuyarak, hiçbir yeni eşik eklemeden kullanmak -- seçildi.
+
+Karar: Yeni paket `src/fintr/scanner/` (`rules.py`, `freshness.py`,
+`observe.py`, `report.py`) ve `scripts/scan_observations.py` eklendi. Hiçbir
+formül yeniden yazılmadı: `fintr.research.conditions.evaluate_condition`,
+`fintr.research.features.truncate_period_capture`/`evaluate_feature`,
+`fintr.research.engine.load_symbol_data`/`detect_custody_scale_jumps`/
+`drop_ratio_regime_signal_dates`/`tradeable_price_bars` ve
+`fintr.evaluation.symbol_guard.load_active_guards` doğrudan çağrılır.
+`fintr.scanner.rules.load_scanner_rules`, `configs/scanner/rules_v1.json`
+içindeki her kuralın `docs/prereg/FREEZE.md`'deki ham dosya ve kanonik
+`spec_sha256` hash'lerini spec dosyasının disk üzerindeki hâliyle karşılaştırır
+ve `frozen: false` ya da hash uyuşmazlığında açık hata verip çalışmayı
+reddeder -- `run_study.py --split test`'in dondurma kapısıyla aynı disiplin,
+ama her çalıştırmada, tek bir günü sormak için bile uygulanır. Çıktı şeması
+(`fintr_scanner_observations_v1`) kasıtlı olarak `score`/`rank`/`return`/
+`target` alanı içermez (`tests/test_scanner.py::ForbiddenFieldsTests` bunu
+doğrular); her gözlem sabit `validation_status:
+"preregistered_hypothesis_holdout_test_pending"` ve sabit Türkçe uyarı metni
+taşır. `run_study` ile aynı veri kalitesi kuralları (ratio-regime, takas
+ölçek sıçraması) gözlem seviyesinde `suppressed` alanıyla raporlanır;
+placeholder (tatil) bar hiçbir zaman kapanış sağlamaz
+(`tradeable_price_bars` zaten hariç tutar). Hisse kapsamı kod ile zorunlu:
+holdout hissesi her zaman reddedilir (`--no-split-guard` seçeneği yoktur --
+`run_study.py`/`analyze_period.py`'nin aksine, tarayıcının burada bir istisna
+kapısına ihtiyacı yok), dışlanan hisse her zaman reddedilir.
+
+Sonuç: Tarayıcı yalnız kaydedilmiş veriyi okur (ağ, Telegram, model çağrısı
+yok; `data/interim/studies/` hiç okunmaz) ve yalnız gözlem bildirir --
+`fintr.research`'ün ürettiği istatistiksel bulgudan (ortalama fark, bootstrap
+CI, Holm) tamamen ayrıdır ve onun yerine geçmez. H1–H4 hâlâ holdout testini
+bekliyor; bir kuralın `condition_met: true` dönmesi ön kayıtlı hipotezin
+doğrulandığı anlamına gelmez, yalnız o günün ön kayıtlı koşulu sağladığı
+anlamına gelir. `docs/scanner.md` şema, sınır ve komut örneklerini taşır.

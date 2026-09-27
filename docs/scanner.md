@@ -1,0 +1,187 @@
+# Gözlem tarayıcısı (`fintr.scanner`)
+
+Aşama 2'nin ilk adımı: kaydedilmiş dönem/fiyat verisini çevrimdışı tarayan bir
+gözlem tarayıcısı. Seçilen bir gün (`as_of`) için geliştirme hisselerinde,
+ön kayıtlı H1–H4 koşullarından hangisinin sağlandığını kaynaklarıyla raporlar.
+
+## Ne yapmaz
+
+- **Getiri, hedef, puan, sıralama veya "al/sat" üretmez.** Çıktı şemasında
+  `score`/`rank`/`return`/`target` alanı yoktur (`tests/test_scanner.py`
+  `ForbiddenFieldsTests` bunu doğrular).
+- **Ağ, Telegram ya da model çağrısı yok.** Yalnız `data/interim/period_analysis/`
+  ve `data/interim/price_history/` altındaki kaydedilmiş dosyaları okur.
+  `data/interim/studies/` klasörünü hiç okumaz.
+- Yeni eşik veya parametre eklemez: her kuralın koşulu, dondurulmuş spec
+  dosyasının (`configs/studies/prereg/h1..h4_*.json`) `condition` alanından
+  gelir, aynen.
+- Formül kopyalamaz: `fintr.research.conditions.evaluate_condition`,
+  `fintr.research.features.truncate_period_capture`,
+  `fintr.research.engine.load_symbol_data`/`detect_custody_scale_jumps`/
+  `drop_ratio_regime_signal_dates` ve
+  `fintr.evaluation.symbol_guard.load_active_guards` doğrudan kullanılır.
+
+Her gözlemde sabit Türkçe uyarı ve durum bulunur:
+
+> "Gözlem bildirimidir; yatırım tavsiyesi, al/sat sinyali, niyet veya
+> manipülasyon iddiası değildir. Kurallar ön kayıtlı hipotezdir, holdout
+> testi bekleniyor."
+
+`validation_status: "preregistered_hypothesis_holdout_test_pending"`.
+
+## Kural dosyası (`fintr_scanner_rules_v1`, `configs/scanner/rules_v1.json`)
+
+Her kural: `rule_id`, dondurulmuş spec dosyasının yolu (`spec_path`),
+`docs/prereg/FREEZE.md`'deki ham dosya SHA-256'sı (`raw_sha256`) ve kanonik
+spec SHA-256'sı (`canonical_sha256`, `load_study_spec` tarafından hesaplanan).
+`fintr.scanner.rules.load_scanner_rules` şunlardan biri sağlanmazsa açık
+hata verip çalışmaz:
+
+- spec dosyası diskte `raw_sha256` ile eşleşmeli (dosya FREEZE.md'den beri
+  değişmemiş olmalı),
+- `load_study_spec` ile yüklenen spec'in `frozen` alanı `true` olmalı,
+- spec'in kanonik `spec_sha256`'sı `canonical_sha256` ile eşleşmeli,
+- spec bir `preregistration` bloğu (dolayısıyla `family_role`) taşımalı.
+
+Bugün dört kural yüklenir: H1, H2 (`family_role: primary`) ve H3, H4
+(`family_role: secondary_descriptive`).
+
+## Lookahead koruması
+
+`as_of` günündeki değerlendirme yalnız `truncate_period_capture(capture,
+as_of)` sonucunu ve `<= as_of` kapanışlarını görür (placeholder/tatil bar
+hiçbir zaman kapanış sağlamaz -- `fintr.research.engine.tradeable_price_bars`
+zaten hariç tutar). `tests/test_scanner.py::LookaheadTests` `as_of` sonrası
+verinin değişmesinin `as_of` sonucunu etkilemediğini doğrudan test eder.
+
+## Veri kalitesi bastırmaları
+
+`run_study` ile aynı kurallar, gözlem seviyesinde:
+
+- **`suppressed: "ratio_regime"`**: `as_of`, sembolün `join_price_history`
+  ile tespit edilen bir `ratio_regime`'i içindeyse (`drop_ratio_regime_signal_dates`
+  ile aynı mantıkla tespit edilir), o sembol/gün için hiçbir kuralda gözlem
+  üretilmez.
+- **`suppressed: "custody_scale_jump"`**: koşulun okuduğu takas verisi
+  penceresi (`min_date`..`max_date`) bir `detect_custody_scale_jumps` bulgusu
+  içeriyorsa, o kural için gözlem üretilmez.
+
+Her iki durumda da `condition_met: null`, `features: []`.
+
+## Tazelik raporu
+
+Her sembol × `as_of` için `freshness`: son AKD sunucu tarihi, son takas
+tarihi, son fiyat tarihi. Eksik veri `null` olarak raporlanır, asla sıfır
+sayılmaz. Takas AKD'nin en az 2 sunucu günü gerisindeyse (T+2 yerleşimi)
+`custody_flagged_stale_t_plus_2: true`.
+
+## Hisse kapsamı
+
+Varsayılan: etkin ayrımın (`configs/splits/current.json`) geliştirme
+hisseleri, dışlananlar (`configs/exclusions/symbols.json`) hariç. Holdout
+hissesi istenirse ret (holdout testine kadar analiz yasak); dışlanan hisse
+(DSTKF) her zaman ret. **`--no-split-guard` seçeneği yoktur.** Çıktıda
+`split_guard` bloğu bulunur (`run_study`'deki gibi split/dışlama dosyası ve
+SHA-256'ları).
+
+## Çıktı şeması (`fintr_scanner_observations_v1`)
+
+```json
+{
+  "schema": "fintr_scanner_observations_v1",
+  "generated_at_utc": "...",
+  "code_commit": "...",
+  "python_version": "...",
+  "rules_file": "configs/scanner/rules_v1.json",
+  "rules_file_sha256": "...",
+  "split_guard": { "...": "run_study'deki gibi" },
+  "warning": "Gözlem bildirimidir; ...",
+  "symbols": {
+    "AKFIS": {
+      "as_of_source": "default_common_last_day" | "explicit",
+      "input_files": {
+        "period_capture": {"path": "...", "sha256": "..."},
+        "price_history": {"path": "...", "sha256": "..."}
+      },
+      "scans": [
+        {
+          "as_of": "2026-09-25",
+          "freshness": {
+            "last_akd_server_date": "2026-09-25",
+            "last_custody_date": "2026-09-23",
+            "last_price_date": "2026-09-25",
+            "custody_behind_akd_server_dates": 2,
+            "custody_flagged_stale_t_plus_2": true
+          },
+          "observations": [
+            {
+              "rule_id": "H1",
+              "family_role": "primary",
+              "as_of": "2026-09-25",
+              "suppressed": null,
+              "condition_met": true,
+              "not_evaluable_reason": null,
+              "features": [
+                {
+                  "name": "vwap_proxy_vs_close",
+                  "params": {},
+                  "formula": "(daily_market_proxy.vwap_proxy[t] - price_bar.close[t]) / price_bar.close[t]; ...",
+                  "value": "-0.0123",
+                  "data_families": ["akd", "price"],
+                  "min_date": "2026-09-25",
+                  "max_date": "2026-09-25",
+                  "institution_labels": {}
+                }
+              ],
+              "validation_status": "preregistered_hypothesis_holdout_test_pending"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+`condition_met` üç değerli: `true`/`false`/`null` (veri eksikse `null`,
+`not_evaluable_reason: "missing_data"`). `features[].institution_labels`
+yalnız feature'ın parametresinde açık kurum kodu (`codes`, örn.
+`flow_run_length`/`custody_change`) varsa doldurulur; `resolve_brokerage_label`
+ile yalnız kesin kod eşleşmesi kullanılır (eşleşmezse `unresolved`,
+çakışırsa `ambiguous`, v1 capture'da dizin yoksa `directory_not_in_capture`).
+Bugünkü dondurulmuş H1–H4 hiçbiri `codes` parametresi kullanmaz (H3/H4'ün
+`top1_akd_net_share_of_volume`'u hangi kurumun öne çıktığını da açıklamaz --
+bu kasıtlıdır, bkz. H3 spec açıklaması).
+
+## Komut
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\scan_observations.py --as-of 2026-09-25 --format json --save
+.\.venv\Scripts\python.exe scripts\scan_observations.py --symbols AKFIS,GARAN --lookback-days 3
+```
+
+- `--as-of YYYY-MM-DD`: varsayılan, her hissenin kendi AKD ve fiyat verisinin
+  ortak son günü (`as_of_source: "default_common_last_day"`); hisseye göre
+  farklıysa çıktıda hisse başına raporlanır.
+- `--lookback-days N` (varsayılan 1): son N sunucu gününü ayrı ayrı `as_of`
+  olarak tarar.
+- `--symbols SYM1,SYM2`: varsayılan, etkin ayrımın geliştirme hisseleri.
+- `--period-dir` / `--price-dir`: varsayılanlar `data/interim/period_analysis`,
+  `data/interim/price_history`. Dosya eşleştirme `analyze_period.py --all`
+  mantığıyla aynıdır (`<SYM>/<start>_<end>.json`; fiyat için en dar kapsayan
+  dosya seçilir).
+- `--format text|json`.
+- `--save`: `data/interim/scanner/<as_of>/observations.json` dosyasına yazar;
+  var olan dosyanın üzerine asla yazmaz.
+
+## Sınırlar
+
+- Bu bir gözlem bildirimidir, tahmin değildir; H1/H2 birincil, H3/H4
+  ikincil/tanımlayıcıdır ve hepsi holdout testi (2026-10-01 sonrası)
+  bekliyor.
+- `custody_change`/`flow_run_length`'in okuduğu kodlar bir kurum
+  sınıflandırmasını (örn. "yabancı takas") doğrulamaz; yalnız spec'in verdiği
+  kod kümesini toplar.
+- `top1_akd_net_share_of_volume`'un hangi kurumu öne çıkardığı raporlanmaz;
+  bu bilinçli bir sınırdır (kurum kimliği/niyeti hakkında çıkarım yapmama).
