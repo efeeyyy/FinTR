@@ -1,8 +1,8 @@
 {
   "schema": "fintr_study_spec_v1",
   "spec_id": "prereg_bist30_h2_close_discount_vs_vwap_proxy_v1",
-  "description": "ÖNERİ — Efe'nin onayını bekliyor; tavsiye değildir. Kapanış, AKD-türevi VWAP proxy'sinin en az ~%1 altında (vwap_proxy_vs_close >= 0.01; <= 0.10 bandı birim/ölçek uyumsuzluğunu dışlar) olan günlerin ardından, sonraki işlem günü açılışında girilen 5 işlem günlük net getirinin ortalaması baseline ortalamasından yüksek midir (H1'in simetriği)? Tarihsel istatistik araştırmasıdır; al/sat sinyali, niyet veya manipülasyon iddiası içermez. vwap_proxy doğrulanmamış derived_proxy_not_official_ohlc varsayımına, kapanış resmî olmayan Yahoo verisine dayanır.",
-  "frozen": false,
+  "description": "DONDURULDU — Efe onayı 2026-09-27 (docs/prereg/DECISIONS.md); tavsiye değildir. Kapanış, AKD-türevi VWAP proxy'sinin en az ~%1 altında (vwap_proxy_vs_close >= 0.01; <= 0.10 bandı birim/ölçek uyumsuzluğunu dışlar) olan günlerin ardından, sonraki işlem günü açılışında girilen 5 işlem günlük net getirinin ortalaması baseline ortalamasından yüksek midir (H1'in simetriği)? Tarihsel istatistik araştırmasıdır; al/sat sinyali, niyet veya manipülasyon iddiası içermez. vwap_proxy doğrulanmamış derived_proxy_not_official_ohlc varsayımına, kapanış resmî olmayan Yahoo verisine dayanır.",
+  "frozen": true,
   "symbols": [
     "BIMAS",
     "ENKAI",
@@ -82,7 +82,7 @@
     ]
   },
   "preregistration": {
-    "status": "proposal_pending_efe_approval",
+    "status": "frozen_approved_by_efe",
     "hypothesis_id": "H2",
     "hypothesis_doc": "docs/prereg/H2.md",
     "family_id": "prereg_bist30_akd_price_v1",
@@ -123,6 +123,7 @@
       "E1",
       "E4"
     ],
-    "decision_record": "docs/prereg/DECISIONS.md#2026-09-27"
+    "decision_record": "docs/prereg/DECISIONS.md#2026-09-27",
+    "frozen_at_utc": "2026-09-27T07:42:58.062765Z"
   }
 }

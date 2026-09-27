@@ -627,12 +627,12 @@ class RunStudyCliMergeAndCostTests(guard_fixtures.GuardEnvMixin, unittest.TestCa
 
 
 class PreregSpecsCarryE1AndFamilyTests(unittest.TestCase):
-    def test_every_prereg_spec_still_loads_unfrozen(self):
+    def test_every_prereg_spec_loads_frozen_with_block_bootstrap(self):
         paths = sorted((ROOT / "configs/studies/prereg").glob("*.json"))
         self.assertEqual(len(paths), 4)
         for path in paths:
             spec = load_study_spec(path)
-            self.assertFalse(spec.frozen)
+            self.assertTrue(spec.frozen)  # frozen 2026-09-27, see docs/prereg/FREEZE.md
             self.assertIsNotNone(spec.block_bootstrap)
 
 

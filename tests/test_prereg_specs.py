@@ -23,7 +23,7 @@ PREREG_DIR = ROOT / "configs" / "studies" / "prereg"
 SPLIT_PATH = ROOT / "configs" / "splits" / "bist30_2026_holdout_v2.json"
 CURRENT_SPLIT_PATH = ROOT / "configs" / "splits" / "current.json"
 EXCLUSIONS_PATH = ROOT / "configs" / "exclusions" / "symbols.json"
-REQUIRED_DESCRIPTION_PREFIX = "ÖNERİ — Efe'nin onayını bekliyor; tavsiye değildir."
+REQUIRED_DESCRIPTION_PREFIX = "DONDURULDU — Efe onayı 2026-09-27 (docs/prereg/DECISIONS.md); tavsiye değildir."
 
 
 def _feature_names(node) -> set[str]:
@@ -53,15 +53,15 @@ class PreregSpecTests(unittest.TestCase):
         self.assertEqual(current["current"], "configs/splits/bist30_2026_holdout_v2.json")
         self.assertTrue(self.split["frozen"])
 
-    def test_every_spec_loads_and_is_an_unfrozen_proposal(self):
+    def test_every_spec_loads_and_is_frozen_after_approval(self):
         for path in self.paths:
             with self.subTest(spec=path.name):
                 spec = load_study_spec(path)
-                self.assertFalse(spec.frozen)
+                self.assertTrue(spec.frozen)
                 self.assertTrue(spec.description.startswith(REQUIRED_DESCRIPTION_PREFIX))
                 self.assertTrue(spec.spec_id.startswith("prereg_bist30_"))
                 self.assertEqual(spec.raw_document["preregistration"]["status"],
-                                 "proposal_pending_efe_approval")
+                                 "frozen_approved_by_efe")
 
     def test_symbols_match_frozen_split_and_exclude_excluded_symbols(self):
         for path in self.paths:

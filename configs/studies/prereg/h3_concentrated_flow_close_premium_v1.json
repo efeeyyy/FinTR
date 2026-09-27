@@ -1,8 +1,8 @@
 {
   "schema": "fintr_study_spec_v1",
   "spec_id": "prereg_bist30_h3_concentrated_flow_close_premium_v1",
-  "description": "ÖNERİ — Efe'nin onayını bekliyor; tavsiye değildir. Tek bir aracı kurumun mutlak AKD netinin günlük sum_total_size'a oranı >= 0.10 (doğrulanmamış hacim proxy'si altında işlem gören lotun ~%20'si) VE kapanışın VWAP proxy'sinin en az ~%1 üzerinde olduğu günlerin ardından 5 işlem günlük net getiri ortalaması baseline'dan düşük müdür (yoğunlaşmış akışla gelen fiyat baskısının geri dönüşü hipotezi)? Tarihsel istatistik araştırmasıdır; al/sat sinyali değildir; kurumun kimliği, müşterisi veya niyeti hakkında hiçbir çıkarım yapmaz.",
-  "frozen": false,
+  "description": "DONDURULDU — Efe onayı 2026-09-27 (docs/prereg/DECISIONS.md); tavsiye değildir. Tek bir aracı kurumun mutlak AKD netinin günlük sum_total_size'a oranı >= 0.10 (doğrulanmamış hacim proxy'si altında işlem gören lotun ~%20'si) VE kapanışın VWAP proxy'sinin en az ~%1 üzerinde olduğu günlerin ardından 5 işlem günlük net getiri ortalaması baseline'dan düşük müdür (yoğunlaşmış akışla gelen fiyat baskısının geri dönüşü hipotezi)? Tarihsel istatistik araştırmasıdır; al/sat sinyali değildir; kurumun kimliği, müşterisi veya niyeti hakkında hiçbir çıkarım yapmaz.",
+  "frozen": true,
   "symbols": [
     "BIMAS",
     "ENKAI",
@@ -91,7 +91,7 @@
     ]
   },
   "preregistration": {
-    "status": "proposal_pending_efe_approval",
+    "status": "frozen_approved_by_efe",
     "hypothesis_id": "H3",
     "hypothesis_doc": "docs/prereg/H3.md",
     "family_id": "prereg_bist30_akd_price_v1",
@@ -132,6 +132,7 @@
       "E1",
       "E4"
     ],
-    "decision_record": "docs/prereg/DECISIONS.md#2026-09-27"
+    "decision_record": "docs/prereg/DECISIONS.md#2026-09-27",
+    "frozen_at_utc": "2026-09-27T07:42:58.062765Z"
   }
 }
