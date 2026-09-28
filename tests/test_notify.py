@@ -350,6 +350,36 @@ class TelegramSendTests(unittest.TestCase):
                 send_message(FAKE_TOKEN, FAKE_CHAT_ID, "merhaba")
         self.assertNotIn(FAKE_TOKEN, str(ctx.exception))
 
+    def test_incomplete_read_on_success_path_redacted(self):
+        # http.client.IncompleteRead is neither an OSError nor a ValueError
+        # subclass, so a truncated response body must still be caught and
+        # redacted, not escape as a raw, unredacted exception.
+        import http.client
+
+        class _TruncatedResponse(_FakeResponse):
+            def read(self):
+                raise http.client.IncompleteRead(b"", expected=10)
+
+        with patch("fintr.notify.telegram.urllib.request.urlopen",
+                   return_value=_TruncatedResponse(b"")):
+            with self.assertRaises(TelegramSendError) as ctx:
+                send_message(FAKE_TOKEN, FAKE_CHAT_ID, "merhaba")
+        self.assertNotIn(FAKE_TOKEN, str(ctx.exception))
+
+    def test_incomplete_read_on_http_error_body_redacted(self):
+        import http.client
+
+        class _TruncatedHTTPError(urllib.error.HTTPError):
+            def read(self, *args, **kwargs):
+                raise http.client.IncompleteRead(b"", expected=10)
+
+        error = _TruncatedHTTPError(url=f"https://api.telegram.org/bot{FAKE_TOKEN}/sendMessage",
+                                     code=400, msg="err", hdrs=None, fp=None)
+        with patch("fintr.notify.telegram.urllib.request.urlopen", side_effect=[error]):
+            with self.assertRaises(TelegramSendError) as ctx:
+                send_message(FAKE_TOKEN, FAKE_CHAT_ID, "merhaba")
+        self.assertNotIn(FAKE_TOKEN, str(ctx.exception))
+
 
 # --- scripts/notify_observations.py ----------------------------------------
 

@@ -56,7 +56,19 @@ def _send(url: str, payload: bytes, *, token: str, timeout: float, allow_retry: 
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        body_text = exc.read().decode("utf-8", errors="replace")
+        try:
+            body_text = exc.read().decode("utf-8", errors="replace")
+        except Exception as read_exc:  # e.g. http.client.IncompleteRead: not an
+            # OSError/ValueError subclass, so it would otherwise escape every
+            # except clause below still carrying the token-bearing ``url`` in
+            # its frame.
+            raise TelegramSendError(
+                redact_text(
+                    f"Telegram API hatası (HTTP {exc.code}); yanıt gövdesi okunamadı "
+                    f"({read_exc})",
+                    token, url,
+                )
+            ) from None
         if exc.code == 429 and allow_retry:
             retry_after = _retry_after(body_text)
             if retry_after is not None and retry_after < RETRY_AFTER_MAX_SECONDS:
@@ -72,6 +84,13 @@ def _send(url: str, payload: bytes, *, token: str, timeout: float, allow_retry: 
     except (OSError, ValueError) as exc:
         raise TelegramSendError(
             redact_text(f"Telegram gönderim hatası: {exc}", token, url)
+        ) from None
+    except Exception as exc:  # defense in depth: any other stdlib exception (for
+        # example http.client.IncompleteRead on the success-read path, which is
+        # neither an OSError nor a ValueError) must still be redacted before it
+        # can propagate with the token-bearing ``url`` anywhere in its message.
+        raise TelegramSendError(
+            redact_text(f"Telegram gönderim hatası (beklenmeyen): {exc}", token, url)
         ) from None
 
     if not isinstance(body, dict) or not body.get("ok"):
