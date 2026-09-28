@@ -403,6 +403,38 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 1
 
+        if composition_payload is not None:
+            # Window-bounded counts (docs/scanner.md): the composer's totals
+            # (rule 4) count every base-only day as unsettled; these restrict
+            # reporting to [earliest rolling server date, reference_date].
+            rolling_dates = [
+                d for _, _, daily_capture in daily_loaded for d in daily_capture.server_dates
+            ]
+            window_start = min(rolling_dates) if rolling_dates else None
+            if window_start is not None and window_start > reference_date:
+                window_start = None
+            if window_start is None:
+                window_payload = None
+                gap_in_window = unsettled_in_window = revisions_in_window = None
+            else:
+                def _in_window(day: date) -> bool:
+                    return window_start <= day <= reference_date
+
+                window_payload = {
+                    "start": window_start.isoformat(), "end": reference_date.isoformat(),
+                }
+                gap_in_window = sum(1 for d in capture.composition.gaps if _in_window(d))
+                unsettled_in_window = len(
+                    {e.date for e in capture.composition.unsettled if _in_window(e.date)}
+                )
+                revisions_in_window = len(
+                    {e.date for e in capture.composition.revisions if _in_window(e.date)}
+                )
+            composition_payload["window"] = window_payload
+            composition_payload["gaps"]["in_window_count"] = gap_in_window
+            composition_payload["unsettled"]["in_window_day_count"] = unsettled_in_window
+            composition_payload["revisions"]["in_window_day_count"] = revisions_in_window
+
         scans = []
         for as_of in as_of_dates:
             freshness = build_freshness_report(capture, price, as_of=as_of)

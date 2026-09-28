@@ -684,7 +684,8 @@ class DailyRootEndToEndTests(GuardEnvMixin, unittest.TestCase):
                 self.assertRegex(item["sha256"], r"^[0-9a-f]{64}$")
 
             # Gap: 2026-01-08 is priced but in no capture's server_dates.
-            self.assertEqual(composition["gaps"], {"count": 1, "dates": [self.D_GAP]})
+            self.assertEqual(composition["gaps"]["count"], 1)
+            self.assertEqual(composition["gaps"]["dates"], [self.D_GAP])
 
             # Revision: 2026-01-07 custody differs between base and daily1.
             self.assertEqual(composition["revisions"]["day_count"], 1)
@@ -699,6 +700,72 @@ class DailyRootEndToEndTests(GuardEnvMixin, unittest.TestCase):
             self.assertIn("2026-01-12", unsettled_dates)
             self.assertIn({"date": "2026-01-12", "family": "custody"},
                           composition["unsettled"]["entries"])
+
+    def test_window_counts_exclude_base_only_days_before_first_rolling_date(self):
+        # Rolling captures start 2026-01-07: base-only 01-05/01-06 stay in the
+        # composer's totals (unsettled: akd single-holder) but not the window.
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            period_root, daily_root, price_root = self._write_fixture_data(root)
+            code, document, errors = self._run(self._argv(period_root, daily_root, price_root))
+            self.assertEqual(code, 0, errors)
+            composition = document["symbols"][self.SYMBOL]["composition"]
+            self.assertEqual(composition["window"], {"start": "2026-01-07", "end": "2026-01-12"})
+            total_days = {e["date"] for e in composition["unsettled"]["entries"]}
+            self.assertLessEqual({"2026-01-05", "2026-01-06"}, total_days)
+            self.assertEqual(composition["unsettled"]["day_count"], len(total_days))  # unchanged
+            in_window = {d for d in total_days if "2026-01-07" <= d <= "2026-01-12"}
+            self.assertEqual(composition["unsettled"]["in_window_day_count"], len(in_window))
+            self.assertLess(len(in_window), len(total_days))
+            self.assertEqual(composition["revisions"]["in_window_day_count"], 1)  # 01-07
+            self.assertEqual(composition["gaps"]["in_window_count"], 1)  # 01-08
+
+    def test_window_includes_single_observation_day_inside_window(self):
+        # 2026-01-12 is unsettled and inside the window.
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            period_root, daily_root, price_root = self._write_fixture_data(root)
+            code, document, errors = self._run(self._argv(period_root, daily_root, price_root))
+            self.assertEqual(code, 0, errors)
+            composition = document["symbols"][self.SYMBOL]["composition"]
+            self.assertIn("2026-01-12", {e["date"] for e in composition["unsettled"]["entries"]})
+            self.assertGreaterEqual(composition["unsettled"]["in_window_day_count"], 1)
+
+    def test_window_excludes_dates_after_as_of(self):
+        # as_of 01-12: 01-13 (only in daily2, unsettled) is in totals, not window.
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            period_root, daily_root, price_root = self._write_fixture_data(root)
+            code, document, errors = self._run(self._argv(period_root, daily_root, price_root))
+            self.assertEqual(code, 0, errors)
+            composition = document["symbols"][self.SYMBOL]["composition"]
+            entries = {e["date"] for e in composition["unsettled"]["entries"]}
+            self.assertIn("2026-01-13", entries)
+            self.assertEqual(composition["window"]["end"], "2026-01-12")
+            self.assertEqual(
+                composition["unsettled"]["in_window_day_count"],
+                len({d for d in entries if "2026-01-07" <= d <= "2026-01-12"}),
+            )
+
+    def test_window_and_in_window_counts_null_without_rolling_inputs(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            period_root, _daily_root, price_root = self._write_fixture_data(root)
+            empty_daily_root = root / "empty_daily_capture"
+            code, document, errors = self._run(
+                self._argv(period_root, empty_daily_root, price_root)
+            )
+            self.assertEqual(code, 0, errors)
+            composition = document["symbols"][self.SYMBOL]["composition"]
+            self.assertIsNone(composition["window"])
+            self.assertIsNone(composition["gaps"]["in_window_count"])
+            self.assertIsNone(composition["unsettled"]["in_window_day_count"])
+            self.assertIsNone(composition["revisions"]["in_window_day_count"])
+            self.assertGreater(composition["unsettled"]["day_count"], 0)  # totals kept
 
     def test_data_status_marks_revised_and_unsettled_as_of_days_not_suppressed(self):
         self.make_env()

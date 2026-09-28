@@ -201,11 +201,28 @@ Sembol başına eklenen `composition` bloğu:
     {"kind": "base", "path": "data/interim/period_analysis/AKFIS/....json", "sha256": "..."},
     {"kind": "rolling", "path": "data/interim/daily_capture/AKFIS/....json", "sha256": "..."}
   ],
-  "gaps": {"count": 1, "dates": ["2026-09-24"]},
-  "unsettled": {"day_count": 2, "entries": [{"date": "2026-09-25", "family": "custody"}]},
-  "revisions": {"day_count": 1, "entries": [{"date": "2026-09-23", "family": "custody"}]}
+  "window": {"start": "2026-09-08", "end": "2026-09-25"},
+  "gaps": {"count": 1, "dates": ["2026-09-24"], "in_window_count": 1},
+  "unsettled": {"day_count": 2, "entries": [{"date": "2026-09-25", "family": "custody"}], "in_window_day_count": 1},
+  "revisions": {"day_count": 1, "entries": [{"date": "2026-09-23", "family": "custody"}], "in_window_day_count": 1}
 }
 ```
+
+**Pencere-sınırlı sayımlar.** `gaps.count`/`unsettled.day_count`/
+`revisions.day_count` ve `entries` listeleri birleştiricinin tüm dönem
+toplamıdır (denetim için tam liste; birleştirici kuralı değişmedi,
+`composition_sha256` aynı). Kural 4 gereği yalnız tek girdide görülen AKD
+günü `unsettled` sayıldığından, yalnız temel yıllık kayıtta bulunan yüzlerce
+eski gün de toplama girer; bu yüzden bildirim toplamı kullanmaz. `window` =
+`[günlük (rolling) girdilerin kapsadığı en erken sunucu tarihi, as_of]`, iki
+uç dahil (`as_of` = o sembolün tarama referans tarihi, yani son `as_of`).
+`in_window_*` alanları yalnız bu aralıktaki tekil günleri sayar; `as_of`
+sonrası tarihler hiçbir pencere sayımına girmez. Rolling girdi yoksa (ya da
+en erken rolling tarihi `as_of`'tan sonraysa) `window` ve üç `in_window_*`
+alanı `null`'dır. Şema adı `fintr_scanner_observations_v2` **kalır**: alanlar
+yalnız ekleniyor, mevcut alanların anlamı değişmiyor; eski v2 okuyucuları
+etkilenmez ve `fintr.notify` alanların yokluğunu (eski v2 dosyası) toplama
+düşerek işler (bkz. `docs/notify.md`).
 
 `inputs` her girdi dosyasının kendi SHA-256'sını taşır (temel + her günlük
 kayıt, `load_period_capture`'ın zaten doğruladığı `packet_sha256` değil,
