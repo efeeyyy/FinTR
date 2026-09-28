@@ -114,14 +114,30 @@ def _document(symbols: dict, *, warning: str | None = NOTICE_TEXT_TR) -> dict:
     }
 
 
-def _symbol_block(*, scans: list) -> dict:
-    return {
+def _symbol_block(*, scans: list, composition: dict | None = None) -> dict:
+    block = {
         "as_of_source": "explicit",
         "input_files": {
             "period_capture": {"path": "synthetic", "sha256": "0" * 64},
             "price_history": {"path": "synthetic", "sha256": "0" * 64},
         },
         "scans": scans,
+    }
+    if composition is not None:
+        block["composition"] = composition
+    return block
+
+
+def _composition_block(*, gaps=0, unsettled=0, revisions=0) -> dict:
+    """Minimal ``composition`` block shape (ADR §4; docs/scanner.md) --
+    only the fields ``fintr.notify.format`` actually reads."""
+    return {
+        "composition_sha256": "0" * 64,
+        "composer_version": "compose_period_capture_v1",
+        "inputs": [{"kind": "base", "path": "synthetic", "sha256": "0" * 64}],
+        "gaps": {"count": gaps, "dates": []},
+        "unsettled": {"day_count": unsettled, "entries": []},
+        "revisions": {"day_count": revisions, "entries": []},
     }
 
 
@@ -260,6 +276,68 @@ class FormatTests(unittest.TestCase):
         for chunk in chunks:
             self.assertLessEqual(len(chunk), fmt.TELEGRAM_MESSAGE_LIMIT)
         self.assertEqual("".join(chunks), text)
+
+    # --- ADR §4: --daily-root composition data-status line ---------------
+
+    def test_no_data_status_line_without_composition_block(self):
+        # A v1-shaped document (no composition anywhere, as scan_observations.py
+        # emits by default) must render exactly as before -- no new line.
+        document = _document({
+            "AKFIS": _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=False)],
+            }]),
+        })
+        text = fmt.render_notification_text(document, RULE_TEXTS)
+        self.assertNotIn("veri durumu", text)
+
+    def test_data_status_line_reports_gap_unsettled_revision_counts(self):
+        document = _document({
+            "AKFIS": _symbol_block(
+                scans=[{
+                    "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                    "observations": [_obs("H1", condition_met=False)],
+                }],
+                composition=_composition_block(gaps=2, unsettled=3, revisions=1),
+            ),
+        })
+        text = fmt.render_notification_text(document, RULE_TEXTS)
+        self.assertIn(
+            "AKFIS veri durumu: boşluk=2, kesinleşmemiş gün=3, revize gün=1", text,
+        )
+
+    def test_data_status_line_present_per_symbol_only_when_composed(self):
+        document = _document({
+            "AKFIS": _symbol_block(
+                scans=[{
+                    "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                    "observations": [_obs("H1", condition_met=False)],
+                }],
+                composition=_composition_block(gaps=0, unsettled=0, revisions=0),
+            ),
+            "GARAN": _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=False)],
+            }]),
+        })
+        text = fmt.render_notification_text(document, RULE_TEXTS)
+        self.assertIn("AKFIS veri durumu:", text)
+        self.assertNotIn("GARAN veri durumu:", text)
+
+    def test_data_status_line_carries_no_forbidden_words(self):
+        document = _document({
+            "AKFIS": _symbol_block(
+                scans=[{
+                    "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                    "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.01")])],
+                }],
+                composition=_composition_block(gaps=5, unsettled=4, revisions=3),
+            ),
+        })
+        text = fmt.render_notification_text(document, RULE_TEXTS)
+        suffix = "\n".join([NOTICE_TEXT_TR, f"Durum: {VALIDATION_STATUS}"]) + "\n"
+        self.assertTrue(text.endswith(suffix))
+        _assert_no_forbidden_words(self, text[: -len(suffix)])
 
 
 class RealRuleTextsFileTests(unittest.TestCase):
@@ -443,6 +521,48 @@ class ScriptTests(GuardEnvMixin, unittest.TestCase):
                 code = notify.main(self._base_argv(root / "scanner", root / "out", "2026-09-25"))
             self.assertEqual(code, 1)
             self.assertIn("şema", errors.getvalue())
+
+    def test_v1_schema_document_still_accepted(self):
+        # An observations.json written before --daily-root existed (or by a
+        # run without it) keeps its fintr_scanner_observations_v1 schema and
+        # no composition block; the notify tool must still read it exactly
+        # as before (ADR §4: old files keep working).
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({DEVELOPMENT[0]: _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.01")])],
+            }])})
+            self.assertEqual(document["schema"], fmt.OBSERVATIONS_SCHEMA_V1)
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            stdout = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(io.StringIO()) as errors:
+                code = notify.main(self._base_argv(root / "scanner", root / "out", "2026-09-25"))
+            self.assertEqual(code, 0, errors.getvalue())
+            self.assertIn(f"{DEVELOPMENT[0]} H1:", stdout.getvalue())
+
+    def test_v2_schema_document_also_accepted(self):
+        # scan_observations.py --daily-root emits fintr_scanner_observations_v2;
+        # the notify tool must accept both versions.
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({DEVELOPMENT[0]: _symbol_block(
+                scans=[{
+                    "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                    "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.01")])],
+                }],
+                composition=_composition_block(gaps=1, unsettled=2, revisions=0),
+            )})
+            document["schema"] = fmt.OBSERVATIONS_SCHEMA_V2
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            stdout = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(io.StringIO()) as errors:
+                code = notify.main(self._base_argv(root / "scanner", root / "out", "2026-09-25"))
+            self.assertEqual(code, 0, errors.getvalue())
+            self.assertIn(f"{DEVELOPMENT[0]} H1:", stdout.getvalue())
+            self.assertIn(f"{DEVELOPMENT[0]} veri durumu:", stdout.getvalue())
 
     def test_holdout_symbol_rejected_defense_in_depth(self):
         self.make_env()

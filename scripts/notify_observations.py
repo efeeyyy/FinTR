@@ -1,9 +1,11 @@
 """CLI: Telegram observation notifications from a saved scanner output.
 
 Reads ``<scanner-dir>/<as-of>/observations.json`` (schema
-``fintr_scanner_observations_v1``, written by ``scripts/scan_observations.py``)
-and sends a plain-text, Turkish observation notice to Efe's own Telegram
-chat via the Bot API (``fintr.notify.telegram``, stdlib ``urllib`` only).
+``fintr_scanner_observations_v1`` or ``_v2``, written by
+``scripts/scan_observations.py``; v2 only when it was run with
+``--daily-root``) and sends a plain-text, Turkish observation notice to
+Efe's own Telegram chat via the Bot API (``fintr.notify.telegram``, stdlib
+``urllib`` only).
 This is an observation notice, not a signal: no score, rank, return,
 target or buy/sell recommendation. See ``docs/notify.md`` and
 ``docs/scanner.md``.
@@ -135,9 +137,10 @@ def main(argv: list[str] | None = None) -> int:
     except json.JSONDecodeError:
         print(f"Notify failed: observations dosyası geçersiz JSON ({obs_path})", file=sys.stderr)
         return 1
-    if not isinstance(document, dict) or document.get("schema") != fmt.OBSERVATIONS_SCHEMA:
+    if not isinstance(document, dict) or document.get("schema") not in fmt.SUPPORTED_OBSERVATIONS_SCHEMAS:
         print(
-            f"Notify failed: beklenmeyen şema ({obs_path}); gerekli: {fmt.OBSERVATIONS_SCHEMA}",
+            f"Notify failed: beklenmeyen şema ({obs_path}); gerekli: "
+            f"{' veya '.join(fmt.SUPPORTED_OBSERVATIONS_SCHEMAS)}",
             file=sys.stderr,
         )
         return 1

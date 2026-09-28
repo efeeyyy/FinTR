@@ -29,13 +29,15 @@ from fintr.data.period_capture import (
     CodeValue,
     DatedCodeValues,
     PeriodCapture,
+    canonical_json,
 )
 from fintr.data.price_history import DailyBar, PriceHistoryCapture, PriceHistoryCaptureMeta
 from fintr.evaluation import symbol_exclusions, symbol_split
+from fintr.research.compose_period_capture import CaptureInput, compose_period_capture
 from fintr.research.study_spec import parse_study_spec
 from fintr.scanner.freshness import build_freshness_report
 from fintr.scanner.observe import evaluate_rule_for_symbol
-from fintr.scanner.report import build_document, observation_payload
+from fintr.scanner.report import RESULT_SCHEMA_V1, RESULT_SCHEMA_V2, build_document, observation_payload
 from fintr.scanner.rules import ScannerRule, ScannerRulesError, load_scanner_rules
 
 import test_period_analysis as period_fixtures
@@ -61,12 +63,14 @@ D = [date(2027, 3, day) for day in range(1, 11)]  # D[0] = 2027-03-01 .. D[9]
 
 def _capture(
     symbol: str = "TST", *, server_dates=(), daily_akd_net=(), daily_akd_market=(),
-    daily_custody_lots=(),
+    daily_custody_lots=(), captured_at_utc="2027-03-01T00:00:00Z", packet_sha256="0" * 64,
+    start=None, end=None,
 ) -> PeriodCapture:
     dates = tuple(sorted(server_dates))
     return PeriodCapture(
-        symbol=symbol, start=dates[0], end=dates[-1], captured_at_utc="2027-03-01T00:00:00Z",
-        packet_sha256="0" * 64, server_dates=dates, period_akd_net=(),
+        symbol=symbol, start=start or dates[0], end=end or dates[-1],
+        captured_at_utc=captured_at_utc,
+        packet_sha256=packet_sha256, server_dates=dates, period_akd_net=(),
         daily_akd_net=tuple(sorted(daily_akd_net, key=lambda d: d.date)),
         daily_akd_market=tuple(sorted(daily_akd_market, key=lambda d: d.date)),
         daily_custody_lots=tuple(sorted(daily_custody_lots, key=lambda d: d.date)),
@@ -257,6 +261,44 @@ class LookaheadTests(unittest.TestCase):
         )
         self.assertTrue(obs_a.condition_met)  # 150 - 100 = 50 >= 0
 
+    def test_composed_capture_future_data_change_never_affects_as_of_result(self):
+        # ADR §4: the composed capture is evaluated the same way as a plain
+        # one -- evaluate_rule_for_symbol only ever sees
+        # truncate_period_capture(composed, as_of). A rolling capture that
+        # only adds/changes data strictly after as_of must not move the
+        # as_of result, even though it changes the composed object's own
+        # composition.unsettled/revisions bookkeeping (which is allowed to
+        # look past as_of; see docs/scanner.md).
+        rule = _rule(condition=_CUSTODY_CHANGE_GE_ZERO)
+        bars = tuple(_bar(d, o=10, h=10, l=10, c=10, adj=10, v=100) for d in D[:3])
+        price = _price("TST", bars)
+        base = _capture(
+            server_dates=D[:2],
+            daily_custody_lots=(
+                DatedCodeValues(D[0], (CodeValue("AAA", Decimal(100)),)),
+                DatedCodeValues(D[1], (CodeValue("AAA", Decimal(150)),)),
+            ),
+            captured_at_utc="2027-03-01T00:00:00Z", packet_sha256="base",
+        )
+
+        def make_composed(d2_value: int) -> PeriodCapture:
+            future = _capture(
+                server_dates=D[2:3],
+                daily_custody_lots=(
+                    DatedCodeValues(D[2], (CodeValue("AAA", Decimal(d2_value)),)),
+                ),
+                captured_at_utc="2027-03-02T00:00:00Z", packet_sha256=f"future-{d2_value}",
+            )
+            return compose_period_capture([
+                CaptureInput(base, kind="base"), CaptureInput(future, kind="rolling"),
+            ])
+
+        obs_a = evaluate_rule_for_symbol(rule, make_composed(999), price, as_of=D[1], **_DEFAULT_PARAMS)
+        obs_b = evaluate_rule_for_symbol(rule, make_composed(-999), price, as_of=D[1], **_DEFAULT_PARAMS)
+        self.assertEqual(obs_a.condition_met, obs_b.condition_met)
+        self.assertEqual([f.value for f in obs_a.features], [f.value for f in obs_b.features])
+        self.assertTrue(obs_a.condition_met)  # 150 - 100 = 50 >= 0
+
 
 class SuppressionTests(unittest.TestCase):
     def test_ratio_regime_suppresses_observation(self):
@@ -337,17 +379,21 @@ class FreshnessTests(unittest.TestCase):
         self.assertFalse(report.custody_flagged_stale)
 
 
+def _assert_no_forbidden_keys(testcase: unittest.TestCase, value, forbidden_keys: set[str]) -> None:
+    if isinstance(value, dict):
+        for key, sub in value.items():
+            testcase.assertNotIn(str(key).lower(), forbidden_keys, f"forbidden field: {key}")
+            _assert_no_forbidden_keys(testcase, sub, forbidden_keys)
+    elif isinstance(value, list):
+        for item in value:
+            _assert_no_forbidden_keys(testcase, item, forbidden_keys)
+
+
 class ForbiddenFieldsTests(unittest.TestCase):
     _FORBIDDEN_KEYS = {"score", "rank", "return", "target", "net_return", "gross_return"}
 
     def _assert_no_forbidden_keys(self, value) -> None:
-        if isinstance(value, dict):
-            for key, sub in value.items():
-                self.assertNotIn(str(key).lower(), self._FORBIDDEN_KEYS, f"forbidden field: {key}")
-                self._assert_no_forbidden_keys(sub)
-        elif isinstance(value, list):
-            for item in value:
-                self._assert_no_forbidden_keys(item)
+        _assert_no_forbidden_keys(self, value, self._FORBIDDEN_KEYS)
 
     def test_observation_payload_has_no_forbidden_fields(self):
         rule = _rule(condition=_CUSTODY_CHANGE_GE_ZERO)
@@ -445,6 +491,13 @@ class ScriptEndToEndTests(GuardEnvMixin, unittest.TestCase):
             document = json.loads(stdout.getvalue().decode("utf-8"))
             self.assertEqual(document["schema"], "fintr_scanner_observations_v1")
             self.assertIn(DEVELOPMENT[0], document["symbols"])
+            # ADR §4: without --daily-root, no composition/data_status field
+            # is added anywhere -- the shape is exactly what it was before
+            # that option existed.
+            symbol_block = document["symbols"][DEVELOPMENT[0]]
+            self.assertNotIn("composition", symbol_block)
+            for scan_entry in symbol_block["scans"]:
+                self.assertNotIn("data_status", scan_entry)
             saved = out_dir / "2026-01-08" / "observations.json"
             self.assertTrue(saved.exists())
 
@@ -460,6 +513,301 @@ class ScriptEndToEndTests(GuardEnvMixin, unittest.TestCase):
         # them is (or is derived from) data/interim/studies.
         for value in (scan.DEFAULT_PERIOD_DIR, scan.DEFAULT_PRICE_DIR, scan.DEFAULT_OUT_DIR):
             self.assertNotIn("studies", str(value))
+
+
+def _daily_root_capture_document(
+    symbol: str, *, start: str, end: str, server_dates: list[str],
+    custody_by_date: dict[str, str], captured_at_utc: str,
+) -> dict:
+    """A minimal, synthetic, hash-valid ``fintr_period_analysis_capture_v1``
+    document (same shape ``test_period_analysis``'s ``_packet``/``_capture``
+    build, but with caller-chosen dates/values/``captured_at_utc`` so two
+    overlapping records can be made to agree, disagree (a revision) or omit
+    a day (a gap), as ``compose_period_capture`` requires for its tests)."""
+    descending = sorted(server_dates, reverse=True)
+    packet = {
+        "schema": "fintr_period_analysis_handoff_v1",
+        "requested_period": {
+            "symbol": symbol, "start_date": start, "end_date": end,
+            "origin": "local_cli_arguments",
+        },
+        "get_akd_period": {"rows_in_provider_order": []},
+        "custody_analysis_daily": {
+            "provenance": {"server_echo": {"dates_in_provider_order": descending}},
+            "daily_akd_flow_in_provider_order": [
+                {"date": d, "rows": [
+                    {"broker_code": "AAA", "net_size": Decimal("10"),
+                     "total_size": Decimal("100"), "total_cost": Decimal("5")},
+                ]}
+                for d in descending
+            ],
+            "daily_custody_balance_in_provider_order": [
+                {"date": d, "rows": [
+                    {"broker_code": "AAA", "lot_count": Decimal(custody_by_date[d])},
+                ]}
+                for d in descending
+            ],
+            "metadata_in_provider_order": [
+                {"date": d, "null_fields": [], "retail_pct": Decimal("40"),
+                 "institutional_pct": Decimal("60")}
+                for d in descending
+            ],
+        },
+        "get_custodian_diff_period": {
+            "provenance": {"server_echo": {"start_date": start, "end_date": end}},
+            "rows_in_provider_order": [],
+        },
+    }
+    return {
+        "capture_metadata": {
+            "schema": "fintr_period_analysis_capture_v1",
+            "captured_at_utc": captured_at_utc,
+            "packet_schema": packet["schema"],
+            "packet_sha256_canonical_json": hashlib.sha256(
+                canonical_json(packet).encode("utf-8")
+            ).hexdigest(),
+        },
+        "packet": packet,
+    }
+
+
+class DailyRootEndToEndTests(GuardEnvMixin, unittest.TestCase):
+    """``scan_observations.py --daily-root``, end to end: a base capture plus
+    two overlapping daily (rolling-window) captures (ADR §4). All dates are
+    business days; ``2026-01-08`` is deliberately never mentioned by any
+    capture's own server dates to exercise the gap marker.
+
+    Hand-derived expectations (custody family, symbol AAA=code, lot_count):
+      - 2026-01-05, 2026-01-06: only in base -> AKD family unsettled
+        (single holder), custody family settled (base's own window already
+        has >=2 later server dates).
+      - 2026-01-07: base=1000, daily1=1500 (daily1 captured later) ->
+        custody revision (daily1 wins); settled (daily1's own window has 2
+        later server dates: 01-09, 01-12).
+      - 2026-01-09: base/daily1/daily2 all agree (1000) -> no revision;
+        settled (daily2's own window has 2 later server dates: 01-12, 01-13).
+      - 2026-01-12: daily1=daily2=1300, no revision; unsettled (neither
+        capture's own window has 2 later server dates).
+      - 2026-01-13: only in daily2 -> unsettled.
+      - 2026-01-08: in no capture's server_dates but is a priced trading
+        day within [2026-01-05, 2026-01-13] -> gap.
+    """
+
+    SYMBOL = DEVELOPMENT[0]
+    D_BASE = ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-09"]
+    D_GAP = "2026-01-08"
+    D_DAILY1 = ["2026-01-07", "2026-01-09", "2026-01-12"]
+    D_DAILY2 = ["2026-01-09", "2026-01-12", "2026-01-13"]
+    ALL_TRADE_DATES = [
+        "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09",
+        "2026-01-12", "2026-01-13",
+    ]
+
+    def _write_fixture_data(self, root: Path) -> tuple[Path, Path, Path]:
+        period_root = root / "period_analysis"
+        daily_root = root / "daily_capture"
+        price_root = root / "price_history"
+
+        base_doc = _daily_root_capture_document(
+            self.SYMBOL, start="2026-01-05", end="2026-01-09", server_dates=self.D_BASE,
+            custody_by_date={"2026-01-05": "1000", "2026-01-06": "1000",
+                              "2026-01-07": "1000", "2026-01-09": "1000"},
+            captured_at_utc="2026-01-09T12:00:00Z",
+        )
+        period_fixtures._write_capture(period_root, self.SYMBOL, "2026-01-05", "2026-01-09", base_doc)
+
+        daily1_doc = _daily_root_capture_document(
+            self.SYMBOL, start="2026-01-07", end="2026-01-12", server_dates=self.D_DAILY1,
+            custody_by_date={"2026-01-07": "1500", "2026-01-09": "1000", "2026-01-12": "1300"},
+            captured_at_utc="2026-01-12T09:00:00Z",
+        )
+        period_fixtures._write_capture(daily_root, self.SYMBOL, "2026-01-07", "2026-01-12", daily1_doc)
+
+        daily2_doc = _daily_root_capture_document(
+            self.SYMBOL, start="2026-01-09", end="2026-01-13", server_dates=self.D_DAILY2,
+            custody_by_date={"2026-01-09": "1000", "2026-01-12": "1300", "2026-01-13": "1400"},
+            captured_at_utc="2026-01-13T09:00:00Z",
+        )
+        period_fixtures._write_capture(daily_root, self.SYMBOL, "2026-01-09", "2026-01-13", daily2_doc)
+
+        bars = [
+            period_fixtures._price_bar(d, o="10", h="10", l="10", c="10", adj="10", v=100)
+            for d in self.ALL_TRADE_DATES
+        ]
+        period_fixtures._write_price_capture(
+            price_root, self.SYMBOL, "2026-01-05", "2026-01-13", bars,
+        )
+        return period_root, daily_root, price_root
+
+    def _run(self, argv: list[str]) -> tuple[int, dict, str]:
+        stdout = io.BytesIO()
+        with redirect_stderr(io.StringIO()) as errors, patch.object(
+            scan.sys, "stdout", io.TextIOWrapper(stdout, encoding="utf-8"),
+        ) as wrapped:
+            code = scan.main(argv)
+            wrapped.flush()
+        text = stdout.getvalue().decode("utf-8")
+        document = json.loads(text) if text else {}
+        return code, document, errors.getvalue()
+
+    def _argv(self, period_root: Path, daily_root: Path, price_root: Path, **extra) -> list[str]:
+        argv = [
+            "--symbols", self.SYMBOL,
+            "--period-dir", str(period_root),
+            "--daily-root", str(daily_root),
+            "--price-dir", str(price_root),
+            "--rules-file", str(REAL_RULES_FILE),
+            "--as-of", "2026-01-12",
+            "--lookback-days", "5",  # 01-05, 01-06, 01-07, 01-09, 01-12
+            "--format", "json",
+        ]
+        for key, value in extra.items():
+            argv.extend([key, value])
+        return argv
+
+    def test_composed_observation_schema_and_composition_block(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            period_root, daily_root, price_root = self._write_fixture_data(root)
+            code, document, errors = self._run(self._argv(period_root, daily_root, price_root))
+            self.assertEqual(code, 0, errors)
+            self.assertEqual(document["schema"], RESULT_SCHEMA_V2)
+
+            block = document["symbols"][self.SYMBOL]
+            composition = block["composition"]
+            self.assertRegex(composition["composition_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual(composition["composer_version"], "compose_period_capture_v1")
+            kinds = sorted(item["kind"] for item in composition["inputs"])
+            self.assertEqual(kinds, ["base", "rolling", "rolling"])
+            for item in composition["inputs"]:
+                self.assertRegex(item["sha256"], r"^[0-9a-f]{64}$")
+
+            # Gap: 2026-01-08 is priced but in no capture's server_dates.
+            self.assertEqual(composition["gaps"], {"count": 1, "dates": [self.D_GAP]})
+
+            # Revision: 2026-01-07 custody differs between base and daily1.
+            self.assertEqual(composition["revisions"]["day_count"], 1)
+            self.assertIn(
+                {"date": "2026-01-07", "family": "custody"}, composition["revisions"]["entries"],
+            )
+
+            # Unsettled: at least 2026-01-12 (custody, neither capture's own
+            # window reaches 2 server dates past it) and 2026-01-13/akd
+            # single-holder dates are not scanned (only up to 01-12 here).
+            unsettled_dates = {e["date"] for e in composition["unsettled"]["entries"]}
+            self.assertIn("2026-01-12", unsettled_dates)
+            self.assertIn({"date": "2026-01-12", "family": "custody"},
+                          composition["unsettled"]["entries"])
+
+    def test_data_status_marks_revised_and_unsettled_as_of_days_not_suppressed(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            period_root, daily_root, price_root = self._write_fixture_data(root)
+            code, document, errors = self._run(self._argv(period_root, daily_root, price_root))
+            self.assertEqual(code, 0, errors)
+            scans_by_as_of = {
+                scan_entry["as_of"]: scan_entry
+                for scan_entry in document["symbols"][self.SYMBOL]["scans"]
+            }
+
+            revised_scan = scans_by_as_of["2026-01-07"]
+            self.assertIn("custody", revised_scan["data_status"]["revised_families"])
+            # Marked, never suppressed: the revised as_of day still gets one
+            # observation per loaded rule, exactly like every other day --
+            # data_status is an addition, not a replacement for the normal
+            # per-rule observation list.
+            self.assertEqual(
+                {obs["rule_id"] for obs in revised_scan["observations"]},
+                {obs["rule_id"] for obs in scans_by_as_of["2026-01-09"]["observations"]},
+            )
+
+            unsettled_scan = scans_by_as_of["2026-01-12"]
+            self.assertIn("custody", unsettled_scan["data_status"]["unsettled_families"])
+
+            settled_clean_scan = scans_by_as_of["2026-01-09"]
+            self.assertEqual(settled_clean_scan["data_status"]["revised_families"], [])
+            self.assertEqual(settled_clean_scan["data_status"]["unsettled_families"], [])
+
+    def test_default_run_without_daily_root_unaffected_by_daily_root_data(self):
+        # Same fixture, but --daily-root omitted: must behave exactly like
+        # ScriptEndToEndTests (v1 schema, no composition/data_status), even
+        # though daily_capture/ data exists on disk right next to period_dir.
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            period_root, daily_root, price_root = self._write_fixture_data(root)
+            argv = [
+                "--symbols", self.SYMBOL,
+                "--period-dir", str(period_root),
+                "--price-dir", str(price_root),
+                "--rules-file", str(REAL_RULES_FILE),
+                "--as-of", "2026-01-09",
+                "--format", "json",
+            ]
+            code, document, errors = self._run(argv)
+            self.assertEqual(code, 0, errors)
+            self.assertEqual(document["schema"], RESULT_SCHEMA_V1)
+            block = document["symbols"][self.SYMBOL]
+            self.assertNotIn("composition", block)
+            for scan_entry in block["scans"]:
+                self.assertNotIn("data_status", scan_entry)
+
+    def test_empty_daily_root_directory_still_composes_from_base_alone(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            period_root, _daily_root, price_root = self._write_fixture_data(root)
+            empty_daily_root = root / "empty_daily_capture"
+            argv = self._argv(period_root, empty_daily_root, price_root)
+            code, document, errors = self._run(argv)
+            self.assertEqual(code, 0, errors)
+            composition = document["symbols"][self.SYMBOL]["composition"]
+            self.assertEqual(len(composition["inputs"]), 1)
+            self.assertEqual(composition["inputs"][0]["kind"], "base")
+
+
+class ForbiddenFieldsComposedTests(unittest.TestCase):
+    _FORBIDDEN_KEYS = ForbiddenFieldsTests._FORBIDDEN_KEYS
+
+    def test_composed_document_has_no_forbidden_fields(self):
+        base = _capture(
+            server_dates=D[:2],
+            daily_custody_lots=(
+                DatedCodeValues(D[0], (CodeValue("AAA", Decimal(100)),)),
+                DatedCodeValues(D[1], (CodeValue("AAA", Decimal(150)),)),
+            ),
+            captured_at_utc="2027-03-01T00:00:00Z", packet_sha256="base",
+        )
+        rolling = _capture(
+            server_dates=D[1:2],
+            daily_custody_lots=(
+                DatedCodeValues(D[1], (CodeValue("AAA", Decimal(999)),)),
+            ),
+            captured_at_utc="2027-03-02T00:00:00Z", packet_sha256="rolling",
+        )
+        composed = compose_period_capture([
+            CaptureInput(base, kind="base"), CaptureInput(rolling, kind="rolling"),
+        ])
+        rule = _rule(condition=_CUSTODY_CHANGE_GE_ZERO)
+        bars = tuple(_bar(d, o=10, h=10, l=10, c=10, adj=10, v=100) for d in D[:2])
+        price = _price("TST", bars)
+        obs = evaluate_rule_for_symbol(rule, composed, price, as_of=D[1], **_DEFAULT_PARAMS)
+        payload = observation_payload(obs)
+        _assert_no_forbidden_keys(self, payload, ForbiddenFieldsTests._FORBIDDEN_KEYS)
+        lineage = composed.composition
+        composition_payload = {
+            "composition_sha256": lineage.composition_sha256,
+            "gaps": {"count": len(lineage.gaps), "dates": [d.isoformat() for d in lineage.gaps]},
+            "unsettled": {"entries": [
+                {"date": e.date.isoformat(), "family": e.family} for e in lineage.unsettled
+            ]},
+            "revisions": {"entries": [
+                {"date": e.date.isoformat(), "family": e.family} for e in lineage.revisions
+            ]},
+        }
+        _assert_no_forbidden_keys(self, composition_payload, ForbiddenFieldsTests._FORBIDDEN_KEYS)
 
 
 if __name__ == "__main__":
