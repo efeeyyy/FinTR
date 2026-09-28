@@ -181,6 +181,13 @@ def _v2_packet(brokerage_rows: tuple = DIRECTORY_ROWS) -> dict:
     return packet
 
 
+def _write(document: dict) -> Path:
+    directory = tempfile.mkdtemp()
+    path = Path(directory) / "capture.json"
+    path.write_text(smoke._compact_json(document), encoding="utf-8")
+    return path
+
+
 class PeriodCaptureLoaderTests(unittest.TestCase):
     def test_canonical_json_matches_capture_writer(self):
         packet = _packet()
@@ -229,6 +236,35 @@ class PeriodCaptureLoaderTests(unittest.TestCase):
         document["capture_metadata"]["schema"] = "other"
         with self.assertRaisesRegex(PeriodCaptureError, "unsupported_schema"):
             parse_period_capture(document)
+
+    def test_daily_collection_metadata_blocks_are_read_optionally(self):
+        """ADR 'Kayan kayıt capture_metadata eki': the loader ignores them when
+        absent (old records) and loads fine when present (new records); they
+        never affect the packet hash check."""
+        document = _capture()
+        old = load_period_capture(_write(document))
+        document["capture_metadata"]["source"] = {
+            "source_id": "veri_terminali_miniapp_ws_v1",
+            "protocol_reference": "docs/protocol_inventory.md",
+            "collection_mode": "daily_rolling_window_v1",
+        }
+        document["capture_metadata"]["permission_provenance"] = {
+            "status": "user_asserted_2026-09-28_not_independently_verified",
+            "basis": "Efe beyanı 2026-09-28",
+            "record": "docs/research/continuous_data_sources.md#karar-2026-09-28",
+            "independently_verified": False,
+        }
+        document["capture_metadata"]["run"] = {
+            "run_id": "2026-09-28T05:00:00Z",
+            "run_date_local": "2026-09-28",
+            "window_rule": "E=R-1; S=E-14d; catch-up from last successful end",
+            "config_sha256": "0" * 64,
+            "git_commit": "deadbeef",
+            "git_tree_clean": True,
+        }
+        new = load_period_capture(_write(document))
+        self.assertEqual(old.packet_sha256, new.packet_sha256)
+        self.assertEqual(old.server_dates, new.server_dates)
 
     def test_non_finite_number_in_file_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -1311,9 +1312,24 @@ def _canonical_period_json(value) -> str:
 
 
 def _period_analysis_capture_payload(
-    packet: dict[str, object], *, captured_at: datetime | None = None,
+    packet: dict[str, object],
+    *,
+    captured_at: datetime | None = None,
+    daily_collection_metadata: Mapping[str, object] | None = None,
 ) -> str:
-    """Build and secret-check the persisted packet and its minimal provenance."""
+    """Build and secret-check the persisted packet and its minimal provenance.
+
+    ``daily_collection_metadata``, when given, must be a mapping with
+    ``source``, ``permission_provenance`` and ``run`` keys (the blocks
+    ``docs/research/daily_miniapp_collection_adr.md`` "Şemalar" §"Kayan
+    kayıt capture_metadata eki" adds for daily rolling-window captures);
+    it is merged into ``capture_metadata`` after the fields below, so it
+    can override the generic ``permission_provenance`` written here with
+    the more specific daily-collection provenance. It is never part of
+    ``packet`` and therefore never changes ``packet_sha256_canonical_json``.
+    Every other caller (manual single/multi-symbol capture) omits it and
+    keeps today's exact output.
+    """
     period = packet.get("requested_period")
     if not isinstance(period, dict):
         raise PeriodAnalysisCaptureError("invalid_packet_scope")
@@ -1375,20 +1391,45 @@ def _period_analysis_capture_payload(
             },
             "packet": packet,
         }
+        if daily_collection_metadata is not None:
+            if not isinstance(daily_collection_metadata, Mapping) or set(
+                daily_collection_metadata,
+            ) != {"source", "permission_provenance", "run"}:
+                raise TypeError
+            capture["capture_metadata"].update(daily_collection_metadata)
         validate_context_contains_no_secrets(_secret_validation_copy(capture))
         return _compact_json(capture)
     except (KeyError, LivePilotCaptureError, TypeError, ValueError):
         raise PeriodAnalysisCaptureError("safe_export_validation_failed") from None
 
 
-def _save_period_analysis_capture(packet: dict[str, object]) -> Path:
-    """Atomically create one ignored per-symbol capture and refuse overwrite."""
-    payload = (_period_analysis_capture_payload(packet) + "\n").encode("utf-8")
+def _save_period_analysis_capture(
+    packet: dict[str, object],
+    *,
+    capture_root: Path | None = None,
+    daily_collection_metadata: Mapping[str, object] | None = None,
+) -> Path:
+    """Atomically create one ignored per-symbol capture and refuse overwrite.
+
+    ``capture_root`` defaults to today's ``data/interim/period_analysis``;
+    the daily collector passes ``data/interim/daily_capture`` instead (ADR
+    §2 "Depolama"). The saved packet schema and its hash never change with
+    the root. See ``_period_analysis_capture_payload`` for
+    ``daily_collection_metadata``.
+    """
+    payload = (
+        _period_analysis_capture_payload(
+            packet, daily_collection_metadata=daily_collection_metadata,
+        ) + "\n"
+    ).encode("utf-8")
     period = packet["requested_period"]
     symbol = period["symbol"]
     start_date = period["start_date"]
     end_date = period["end_date"]
-    directory = PROJECT_ROOT / "data" / "interim" / "period_analysis"
+    directory = (
+        capture_root if capture_root is not None
+        else PROJECT_ROOT / "data" / "interim" / "period_analysis"
+    )
     if (
         directory.parent.parent.is_symlink()
         or directory.parent.is_symlink()

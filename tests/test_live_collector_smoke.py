@@ -1315,6 +1315,116 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(smoke.PERIOD_ANALYSIS_CONTEXT_BEGIN, output)
             self.assertEqual(list(project_root.iterdir()), [])
 
+    async def test_save_period_analysis_capture_accepts_custom_capture_root(self):
+        """The daily collector's root (ADR §2) behaves exactly like the default one."""
+        results, requests = await self.period_analysis_case()
+        packet = smoke._period_analysis_packet(
+            results, requests,
+            tuple(
+                SendObservation(1, request_type, "sent")
+                for request_type in smoke.PERIOD_ANALYSIS_REQUEST_TYPES
+            ),
+            symbol="AKFIS", start=date(2026, 9, 14), end=date(2026, 9, 23),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            capture_root = Path(temporary) / "data" / "interim" / "daily_capture"
+            target = smoke._save_period_analysis_capture(packet, capture_root=capture_root)
+            self.assertEqual(
+                target,
+                capture_root / "AKFIS" / "2026-09-14_2026-09-23.json",
+            )
+            self.assertTrue(target.is_file())
+            default_root = Path(temporary) / "data" / "interim" / "period_analysis"
+            self.assertFalse(default_root.exists())
+            with self.assertRaises(smoke.PeriodAnalysisCaptureError) as error:
+                smoke._save_period_analysis_capture(packet, capture_root=capture_root)
+            self.assertEqual(error.exception.reason, "capture_already_exists")
+
+    async def test_daily_collection_metadata_adds_blocks_without_changing_packet_hash(self):
+        """ADR 'Kayan kayıt capture_metadata eki': packet/hash never change."""
+        results, requests = await self.period_analysis_case()
+        packet = smoke._period_analysis_packet(
+            results, requests,
+            tuple(
+                SendObservation(1, request_type, "sent")
+                for request_type in smoke.PERIOD_ANALYSIS_REQUEST_TYPES
+            ),
+            symbol="AKFIS", start=date(2026, 9, 14), end=date(2026, 9, 23),
+        )
+        daily_collection_metadata = {
+            "source": {
+                "source_id": "veri_terminali_miniapp_ws_v1",
+                "protocol_reference": "docs/protocol_inventory.md",
+                "collection_mode": "daily_rolling_window_v1",
+            },
+            "permission_provenance": {
+                "status": "user_asserted_2026-09-28_not_independently_verified",
+                "basis": "Efe beyanı 2026-09-28",
+                "record": "docs/research/continuous_data_sources.md#karar-2026-09-28",
+                "independently_verified": False,
+            },
+            "run": {
+                "run_id": "2026-09-28T05:00:00Z",
+                "run_date_local": "2026-09-28",
+                "window_rule": "E=R-1; S=E-14d; catch-up from last successful end",
+                "config_sha256": "0" * 64,
+                "git_commit": "deadbeef",
+                "git_tree_clean": True,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            plain_root = Path(temporary) / "plain"
+            daily_root = Path(temporary) / "daily"
+            plain_target = smoke._save_period_analysis_capture(
+                packet, capture_root=plain_root,
+            )
+            daily_target = smoke._save_period_analysis_capture(
+                packet, capture_root=daily_root,
+                daily_collection_metadata=daily_collection_metadata,
+            )
+            plain = json.loads(plain_target.read_text(encoding="utf-8"))
+            daily = json.loads(daily_target.read_text(encoding="utf-8"))
+        self.assertEqual(
+            plain["capture_metadata"]["packet_sha256_canonical_json"],
+            daily["capture_metadata"]["packet_sha256_canonical_json"],
+        )
+        self.assertEqual(plain["packet"], daily["packet"])
+        self.assertNotIn("source", plain["capture_metadata"])
+        self.assertNotIn("run", plain["capture_metadata"])
+        self.assertEqual(
+            plain["capture_metadata"]["permission_provenance"]["basis"],
+            "user_asserted_by_explicit_opt_in_cli_invocation",
+        )
+        self.assertEqual(
+            daily["capture_metadata"]["source"], daily_collection_metadata["source"],
+        )
+        self.assertEqual(
+            daily["capture_metadata"]["run"], daily_collection_metadata["run"],
+        )
+        self.assertEqual(
+            daily["capture_metadata"]["permission_provenance"],
+            daily_collection_metadata["permission_provenance"],
+        )
+
+    async def test_daily_collection_metadata_rejects_wrong_shape(self):
+        results, requests = await self.period_analysis_case()
+        packet = smoke._period_analysis_packet(
+            results, requests,
+            tuple(
+                SendObservation(1, request_type, "sent")
+                for request_type in smoke.PERIOD_ANALYSIS_REQUEST_TYPES
+            ),
+            symbol="AKFIS", start=date(2026, 9, 14), end=date(2026, 9, 23),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            capture_root = Path(temporary) / "daily_capture"
+            with self.assertRaises(smoke.PeriodAnalysisCaptureError) as error:
+                smoke._save_period_analysis_capture(
+                    packet, capture_root=capture_root,
+                    daily_collection_metadata={"source": {}},
+                )
+        self.assertEqual(error.exception.reason, "safe_export_validation_failed")
+
     async def test_dry_run_skips_session_takeover_secret_and_connector(self):
         parser = smoke._parser()
         args = parser.parse_args(("--dry-run",))
