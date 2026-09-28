@@ -189,7 +189,7 @@ def _ratio_regime_payload(regime) -> dict:
 
 def run_study(
     spec: StudySpec, symbol_data: dict[str, SymbolData], *, split: str, params: RunParameters,
-    symbol_scope: str = "declared",
+    symbol_scope: str = "declared", test_window_end: date | None = None,
 ) -> dict:
     """Build the full result dict for one split ("train" or "test").
 
@@ -204,6 +204,11 @@ def run_study(
     ``symbol_holdout`` -- what ``scripts/run_study.py --split test`` uses
     under the frozen BIST 30 split guard, so a one-shot holdout evaluation
     never mixes in development symbols.
+
+    ``test_window_end`` (test split only, E3): signal dates after it are
+    dropped (``fintr.research.engine.signal_dates_for_split``'s
+    ``window_end``); ``docs/prereg/DECISIONS.md`` 2026-09-28's pre-registered
+    test-window end, applied by ``scripts/run_study.py`` from the test plan.
     """
     if split not in ("train", "test"):
         raise EngineError("invalid_split")
@@ -228,7 +233,9 @@ def run_study(
     ratio_regime_quality: dict[str, dict] = {}
     for symbol in required_symbols:
         data = symbol_data[symbol]
-        raw_signal_dates = signal_dates_for_split(data.capture, spec.train_test_cutoff, split)
+        raw_signal_dates = signal_dates_for_split(
+            data.capture, spec.train_test_cutoff, split, window_end=test_window_end,
+        )
         signal_dates, dropped_regime_count = drop_ratio_regime_signal_dates(
             raw_signal_dates, data.ratio_regime_dates,
         )
@@ -280,6 +287,7 @@ def run_study(
         "spec_frozen": spec.frozen,
         "split": split,
         "symbol_scope": symbol_scope,
+        "test_window_end": None if test_window_end is None else test_window_end.isoformat(),
         "symbols": list(required_symbols),
         "symbol_holdout": list(spec.symbol_holdout),
         "train_test_cutoff": spec.train_test_cutoff.isoformat(),

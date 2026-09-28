@@ -128,7 +128,7 @@ def evaluate_primary_family(results: Sequence[Mapping[str, Any]]) -> dict:
     for key in _FAMILY_KEYS:
         if any(test[key] != first[key] for test in tests):
             raise FamilyError(f"inconsistent_family_definition: {key}")
-    for key in ("split", "parameters"):
+    for key in ("split", "parameters", "test_scope"):
         if any(result.get(key) != results[0].get(key) for result in results):
             raise FamilyError(f"inconsistent_{key}")
     if first["multiple_comparison"] != "holm":
@@ -154,6 +154,8 @@ def evaluate_primary_family(results: Sequence[Mapping[str, Any]]) -> dict:
         first["familywise_alpha"], order=members,
     )
     split = results[0].get("split")
+    test_scope = results[0].get("test_scope")
+    confirmatory = split == "test" and test_scope in (None, "primary")
     primary = []
     for hid in members:
         result, test = by_id[hid]
@@ -189,7 +191,8 @@ def evaluate_primary_family(results: Sequence[Mapping[str, Any]]) -> dict:
         "schema": FAMILY_SCHEMA,
         "family_id": first["family_id"],
         "split": split,
-        "confirmatory": split == "test",
+        "test_scope": test_scope,
+        "confirmatory": confirmatory,
         "multiple_comparison": "holm",
         "familywise_alpha": first["familywise_alpha"],
         "m": len(members),
