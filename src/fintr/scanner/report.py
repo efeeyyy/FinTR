@@ -17,7 +17,15 @@ from fintr.scanner.freshness import FreshnessReport
 from fintr.scanner.observe import NOTICE_TEXT_TR, RuleObservation
 
 
-RESULT_SCHEMA = "fintr_scanner_observations_v1"
+RESULT_SCHEMA_V1 = "fintr_scanner_observations_v1"
+# v2: emitted only when ``scan_observations.py --daily-root`` composes a
+# symbol's data from base + rolling captures (adds a per-symbol
+# ``composition`` block and a per-scan ``data_status`` marker; see
+# docs/scanner.md and docs/research/daily_miniapp_collection_adr.md §4).
+# Never emitted by default -- the undecorated default run keeps writing v1,
+# byte-identical to before this field existed.
+RESULT_SCHEMA_V2 = "fintr_scanner_observations_v2"
+RESULT_SCHEMA = RESULT_SCHEMA_V1  # kept for existing callers of the default schema
 
 _GIT_CANDIDATES = ("git", r"C:\Program Files\Git\cmd\git.exe")
 
@@ -87,10 +95,10 @@ def freshness_payload(report: FreshnessReport) -> dict:
 
 def build_document(
     *, project_root: Path, rules_file: str, rules_file_sha256: str,
-    split_guard: dict, symbols: dict,
+    split_guard: dict, symbols: dict, schema: str = RESULT_SCHEMA_V1,
 ) -> dict:
     return {
-        "schema": RESULT_SCHEMA,
+        "schema": schema,
         "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "code_commit": resolve_code_commit(project_root),
         "python_version": platform.python_version(),

@@ -84,7 +84,7 @@ hissesi istenirse ret (holdout testine kadar analiz yasak); dışlanan hisse
 `split_guard` bloğu bulunur (`run_study`'deki gibi split/dışlama dosyası ve
 SHA-256'ları).
 
-## Çıktı şeması (`fintr_scanner_observations_v1`)
+## Çıktı şeması (`fintr_scanner_observations_v1`/`_v2`)
 
 ```json
 {
@@ -153,12 +153,106 @@ Bugünkü dondurulmuş H1–H4 hiçbiri `codes` parametresi kullanmaz (H3/H4'ün
 `top1_akd_net_share_of_volume`'u hangi kurumun öne çıktığını da açıklamaz --
 bu kasıtlıdır, bkz. H3 spec açıklaması).
 
+## Günlük birleştirme (`--daily-root`)
+
+Varsayılan kapalı (ADR "Uygulama sırası" madde 4,
+`docs/research/daily_miniapp_collection_adr.md` §4). Verilmezse çıktı
+mevcut davranışla bayt düzeyinde aynıdır (üretim zamanı gibi değişken
+alanlar hariç); bu, `tests/test_scanner.py::ScriptEndToEndTests` ve
+`DailyRootEndToEndTests::test_default_run_without_daily_root_unaffected_by_daily_root_data`
+ile doğrulanır.
+
+`--daily-root <dizin>` verilirse, her sembolün `--period-dir` altındaki
+temel (en uzun/en son biten) kaydı, `<dizin>/<SYM>/` altındaki **tüm**
+`<S>_<E>.json` günlük (kayan pencere) kayıtlarıyla
+`fintr.research.compose_period_capture.compose_period_capture` ile
+birleştirilir (`data/interim/daily_capture/<SYM>/` şeması, ADR §2). Hiçbir
+formül burada yeniden hesaplanmaz; sadece hangi kaydın hangi tarih×aile
+için kazandığı (en yeni `captured_at_utc`), boşluk, kesinleşme ve
+revizyon `compose_period_capture`'ın kendi kurallarına (ADR §3) göre
+belirlenir. Fiyat dosyası, tüm girdi kayıtlarının kapsadığı
+`min(start)..max(end)` aralığını örten dosyadır (`discover_price_history`,
+değişmedi); birleştirmenin `gaps` hesaplaması için gereken takvim bu fiyat
+dosyasının işlem günlerinden gelir. `<dizin>/<SYM>/` boşsa ya da yoksa,
+sembol yalnız temel kayıttan (tek girdi) birleştirilir -- birleştirici tek
+girdiyle de çalışır, ama bu durumda `_akd_settled`/`_custody_settled`'ın
+"en az iki kayıt" koşulu hiçbir tarih için sağlanamayacağından AKD ailesi
+için tüm günler `unsettled` görünür (custody ailesi, temel kaydın kendi
+penceresi yeterince genişse yine kesinleşebilir; bkz.
+`compose_period_capture` modül docstring'i kural 4).
+
+Şema adı yalnız bu durumda `fintr_scanner_observations_v2`'ye değişir
+(`--daily-root` verilmediğinde hep `_v1`). Sebep: eklenen alanlar (aşağıda)
+yalnızca opsiyonel değil, birleştirilmiş veri kullanılmadığı sürece hiç
+üretilmez; şema adını sabit tutmak yerine ayırmak, eski bir tüketicinin
+(örn. arşivlenmiş bir `observations.json` okuyan bir betik) `composition`/
+`data_status` alanlarının varlığını şemadan anlayabilmesini sağlar. Eski
+`_v1` dosyaları (bu değişiklikten önce üretilmiş ya da `--daily-root`
+verilmeden üretilmiş her dosya) aynen okunmaya devam eder; `fintr.notify`
+her iki şemayı da kabul eder (bkz. `docs/notify.md`).
+
+Sembol başına eklenen `composition` bloğu:
+
+```json
+"composition": {
+  "composition_sha256": "...",
+  "composer_version": "compose_period_capture_v1",
+  "inputs": [
+    {"kind": "base", "path": "data/interim/period_analysis/AKFIS/....json", "sha256": "..."},
+    {"kind": "rolling", "path": "data/interim/daily_capture/AKFIS/....json", "sha256": "..."}
+  ],
+  "gaps": {"count": 1, "dates": ["2026-09-24"]},
+  "unsettled": {"day_count": 2, "entries": [{"date": "2026-09-25", "family": "custody"}]},
+  "revisions": {"day_count": 1, "entries": [{"date": "2026-09-23", "family": "custody"}]}
+}
+```
+
+`inputs` her girdi dosyasının kendi SHA-256'sını taşır (temel + her günlük
+kayıt, `load_period_capture`'ın zaten doğruladığı `packet_sha256` değil,
+diskteki dosyanın ham baytlarının hash'i -- `input_files.period_capture`
+alanıyla aynı yöntem). `gaps`/`unsettled`/`revisions` yalnız sayı ve tarih
+(+ aile) taşır, hiçbir değer yok (AGENTS.md: hesaplanan değerleri kaynaktan
+ayır kuralı burada "hiç değer gösterme" ile karşılanır). `day_count`,
+birden çok aile aynı günü etkileyebileceği için (ör. hem `akd` hem
+`custody`) tekil tarih sayısıdır; `entries` tarih×aile ayrıntısını taşır.
+
+Her `scans[]` girdisine, yalnız birleştirme kullanıldığında, o `as_of`
+gününe özel bir `data_status` eklenir:
+
+```json
+"data_status": {
+  "unsettled_families": ["custody"],
+  "revised_families": []
+}
+```
+
+ADR §4 varsayılanı: as_of günü kesinleşmemiş ya da revize edilmişse
+gözlem yalnız işaretlenir, **hiçbir gözlem bastırılmaz veya `condition_met`
+değiştirilmez** -- `data_status` mevcut `observations` listesinin yanına
+eklenir, onun yerine geçmez (`tests/test_scanner.py::DailyRootEndToEndTests
+::test_data_status_marks_revised_and_unsettled_as_of_days_not_suppressed`).
+
+### Lookahead koruması, birleştirilmiş veride de geçerli
+
+`evaluate_rule_for_symbol`, birleştirilmiş `PeriodCapture` için de yalnız
+`truncate_period_capture(composed, as_of)` sonucunu görür -- birleştirme
+mantığı değişmez, tek fark girdinin `compose_period_capture`'dan gelmesidir.
+`composition` alanı (gaps/unsettled/revisions), tanımı gereği as_of'tan
+**sonraki** kayıtları da kullanabilir (ör. bir günün kesinleşmesi, o günden
+sonraki bir kaydın varlığına bakar); bu kasıtlıdır ve yalnız
+`data_status`/`composition` raporlamasını etkiler, `condition_met`'i asla
+etkilemez -- `tests/test_scanner.py::LookaheadTests
+::test_composed_capture_future_data_change_never_affects_as_of_result`
+bunu doğrudan test eder.
+
 ## Komut
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src"
 .\.venv\Scripts\python.exe scripts\scan_observations.py --as-of 2026-09-25 --format json --save
 .\.venv\Scripts\python.exe scripts\scan_observations.py --symbols AKFIS,GARAN --lookback-days 3
+.\.venv\Scripts\python.exe scripts\scan_observations.py --as-of 2026-09-25 `
+  --daily-root data\interim\daily_capture --format json --save
 ```
 
 - `--as-of YYYY-MM-DD`: varsayılan, her hissenin kendi AKD ve fiyat verisinin
@@ -171,6 +265,9 @@ $env:PYTHONPATH = "$PWD\src"
   `data/interim/price_history`. Dosya eşleştirme `analyze_period.py --all`
   mantığıyla aynıdır (`<SYM>/<start>_<end>.json`; fiyat için en dar kapsayan
   dosya seçilir).
+- `--daily-root DİZİN` (varsayılan kapalı): verilirse her sembol
+  temel kayıt + `DİZİN/<SYM>/` altındaki günlük kayıtlarla birleştirilir;
+  bkz. "Günlük birleştirme" bölümü yukarıda.
 - `--format text|json`.
 - `--save`: `data/interim/scanner/<as_of>/observations.json` dosyasına yazar;
   var olan dosyanın üzerine asla yazmaz.

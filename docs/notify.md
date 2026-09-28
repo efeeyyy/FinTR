@@ -2,8 +2,12 @@
 
 Aşama 2'nin ikinci adımı: `scripts/scan_observations.py` tarafından
 kaydedilmiş gözlem dosyasını (`data/interim/scanner/<as_of>/observations.json`,
-şema `fintr_scanner_observations_v1`) okuyup Efe'nin kendi Telegram botuyla,
-yalnız Efe'nin sohbetine düz metin bildirim olarak gönderir.
+şema `fintr_scanner_observations_v1` ya da `_v2` -- `_v2` yalnız tarayıcı
+`--daily-root` ile çalıştırıldıysa, bkz. `docs/scanner.md`) okuyup Efe'nin
+kendi Telegram botuyla, yalnız Efe'nin sohbetine düz metin bildirim olarak
+gönderir. `fintr.notify.format.SUPPORTED_OBSERVATIONS_SCHEMAS` her iki
+şemayı da kabul eder; eski (`_v1`, `--daily-root` öncesi ya da onsuz
+üretilmiş) dosyalar aynen okunmaya devam eder.
 
 ## Bu bir sinyal değildir
 
@@ -11,8 +15,28 @@ Bildirim, tarayıcının ürettiği gözlemin aynen özetidir. `docs/scanner.md`
 sınırlar burada da geçerlidir: **getiri, hedef, puan, sıralama veya al/sat
 üretmez**; her mesajın sonunda tarayıcının sabit Türkçe uyarı metni ve
 `validation_status` yer alır. Mesaj yalnız `condition_met: true` olan
-gözlemleri, tazelik uyarılarını (T+2, eksik veri) ve bastırılan gözlem
-sayılarını (nedenlerine göre) listeler.
+gözlemleri, tazelik uyarılarını (T+2, eksik veri), bastırılan gözlem
+sayılarını (nedenlerine göre) ve -- yalnız `--daily-root` ile üretilmiş
+dosyalarda -- sembol başına tek satırlık bir veri durumu satırı listeler.
+
+### Veri durumu satırı (yalnız `--daily-root` çıktısında)
+
+Gözlem dosyasının `symbols.<SYM>.composition` alanı varsa (tarayıcı
+`--daily-root` ile çalıştırılmışsa), o sembol için şu biçimde tek bir
+satır eklenir:
+
+```
+AKFIS veri durumu: boşluk=1, kesinleşmemiş gün=2, revize gün=1
+```
+
+Üç sayı da `docs/scanner.md`'deki `composition` bloğundan gelir: `boşluk`
+= `composition.gaps.count`, `kesinleşmemiş gün` = `composition.unsettled
+.day_count` (tekil gün sayısı, aile bazlı değil), `revize gün` =
+`composition.revisions.day_count`. Bu satır yalnız sayı taşır; hiçbir
+değer, iddia ya da al/sat ifadesi eklemez -- mevcut yasak kelime testleri
+(`tests/test_notify.py`) bu satırı da kapsar. `composition` alanı yoksa
+(varsayılan, `--daily-root` verilmeden üretilmiş her dosya) bu satır hiç
+eklenmez.
 
 ## 1. BotFather ile bot açma
 

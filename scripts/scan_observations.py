@@ -5,6 +5,15 @@ conditions (``configs/scanner/rules_v1.json``) hold for development symbols
 on one or more as_of server dates. This is an observation notice, not a
 study and not a signal -- it emits no score, rank, return or target. See
 ``docs/scanner.md``. Never reads ``data/interim/studies/``.
+
+``--daily-root`` (default off; ADR §4,
+``docs/research/daily_miniapp_collection_adr.md``) composes each symbol's
+base period capture with its rolling daily captures via
+``fintr.research.compose_period_capture`` before scanning. Omitted, output
+is byte-identical to a run without this option (aside from inherently
+variable fields such as ``generated_at_utc``); given, the document schema
+becomes ``fintr_scanner_observations_v2`` and each symbol carries an
+additional ``composition`` block plus a per-scan ``data_status`` marker.
 """
 
 from __future__ import annotations
@@ -20,14 +29,22 @@ import re
 import sys
 import tempfile
 
-from fintr.data.period_capture import PeriodCaptureError, load_period_capture
+from fintr.data.period_capture import PeriodCapture, PeriodCaptureError, load_period_capture
 from fintr.data.price_history import PriceHistoryCaptureError, load_price_history_capture
 from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
 from fintr.features.price_join import DEFAULT_ADJUSTMENT_RATIO_EPSILON, DEFAULT_RATIO_REGIME_TOLERANCE
+from fintr.research.compose_period_capture import CaptureInput, CompositionError, compose_period_capture
 from fintr.research.engine import tradeable_price_bars
 from fintr.scanner.freshness import build_freshness_report
 from fintr.scanner.observe import evaluate_rule_for_symbol
-from fintr.scanner.report import build_document, freshness_payload, observation_payload, render_text
+from fintr.scanner.report import (
+    RESULT_SCHEMA_V1,
+    RESULT_SCHEMA_V2,
+    build_document,
+    freshness_payload,
+    observation_payload,
+    render_text,
+)
 from fintr.scanner.rules import ScannerRulesError, load_scanner_rules
 
 
@@ -61,6 +78,27 @@ def find_period_capture(root: Path, symbol: str) -> Path | None:
         return None
     candidates.sort()
     return candidates[-1][2]
+
+
+def find_daily_captures(root: Path, symbol: str) -> list[Path]:
+    """Every ``<S>_<E>.json`` rolling capture under ``root/<symbol>/``, ascending
+    by end date then name (ADR §2: ``data/interim/daily_capture/<SYM>/<S>_<E>.json``).
+    Unlike ``find_period_capture`` this never picks a single "latest" file --
+    the composer needs every overlapping window."""
+    symbol_dir = root / symbol
+    if not symbol_dir.is_dir():
+        return []
+    candidates: list[tuple[date, str, Path]] = []
+    for entry in sorted(symbol_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        match = _CAPTURE_NAME_RE.match(entry.name)
+        if not match:
+            continue
+        end = date.fromisoformat(match.group(2))
+        candidates.append((end, entry.name, entry))
+    candidates.sort()
+    return [item[2] for item in candidates]
 
 
 def discover_price_history(root: Path, symbol: str, start: date, end: date) -> Path | None:
@@ -142,6 +180,14 @@ def _parser() -> argparse.ArgumentParser:
                          help=f"default: {DEFAULT_PERIOD_DIR}")
     parser.add_argument("--price-dir", type=Path, default=DEFAULT_PRICE_DIR,
                          help=f"default: {DEFAULT_PRICE_DIR}")
+    parser.add_argument(
+        "--daily-root", type=Path, default=None,
+        help="default: off (disabled). If given, each symbol's period-dir capture is "
+             "composed with every rolling capture under <daily-root>/<symbol>/ via "
+             "fintr.research.compose_period_capture (ADR §4); output schema becomes "
+             "fintr_scanner_observations_v2 and gains a per-symbol composition block "
+             "plus a per-scan data_status marker. See docs/scanner.md.",
+    )
     parser.add_argument("--rules-file", type=Path, default=DEFAULT_RULES_FILE,
                          help=f"default: {DEFAULT_RULES_FILE}")
     parser.add_argument("--adjustment-ratio-epsilon", type=_decimal,
@@ -218,31 +264,121 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    used_daily_root = args.daily_root is not None
     symbols_payload: dict[str, dict] = {}
     for symbol in requested:
-        capture_path = find_period_capture(args.period_dir, symbol)
-        if capture_path is None:
+        base_path = find_period_capture(args.period_dir, symbol)
+        if base_path is None:
             print(f"Scan failed: no period capture found for {symbol} under {args.period_dir}",
                   file=sys.stderr)
             return 1
         try:
-            capture_bytes = capture_path.read_bytes()
-            capture = load_period_capture(capture_path)
+            base_bytes = base_path.read_bytes()
+            base_capture = load_period_capture(base_path)
         except (OSError, PeriodCaptureError) as exc:
             print(f"Scan failed: could not load period capture for {symbol} ({exc})", file=sys.stderr)
             return 1
 
-        price_path = discover_price_history(args.price_dir, capture.symbol, capture.start, capture.end)
-        if price_path is None:
-            print(f"Scan failed: no price history found for {symbol} under {args.price_dir}",
-                  file=sys.stderr)
-            return 1
-        try:
-            price_bytes = price_path.read_bytes()
-            price = load_price_history_capture(price_path)
-        except (OSError, PriceHistoryCaptureError) as exc:
-            print(f"Scan failed: could not load price history for {symbol} ({exc})", file=sys.stderr)
-            return 1
+        composition_payload: dict | None = None
+        if not used_daily_root:
+            capture = base_capture
+            price_path = discover_price_history(args.price_dir, capture.symbol, capture.start, capture.end)
+            if price_path is None:
+                print(f"Scan failed: no price history found for {symbol} under {args.price_dir}",
+                      file=sys.stderr)
+                return 1
+            try:
+                price_bytes = price_path.read_bytes()
+                price = load_price_history_capture(price_path)
+            except (OSError, PriceHistoryCaptureError) as exc:
+                print(f"Scan failed: could not load price history for {symbol} ({exc})", file=sys.stderr)
+                return 1
+        else:
+            daily_paths = find_daily_captures(args.daily_root, symbol)
+            daily_loaded: list[tuple[Path, bytes, PeriodCapture]] = []
+            for daily_path in daily_paths:
+                try:
+                    daily_bytes = daily_path.read_bytes()
+                    daily_capture = load_period_capture(daily_path)
+                except (OSError, PeriodCaptureError) as exc:
+                    print(
+                        f"Scan failed: could not load daily capture for {symbol} "
+                        f"({daily_path}): {exc}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                daily_loaded.append((daily_path, daily_bytes, daily_capture))
+
+            inputs = [CaptureInput(base_capture, kind="base", label=str(base_path))]
+            inputs.extend(
+                CaptureInput(daily_capture, kind="rolling", label=str(daily_path))
+                for daily_path, _, daily_capture in daily_loaded
+            )
+            # Same start/end formula compose_period_capture uses internally
+            # (ADR §3 rule 7); computed ahead of composition only so the
+            # covering price-history file can be discovered before the
+            # tradeable-dates calendar it needs is itself available.
+            composed_start = min(item.capture.start for item in inputs)
+            composed_end = max(item.capture.end for item in inputs)
+
+            price_path = discover_price_history(
+                args.price_dir, base_capture.symbol, composed_start, composed_end,
+            )
+            if price_path is None:
+                print(f"Scan failed: no price history found for {symbol} under {args.price_dir}",
+                      file=sys.stderr)
+                return 1
+            try:
+                price_bytes = price_path.read_bytes()
+                price = load_price_history_capture(price_path)
+            except (OSError, PriceHistoryCaptureError) as exc:
+                print(f"Scan failed: could not load price history for {symbol} ({exc})", file=sys.stderr)
+                return 1
+
+            gap_calendar = tuple(bar.trade_date for bar in tradeable_price_bars(price))
+            try:
+                capture = compose_period_capture(inputs, tradeable_dates=gap_calendar)
+            except CompositionError as exc:
+                print(
+                    f"Scan failed: could not compose base+daily captures for {symbol} ({exc})",
+                    file=sys.stderr,
+                )
+                return 1
+
+            lineage = capture.composition
+            gap_dates = [d.isoformat() for d in lineage.gaps]
+            unsettled_entries = [
+                {"date": entry.date.isoformat(), "family": entry.family} for entry in lineage.unsettled
+            ]
+            revision_entries = [
+                {"date": entry.date.isoformat(), "family": entry.family} for entry in lineage.revisions
+            ]
+            composition_payload = {
+                "composition_sha256": lineage.composition_sha256,
+                "composer_version": lineage.composer_version,
+                "inputs": [
+                    {
+                        "kind": "base", "path": str(base_path),
+                        "sha256": hashlib.sha256(base_bytes).hexdigest(),
+                    },
+                    *(
+                        {
+                            "kind": "rolling", "path": str(daily_path),
+                            "sha256": hashlib.sha256(daily_bytes).hexdigest(),
+                        }
+                        for daily_path, daily_bytes, _ in daily_loaded
+                    ),
+                ],
+                "gaps": {"count": len(gap_dates), "dates": gap_dates},
+                "unsettled": {
+                    "day_count": len({entry["date"] for entry in unsettled_entries}),
+                    "entries": unsettled_entries,
+                },
+                "revisions": {
+                    "day_count": len({entry["date"] for entry in revision_entries}),
+                    "entries": revision_entries,
+                },
+            }
 
         tradeable_dates = tuple(bar.trade_date for bar in tradeable_price_bars(price))
         if args.as_of is not None:
@@ -279,18 +415,32 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 for rule in rules
             ]
-            scans.append({
+            scan_entry = {
                 "as_of": as_of.isoformat(),
                 "freshness": freshness_payload(freshness),
                 "observations": [observation_payload(obs) for obs in observations],
-            })
+            }
+            if composition_payload is not None:
+                # ADR §4: mark, never suppress -- an as_of day that the
+                # composed capture still lists as unsettled or that carries
+                # a provider revision is flagged here, not dropped.
+                lineage = capture.composition
+                scan_entry["data_status"] = {
+                    "unsettled_families": sorted(
+                        {entry.family for entry in lineage.unsettled if entry.date == as_of}
+                    ),
+                    "revised_families": sorted(
+                        {entry.family for entry in lineage.revisions if entry.date == as_of}
+                    ),
+                }
+            scans.append(scan_entry)
 
-        symbols_payload[symbol] = {
+        symbol_entry = {
             "as_of_source": as_of_source,
             "input_files": {
                 "period_capture": {
-                    "path": str(capture_path),
-                    "sha256": hashlib.sha256(capture_bytes).hexdigest(),
+                    "path": str(base_path),
+                    "sha256": hashlib.sha256(base_bytes).hexdigest(),
                 },
                 "price_history": {
                     "path": str(price_path),
@@ -299,10 +449,14 @@ def main(argv: list[str] | None = None) -> int:
             },
             "scans": scans,
         }
+        if composition_payload is not None:
+            symbol_entry["composition"] = composition_payload
+        symbols_payload[symbol] = symbol_entry
 
     document = build_document(
         project_root=PROJECT_ROOT, rules_file=str(args.rules_file), rules_file_sha256=rules_file_sha256,
         split_guard=guards.report(processed_symbols=requested), symbols=symbols_payload,
+        schema=RESULT_SCHEMA_V2 if used_daily_root else RESULT_SCHEMA_V1,
     )
     payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 

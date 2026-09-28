@@ -1,4 +1,4 @@
-"""Pure formatting: ``fintr_scanner_observations_v1`` JSON -> Turkish
+"""Pure formatting: ``fintr_scanner_observations_v1``/``_v2`` JSON -> Turkish
 Telegram message text.
 
 No I/O, no network, no new financial claim -- every line here only
@@ -14,7 +14,15 @@ from __future__ import annotations
 from fintr.scanner.observe import NOTICE_TEXT_TR, VALIDATION_STATUS
 
 
-OBSERVATIONS_SCHEMA = "fintr_scanner_observations_v1"
+OBSERVATIONS_SCHEMA_V1 = "fintr_scanner_observations_v1"
+# v2: emitted only by ``scan_observations.py --daily-root`` (adds a
+# per-symbol ``composition`` block and a per-scan ``data_status`` marker;
+# see docs/scanner.md). Both are accepted here -- an older saved v1 file
+# keeps rendering exactly as before (no composition block means no data
+# status line below), and a v2 file additionally gets one.
+OBSERVATIONS_SCHEMA_V2 = "fintr_scanner_observations_v2"
+OBSERVATIONS_SCHEMA = OBSERVATIONS_SCHEMA_V1  # kept for existing callers of the default schema
+SUPPORTED_OBSERVATIONS_SCHEMAS = (OBSERVATIONS_SCHEMA_V1, OBSERVATIONS_SCHEMA_V2)
 TELEGRAM_MESSAGE_LIMIT = 4096
 
 _SUPPRESSED_REASONS = ("ratio_regime", "custody_scale_jump")
@@ -101,6 +109,27 @@ def _freshness_lines(symbol: str, as_of: str, freshness: dict) -> list[str]:
     return lines
 
 
+def _data_status_line(symbol: str, composition: dict) -> str:
+    """One line, per symbol, of composed-data counts only -- no value, claim
+    or buy/sell wording (ADR §4: ``--daily-root`` output only)."""
+    gaps = composition.get("gaps", {}).get("count", 0)
+    unsettled = composition.get("unsettled", {}).get("day_count", 0)
+    revisions = composition.get("revisions", {}).get("day_count", 0)
+    return (
+        f"{symbol} veri durumu: boşluk={gaps}, kesinleşmemiş gün={unsettled}, "
+        f"revize gün={revisions}"
+    )
+
+
+def _data_status_lines(document: dict) -> list[str]:
+    lines: list[str] = []
+    for symbol in sorted(document.get("symbols", {})):
+        composition = document["symbols"][symbol].get("composition")
+        if composition is not None:
+            lines.append(_data_status_line(symbol, composition))
+    return lines
+
+
 def _suppressed_counts(document: dict) -> dict[str, int]:
     counts = {reason: 0 for reason in _SUPPRESSED_REASONS}
     for block in document.get("symbols", {}).values():
@@ -149,6 +178,11 @@ def render_notification_text(document: dict, rule_texts: dict) -> str:
 
     if freshness_lines:
         lines.extend(sorted(set(freshness_lines)))
+        lines.append("")
+
+    data_status_lines = _data_status_lines(document)
+    if data_status_lines:
+        lines.extend(data_status_lines)
         lines.append("")
 
     lines.append(_suppressed_line(document))
