@@ -508,6 +508,60 @@ varsayılan değildir. Yalnız açık istekle eklenir:
 90 günden uzun history aralığı ayrıca `--allow-large-range` gerektirir. Smoke
 event type dışında raw response yazdırmaz ve persistent storage kullanmaz.
 
+## Günlük artımlı toplama (`collect_daily.py`)
+
+`scripts/collect_daily.py`, yukarıdaki çoklu-sembol dönem yakalama akışını
+(`_collect_multi_symbol`, aynen yeniden kullanılır, yeniden yazılmaz) her
+işlem günü otomatik çalıştırır. Tasarım:
+[daily_miniapp_collection_adr.md](research/daily_miniapp_collection_adr.md);
+gündelik kullanım adımları için
+[live_check_runbook.md](live_check_runbook.md#6-günlük-çalıştırma-collect_dailypy).
+
+- **Kapsam:** yalnız etkin ayrımın (`configs/splits/current.json`)
+  geliştirme hisseleri; holdout ve dışlanan semboller hiç denenmez, plan'da
+  `skipped_holdout`/`skipped_excluded` olarak görünür.
+- **Pencere:** kayan pencere, `E = R - 1 gün`, `S = E - 14 takvim günü`
+  (config'te ayarlanabilir); `R`, sistem saat diliminden bağımsız olarak
+  `Europe/Istanbul`'dan hesaplanır (`_istanbul_today`). Bir önceki
+  çalıştırma kaydından okunan son başarılı pencere sonu varsa pencere
+  geriye doğru genişler (telafi); `E - S` 90 günü aşarsa sembol
+  `blocked_max_span_exceeded` olur ve **hiçbir sembol için** bağlantı
+  açılmadan çalıştırma exit code 2 ile durur (insan kararı gerekir).
+- **Depolama:** kayıt kökü `data/interim/period_analysis` yerine
+  `data/interim/daily_capture` (config'te `capture_root`); paket şeması
+  (`fintr_period_analysis_handoff_v2`) ve paket hash'i **değişmez**.
+  `capture_metadata`'ya yalnız `source`, `permission_provenance` ve `run`
+  blokları eklenir (eski kayıtlarda yok; yükleyici opsiyonel okur).
+- **429:** ilk `handshake_rejected_http_429` görüldüğünde kalan semboller
+  denenmeden `skipped_rate_limited` olur ve **tüm çalıştırma** durur (yalnız
+  o sembol değil); aynı gün otomatik yeniden deneme yoktur.
+- **Fail-closed:** bir sembolün yanıtlarında parse hatası veya bilinmeyen
+  event tipi görülürse o sembolün kaydı **kaydedilmez**
+  (`failed:unknown_event_type` / `failed:handoff_<neden>`); manuel
+  çoklu-sembol akışı (bu sayfanın "Live smoke" bölümü) bu davranışı
+  paylaşmaz, yalnız günlük çalıştırıcı `fail_closed_on_unknown_events=True`
+  ile açar.
+- **K1b (initData yaşı):** `_CachedSecretProvider`, initData'dan yalnız
+  `auth_date`'i bellekte okur; çalıştırma kaydına yalnız yaş kovası
+  (`<1h`, `1–24h`, `>24h`) ve kabul/ret yazılır — değer veya hash asla
+  diske yazılmaz.
+- **Çalıştırma kaydı:** her çalıştırma tek bir
+  `data/interim/daily_capture/_runs/<run_id>.json` dosyasına yazılır (şema
+  `fintr_daily_collection_run_v1`); finansal değer, kurum kodu/adı,
+  `initData` veya URL içermez (`validate_context_contains_no_secrets` ile
+  yazımdan önce denetlenir). Sonraki çalıştırmanın telafi penceresi bu
+  kayıtlardan okunur (`scan_last_success`).
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\collect_daily.py --allow-session-takeover
+```
+
+`--dry-run` (varsayılan davranış değişmedi: initData istemez, bağlanmaz,
+diske yazmaz) planı ve boş bir çalıştırma kaydı iskeletini yazdırır; canlı
+mod aynı `--allow-session-takeover` onayını ister (bölüm "Live smoke"'daki
+gibi).
+
 ## Rate ve retry güvenliği
 
 - Aynı canonical request anahtarı varsayılan 5 saniye içinde deduplicate edilir.

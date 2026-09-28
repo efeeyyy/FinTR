@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ from pathlib import Path
 import re
 import tempfile
 from time import monotonic
+from typing import NamedTuple
 
 from fintr.collector import (
     CollectorConfig,
@@ -563,29 +565,103 @@ def _period_analysis_requests(symbol: str, start: date, end: date):
     )
 
 
+_INIT_DATA_AGE_BUCKET_UNDER_1H = "<1h"
+_INIT_DATA_AGE_BUCKET_1_TO_24H = "1–24h"  # en dash, matches the ADR's own label
+_INIT_DATA_AGE_BUCKET_OVER_24H = ">24h"
+
+
+def _parse_init_data_auth_date(raw: str) -> int | None:
+    """Read only ``auth_date`` (a Unix timestamp) out of initData; nothing else.
+
+    ADR K1b: "initData'dan yalnız auth_date bellekte okunur". Returns
+    ``None`` on any parse failure -- age-bucket reporting is best-effort
+    diagnostics, never a reason to fail a run.
+    """
+    from urllib.parse import parse_qsl
+
+    try:
+        pairs = parse_qsl(raw, strict_parsing=False)
+        for key, value in pairs:
+            if key == "auth_date":
+                return int(value)
+    except (ValueError, TypeError):
+        return None
+    return None
+
+
 class _CachedSecretProvider:
     """Wrap a secret provider so initData is prompted for at most once per run.
 
     The value is kept only in this process's memory for the run's duration
     (never written to disk or logged) and reused across every per-symbol
-    ``WebSocketCollector`` connection.
+    ``WebSocketCollector`` connection. ``age_seconds_bucket`` and
+    ``was_prompted`` support the daily run record's K1b field (ADR §6):
+    only a coarse age bucket and the prompted/accepted booleans are ever
+    readable from the outside -- never the raw value, never ``auth_date``
+    itself, never a hash of either.
     """
 
     def __init__(self, inner) -> None:
         self._inner = inner
         self._cached: str | None = None
+        self._auth_date: int | None = None
 
     def get_init_data(self) -> str:
         if self._cached is None:
             self._cached = self._inner.get_init_data()
+            self._auth_date = _parse_init_data_auth_date(self._cached)
         return self._cached
 
+    @property
+    def was_prompted(self) -> bool:
+        return self._cached is not None
 
-def _multi_symbol_period_target(symbol: str, start: date, end: date) -> Path:
-    return (
-        PROJECT_ROOT / "data" / "interim" / "period_analysis" / symbol
-        / f"{start.isoformat()}_{end.isoformat()}.json"
+    def age_seconds_bucket(self, *, now: datetime | None = None) -> str | None:
+        if self._auth_date is None:
+            return None
+        now = now if now is not None else datetime.now(timezone.utc)
+        age_seconds = (
+            now - datetime.fromtimestamp(self._auth_date, tz=timezone.utc)
+        ).total_seconds()
+        if age_seconds < 0:
+            return None
+        if age_seconds < 3600:
+            return _INIT_DATA_AGE_BUCKET_UNDER_1H
+        if age_seconds < 86400:
+            return _INIT_DATA_AGE_BUCKET_1_TO_24H
+        return _INIT_DATA_AGE_BUCKET_OVER_24H
+
+
+def _multi_symbol_period_target(
+    symbol: str, start: date, end: date, *, capture_root: Path | None = None,
+) -> Path:
+    root = (
+        capture_root if capture_root is not None
+        else PROJECT_ROOT / "data" / "interim" / "period_analysis"
     )
+    return root / symbol / f"{start.isoformat()}_{end.isoformat()}.json"
+
+
+class SymbolCollectionResult(NamedTuple):
+    """One symbol's outcome, shaped for the ``fintr_daily_collection_run_v1``
+    run record (``docs/research/daily_miniapp_collection_adr.md`` "Şemalar").
+    Never contains a financial value, a brokerage name/code, ``initData``, or
+    a URL -- only the same allowlisted categories already safe to print.
+
+    A plain ``NamedTuple``, not ``@dataclass``: this module is loaded by
+    tests via ``importlib.util.spec_from_file_location`` without a
+    ``sys.modules`` entry, and ``@dataclass`` on a module in that state
+    crashes resolving ``from __future__ import annotations`` string
+    annotations (``sys.modules.get(cls.__module__)`` is ``None``).
+    """
+
+    symbol: str
+    status: str
+    frames_used: int
+    capture_path: str | None
+    capture_packet_sha256: str | None
+    diagnostics: tuple[dict[str, object], ...]
+    unknown_event_types_count: int
 
 
 def _normalize_multi_symbol(value: str, parser: argparse.ArgumentParser) -> str:
@@ -696,7 +772,14 @@ def _print_multi_symbol_dry_run(
 
 async def _collect_multi_symbol(
     args: argparse.Namespace, symbols: tuple[str, ...], start: date, end: date, today: date,
-    *, excluded: tuple[str, ...] = (),
+    *,
+    excluded: tuple[str, ...] = (),
+    capture_root: Path | None = None,
+    daily_collection_metadata: Mapping[str, object] | None = None,
+    stop_on_http_status: frozenset[int] = frozenset(),
+    fail_closed_on_unknown_events: bool = False,
+    secret_provider: "_CachedSecretProvider | None" = None,
+    results_sink: list[SymbolCollectionResult] | None = None,
 ) -> int:
     """Capture one period packet per symbol, sequentially, one connection each.
 
@@ -704,6 +787,27 @@ async def _collect_multi_symbol(
     shares a connection between symbols, because akd_data responses carry no
     server-echoed symbol/period: local provenance only binds a response when
     exactly one request of that type was sent on that connection.
+
+    Every new keyword argument defaults to exactly today's manual-tool
+    behavior; the daily collector (``scripts/collect_daily.py``) is the only
+    caller that sets them, reusing this same flow rather than duplicating it
+    (ADR "Uygulama sırası" madde 2):
+
+    - ``capture_root``/``daily_collection_metadata``: threaded through to
+      ``_save_period_analysis_capture``.
+    - ``stop_on_http_status``: when a handshake is rejected with one of
+      these HTTP statuses, the run stops and every remaining symbol is
+      reported ``skipped_rate_limited`` (ADR §6 "429").
+    - ``fail_closed_on_unknown_events``: an unknown event type observed
+      during a symbol's attempts blocks that symbol's capture, regardless
+      of whether the four expected responses still matched (ADR §6
+      "Fail-closed").
+    - ``secret_provider``: lets the caller keep its own
+      ``_CachedSecretProvider`` instance to read back ``initData`` metadata
+      (e.g. K1b's age bucket) after the run.
+    - ``results_sink``: when given, one ``SymbolCollectionResult`` per
+      attempted symbol (not the excluded ones) is appended, for the
+      caller's run record.
     """
     print(
         f"Multi-symbol period mode: {len(symbols)} symbol(s) "
@@ -727,7 +831,9 @@ async def _collect_multi_symbol(
     period_expected_events = {
         REQUEST_RESPONSE_EVENTS[request_type] for request_type in PERIOD_ANALYSIS_REQUEST_TYPES
     }
-    secret_provider = _CachedSecretProvider(InteractiveSecretProvider())
+    if secret_provider is None:
+        secret_provider = _CachedSecretProvider(InteractiveSecretProvider())
+    stop_categories = {f"handshake_rejected_http_{code}" for code in stop_on_http_status}
 
     rows: list[tuple[str, str, int]] = [(symbol, "skipped_excluded", 0) for symbol in excluded]
     consecutive_session_failures = 0
@@ -741,20 +847,30 @@ async def _collect_multi_symbol(
             )
             for symbol in remaining:
                 rows.append((symbol, "skipped_wall_time_guard", 0))
+                if results_sink is not None:
+                    results_sink.append(SymbolCollectionResult(
+                        symbol, "skipped_wall_time_guard", 0, None, None, (), 0,
+                    ))
             remaining = []
             break
 
         symbol = remaining.pop(0)
-        target = _multi_symbol_period_target(symbol, start, end)
+        target = _multi_symbol_period_target(symbol, start, end, capture_root=capture_root)
         if target.exists():
             print(f"{symbol}: skipped_existing")
             rows.append((symbol, "skipped_existing", 0))
+            if results_sink is not None:
+                results_sink.append(SymbolCollectionResult(
+                    symbol, "skipped_existing", 0,
+                    target.relative_to(PROJECT_ROOT).as_posix(), None, (), 0,
+                ))
             if remaining:
                 await asyncio.sleep(args.symbol_pause_seconds)
             continue
 
         requests = _period_analysis_requests(symbol, start, end)
         send_observations: list[SendObservation] = []
+        attempt_diagnostics: list[AttemptDiagnostic] = []
 
         def report_send(observation: SendObservation) -> None:
             send_observations.append(observation)
@@ -764,6 +880,7 @@ async def _collect_multi_symbol(
             )
 
         def report_failure(diagnostic: AttemptDiagnostic) -> None:
+            attempt_diagnostics.append(diagnostic)
             print(
                 f"{symbol} attempt {diagnostic.attempt}: failure at "
                 f"{diagnostic.stage} ({diagnostic.category})"
@@ -788,19 +905,31 @@ async def _collect_multi_symbol(
         any_sent = any(
             observation.status == "sent" for observation in send_observations
         )
-        frames_used = 0
+        frames_used = len(results) if results is not None else 0
+        unknown_event_types_count = (
+            sum(1 for result in results if not result.known) if results is not None else 0
+        )
+        capture_path: str | None = None
+        capture_packet_sha256: str | None = None
         if results is None or not any_sent:
             status = "failed:session_no_send" if not any_sent else "failed:connection_error"
+        elif fail_closed_on_unknown_events and unknown_event_types_count > 0:
+            print(f"{symbol}: unknown event type observed; fail-closed, no capture saved")
+            status = "failed:unknown_event_type"
         else:
-            frames_used = len(results)
             try:
                 packet = _period_analysis_packet(
                     results, requests, send_observations,
                     symbol=symbol, start=start, end=end,
                 )
                 validate_context_contains_no_secrets(_secret_validation_copy(packet))
-                _save_period_analysis_capture(packet)
+                saved_path = _save_period_analysis_capture(
+                    packet, capture_root=capture_root,
+                    daily_collection_metadata=daily_collection_metadata,
+                )
                 status = "saved"
+                capture_path = saved_path.relative_to(PROJECT_ROOT).as_posix()
+                capture_packet_sha256 = _packet_sha256(packet)
             except PeriodAnalysisHandoffError as exc:
                 print(f"{symbol}: period-analysis handoff validation ({exc})")
                 status = f"failed:handoff_{exc.reason}"
@@ -816,6 +945,32 @@ async def _collect_multi_symbol(
 
         print(f"{symbol}: {status}")
         rows.append((symbol, status, frames_used))
+        diagnostics = tuple(
+            {"attempt": d.attempt, "stage": d.stage, "category": d.category}
+            for d in attempt_diagnostics
+        )
+        if results_sink is not None:
+            results_sink.append(SymbolCollectionResult(
+                symbol, status, frames_used, capture_path, capture_packet_sha256,
+                diagnostics, unknown_event_types_count,
+            ))
+
+        rate_limited = stop_categories and any(
+            d.category in stop_categories for d in attempt_diagnostics
+        )
+        if rate_limited:
+            print(
+                f"Stopping: rate limit ({', '.join(sorted(stop_categories))}) observed for "
+                f"{symbol}; {len(remaining)} symbol(s) not attempted (skipped_rate_limited)."
+            )
+            for skipped in remaining:
+                rows.append((skipped, "skipped_rate_limited", 0))
+                if results_sink is not None:
+                    results_sink.append(SymbolCollectionResult(
+                        skipped, "skipped_rate_limited", 0, None, None, (), 0,
+                    ))
+            remaining = []
+            break
 
         consecutive_session_failures = (
             consecutive_session_failures + 1 if status == "failed:session_no_send" else 0
@@ -829,6 +984,10 @@ async def _collect_multi_symbol(
             )
             for skipped in remaining:
                 rows.append((skipped, "skipped_session_failure_stop", 0))
+                if results_sink is not None:
+                    results_sink.append(SymbolCollectionResult(
+                        skipped, "skipped_session_failure_stop", 0, None, None, (), 0,
+                    ))
             remaining = []
             break
 
@@ -837,10 +996,11 @@ async def _collect_multi_symbol(
 
     _print_multi_symbol_table(rows)
 
-    session_failure_stop = any(
-        status == "skipped_session_failure_stop" for _, status, _ in rows
+    stopped = any(
+        status in ("skipped_session_failure_stop", "skipped_rate_limited")
+        for _, status, _ in rows
     )
-    return 1 if session_failure_stop else 0
+    return 1 if stopped else 0
 
 
 async def _run_multi_symbol(
@@ -1310,10 +1470,32 @@ def _canonical_period_json(value) -> str:
     return _compact_json(value)
 
 
+def _packet_sha256(packet: dict[str, object]) -> str:
+    """The same hash ``_period_analysis_capture_payload`` records; exposed so
+    a caller (the daily run record) can report it without re-reading the
+    saved file."""
+    return hashlib.sha256(_canonical_period_json(packet).encode("utf-8")).hexdigest()
+
+
 def _period_analysis_capture_payload(
-    packet: dict[str, object], *, captured_at: datetime | None = None,
+    packet: dict[str, object],
+    *,
+    captured_at: datetime | None = None,
+    daily_collection_metadata: Mapping[str, object] | None = None,
 ) -> str:
-    """Build and secret-check the persisted packet and its minimal provenance."""
+    """Build and secret-check the persisted packet and its minimal provenance.
+
+    ``daily_collection_metadata``, when given, must be a mapping with
+    ``source``, ``permission_provenance`` and ``run`` keys (the blocks
+    ``docs/research/daily_miniapp_collection_adr.md`` "Şemalar" §"Kayan
+    kayıt capture_metadata eki" adds for daily rolling-window captures);
+    it is merged into ``capture_metadata`` after the fields below, so it
+    can override the generic ``permission_provenance`` written here with
+    the more specific daily-collection provenance. It is never part of
+    ``packet`` and therefore never changes ``packet_sha256_canonical_json``.
+    Every other caller (manual single/multi-symbol capture) omits it and
+    keeps today's exact output.
+    """
     period = packet.get("requested_period")
     if not isinstance(period, dict):
         raise PeriodAnalysisCaptureError("invalid_packet_scope")
@@ -1375,20 +1557,45 @@ def _period_analysis_capture_payload(
             },
             "packet": packet,
         }
+        if daily_collection_metadata is not None:
+            if not isinstance(daily_collection_metadata, Mapping) or set(
+                daily_collection_metadata,
+            ) != {"source", "permission_provenance", "run"}:
+                raise TypeError
+            capture["capture_metadata"].update(daily_collection_metadata)
         validate_context_contains_no_secrets(_secret_validation_copy(capture))
         return _compact_json(capture)
     except (KeyError, LivePilotCaptureError, TypeError, ValueError):
         raise PeriodAnalysisCaptureError("safe_export_validation_failed") from None
 
 
-def _save_period_analysis_capture(packet: dict[str, object]) -> Path:
-    """Atomically create one ignored per-symbol capture and refuse overwrite."""
-    payload = (_period_analysis_capture_payload(packet) + "\n").encode("utf-8")
+def _save_period_analysis_capture(
+    packet: dict[str, object],
+    *,
+    capture_root: Path | None = None,
+    daily_collection_metadata: Mapping[str, object] | None = None,
+) -> Path:
+    """Atomically create one ignored per-symbol capture and refuse overwrite.
+
+    ``capture_root`` defaults to today's ``data/interim/period_analysis``;
+    the daily collector passes ``data/interim/daily_capture`` instead (ADR
+    §2 "Depolama"). The saved packet schema and its hash never change with
+    the root. See ``_period_analysis_capture_payload`` for
+    ``daily_collection_metadata``.
+    """
+    payload = (
+        _period_analysis_capture_payload(
+            packet, daily_collection_metadata=daily_collection_metadata,
+        ) + "\n"
+    ).encode("utf-8")
     period = packet["requested_period"]
     symbol = period["symbol"]
     start_date = period["start_date"]
     end_date = period["end_date"]
-    directory = PROJECT_ROOT / "data" / "interim" / "period_analysis"
+    directory = (
+        capture_root if capture_root is not None
+        else PROJECT_ROOT / "data" / "interim" / "period_analysis"
+    )
     if (
         directory.parent.parent.is_symlink()
         or directory.parent.is_symlink()

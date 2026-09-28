@@ -266,13 +266,16 @@ class DryRunCliTests(GuardEnv):
         self.assertIn("skipped_holdout", text)
         self.assertNotIn("wss://", text)
 
-    def test_without_dry_run_exits_with_not_yet_implemented_error(self):
+    def test_without_dry_run_or_takeover_flag_exits_before_any_prompt(self):
+        """PR2: the live path exists now, but still requires explicit
+        --allow-session-takeover before any initData prompt or connection
+        (mirrors live_collector_smoke.py's own gate)."""
         self.make_env()
         err = io.StringIO()
         with self.assertRaises(SystemExit) as ctx, redirect_stderr(err):
             collect_daily.main(["--run-date", "2027-02-10"])
         self.assertEqual(ctx.exception.code, 2)
-        self.assertIn("henüz uygulanmadı", err.getvalue())
+        self.assertIn("--allow-session-takeover", err.getvalue())
 
     def test_blocked_symbol_exits_nonzero_and_names_it(self):
         self.make_env()

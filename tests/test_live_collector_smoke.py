@@ -1315,6 +1315,116 @@ class LiveSmokeTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(smoke.PERIOD_ANALYSIS_CONTEXT_BEGIN, output)
             self.assertEqual(list(project_root.iterdir()), [])
 
+    async def test_save_period_analysis_capture_accepts_custom_capture_root(self):
+        """The daily collector's root (ADR §2) behaves exactly like the default one."""
+        results, requests = await self.period_analysis_case()
+        packet = smoke._period_analysis_packet(
+            results, requests,
+            tuple(
+                SendObservation(1, request_type, "sent")
+                for request_type in smoke.PERIOD_ANALYSIS_REQUEST_TYPES
+            ),
+            symbol="AKFIS", start=date(2026, 9, 14), end=date(2026, 9, 23),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            capture_root = Path(temporary) / "data" / "interim" / "daily_capture"
+            target = smoke._save_period_analysis_capture(packet, capture_root=capture_root)
+            self.assertEqual(
+                target,
+                capture_root / "AKFIS" / "2026-09-14_2026-09-23.json",
+            )
+            self.assertTrue(target.is_file())
+            default_root = Path(temporary) / "data" / "interim" / "period_analysis"
+            self.assertFalse(default_root.exists())
+            with self.assertRaises(smoke.PeriodAnalysisCaptureError) as error:
+                smoke._save_period_analysis_capture(packet, capture_root=capture_root)
+            self.assertEqual(error.exception.reason, "capture_already_exists")
+
+    async def test_daily_collection_metadata_adds_blocks_without_changing_packet_hash(self):
+        """ADR 'Kayan kayıt capture_metadata eki': packet/hash never change."""
+        results, requests = await self.period_analysis_case()
+        packet = smoke._period_analysis_packet(
+            results, requests,
+            tuple(
+                SendObservation(1, request_type, "sent")
+                for request_type in smoke.PERIOD_ANALYSIS_REQUEST_TYPES
+            ),
+            symbol="AKFIS", start=date(2026, 9, 14), end=date(2026, 9, 23),
+        )
+        daily_collection_metadata = {
+            "source": {
+                "source_id": "veri_terminali_miniapp_ws_v1",
+                "protocol_reference": "docs/protocol_inventory.md",
+                "collection_mode": "daily_rolling_window_v1",
+            },
+            "permission_provenance": {
+                "status": "user_asserted_2026-09-28_not_independently_verified",
+                "basis": "Efe beyanı 2026-09-28",
+                "record": "docs/research/continuous_data_sources.md#karar-2026-09-28",
+                "independently_verified": False,
+            },
+            "run": {
+                "run_id": "2026-09-28T05:00:00Z",
+                "run_date_local": "2026-09-28",
+                "window_rule": "E=R-1; S=E-14d; catch-up from last successful end",
+                "config_sha256": "0" * 64,
+                "git_commit": "deadbeef",
+                "git_tree_clean": True,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            plain_root = Path(temporary) / "plain"
+            daily_root = Path(temporary) / "daily"
+            plain_target = smoke._save_period_analysis_capture(
+                packet, capture_root=plain_root,
+            )
+            daily_target = smoke._save_period_analysis_capture(
+                packet, capture_root=daily_root,
+                daily_collection_metadata=daily_collection_metadata,
+            )
+            plain = json.loads(plain_target.read_text(encoding="utf-8"))
+            daily = json.loads(daily_target.read_text(encoding="utf-8"))
+        self.assertEqual(
+            plain["capture_metadata"]["packet_sha256_canonical_json"],
+            daily["capture_metadata"]["packet_sha256_canonical_json"],
+        )
+        self.assertEqual(plain["packet"], daily["packet"])
+        self.assertNotIn("source", plain["capture_metadata"])
+        self.assertNotIn("run", plain["capture_metadata"])
+        self.assertEqual(
+            plain["capture_metadata"]["permission_provenance"]["basis"],
+            "user_asserted_by_explicit_opt_in_cli_invocation",
+        )
+        self.assertEqual(
+            daily["capture_metadata"]["source"], daily_collection_metadata["source"],
+        )
+        self.assertEqual(
+            daily["capture_metadata"]["run"], daily_collection_metadata["run"],
+        )
+        self.assertEqual(
+            daily["capture_metadata"]["permission_provenance"],
+            daily_collection_metadata["permission_provenance"],
+        )
+
+    async def test_daily_collection_metadata_rejects_wrong_shape(self):
+        results, requests = await self.period_analysis_case()
+        packet = smoke._period_analysis_packet(
+            results, requests,
+            tuple(
+                SendObservation(1, request_type, "sent")
+                for request_type in smoke.PERIOD_ANALYSIS_REQUEST_TYPES
+            ),
+            symbol="AKFIS", start=date(2026, 9, 14), end=date(2026, 9, 23),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            capture_root = Path(temporary) / "daily_capture"
+            with self.assertRaises(smoke.PeriodAnalysisCaptureError) as error:
+                smoke._save_period_analysis_capture(
+                    packet, capture_root=capture_root,
+                    daily_collection_metadata={"source": {}},
+                )
+        self.assertEqual(error.exception.reason, "safe_export_validation_failed")
+
     async def test_dry_run_skips_session_takeover_secret_and_connector(self):
         parser = smoke._parser()
         args = parser.parse_args(("--dry-run",))
@@ -1668,9 +1778,11 @@ def _multi_symbol_collector_factory(plan):
     """Build a WebSocketCollector-class side_effect from a per-call plan.
 
     ``plan`` is one dict per expected collector construction, in order:
-    {"sent": (request_type, ...), "results": (...), "raises": bool}.
+    {"sent": (request_type, ...), "results": (...), "raises": bool,
+    "diagnostics": (AttemptDiagnostic, ...)}.
     Each dict drives one fake connection: it feeds the given send
-    observations to the constructor's ``send_observer``, then either raises
+    observations to the constructor's ``send_observer``, feeds any given
+    diagnostics to ``diagnostic_observer``, then either raises
     ``CollectorConnectionError`` or returns ``results``.
     """
     calls: list[MagicMock] = []
@@ -1682,6 +1794,8 @@ def _multi_symbol_collector_factory(plan):
         async def collect(requests, stop_when=None):
             for request_type in spec.get("sent", ()):
                 send_observer(SendObservation(1, request_type, "sent"))
+            for diagnostic in spec.get("diagnostics", ()):
+                diagnostic_observer(diagnostic)
             if spec.get("raises"):
                 raise smoke.CollectorConnectionError("redacted: offline test")
             return spec.get("results", ())
@@ -2059,6 +2173,224 @@ class MultiSymbolPeriodCaptureTests(unittest.IsolatedAsyncioTestCase):
             collector.return_value.collect.assert_awaited_once()
         self.assertEqual(code, 0)
         self.assertIn("Smoke completed: requested response received: brokerages_data", output.getvalue())
+
+    # -- New _collect_multi_symbol keyword arguments (daily executor reuse) --
+
+    async def test_collect_multi_symbol_stops_and_skips_remaining_on_429(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--symbols", "AKFIS,GARAN,THYAO",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context", "--allow-session-takeover",
+        ))
+        factory, calls = _multi_symbol_collector_factory([
+            {
+                "raises": True, "sent": (),
+                "diagnostics": (
+                    AttemptDiagnostic(1, "connect", "handshake_rejected_http_429"),
+                ),
+            },
+        ])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            sink: list = []
+            with (
+                patch.object(smoke, "PROJECT_ROOT", Path(temporary)),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider"),
+                redirect_stdout(output),
+            ):
+                collector.side_effect = factory
+                code = await smoke._collect_multi_symbol(
+                    args, ("AKFIS", "GARAN", "THYAO"),
+                    date(2026, 6, 29), date(2026, 9, 25), date(2026, 9, 25),
+                    stop_on_http_status=frozenset({429}), results_sink=sink,
+                )
+        rendered = output.getvalue()
+        self.assertEqual(code, 1, rendered)
+        self.assertEqual(collector.call_count, 1)
+        self.assertIn("AKFIS: failed:session_no_send", rendered)
+        self.assertIn("skipped_rate_limited", rendered)
+        statuses = {result.symbol: result.status for result in sink}
+        self.assertEqual(statuses, {
+            "AKFIS": "failed:session_no_send",
+            "GARAN": "skipped_rate_limited",
+            "THYAO": "skipped_rate_limited",
+        })
+
+    async def test_collect_multi_symbol_without_stop_status_ignores_429(self):
+        """Every manual-tool caller omits stop_on_http_status: unaffected."""
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--symbols", "AKFIS,GARAN",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context", "--allow-session-takeover",
+        ))
+        factory, calls = _multi_symbol_collector_factory([
+            {
+                "raises": True, "sent": (),
+                "diagnostics": (
+                    AttemptDiagnostic(1, "connect", "handshake_rejected_http_429"),
+                ),
+            },
+            {"raises": True, "sent": ()},
+        ])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with (
+                patch.object(smoke, "PROJECT_ROOT", Path(temporary)),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider"),
+                redirect_stdout(output),
+            ):
+                collector.side_effect = factory
+                code = await smoke._collect_multi_symbol(
+                    args, ("AKFIS", "GARAN"),
+                    date(2026, 6, 29), date(2026, 9, 25), date(2026, 9, 25),
+                )
+        self.assertEqual(code, 0)
+        self.assertEqual(collector.call_count, 2)
+        self.assertNotIn("skipped_rate_limited", output.getvalue())
+
+    async def test_collect_multi_symbol_fails_closed_on_unknown_event_type(self):
+        results, _requests = await LiveSmokeTests.period_analysis_case(self)
+        unknown_result = (await replay_frames(
+            ('{"type":"authorization:abc123"}',)
+        ))[0]
+        results_with_unknown = (*results, unknown_result)
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--symbols", "AKFIS",
+            "--start-date", "2026-09-14", "--end-date", "2026-09-23",
+            "--save-period-analysis-context", "--allow-session-takeover",
+        ))
+        factory, calls = _multi_symbol_collector_factory([
+            {"sent": smoke.PERIOD_ANALYSIS_REQUEST_TYPES, "results": results_with_unknown},
+        ])
+        with tempfile.TemporaryDirectory() as temporary:
+            project_root = Path(temporary)
+            output = io.StringIO()
+            sink: list = []
+            with (
+                patch.object(smoke, "PROJECT_ROOT", project_root),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider"),
+                redirect_stdout(output),
+            ):
+                collector.side_effect = factory
+                code = await smoke._collect_multi_symbol(
+                    args, ("AKFIS",),
+                    date(2026, 9, 14), date(2026, 9, 23), date(2026, 9, 23),
+                    fail_closed_on_unknown_events=True, results_sink=sink,
+                )
+            akfis_dir = project_root / "data" / "interim" / "period_analysis" / "AKFIS"
+        rendered = output.getvalue()
+        self.assertEqual(code, 0, rendered)
+        self.assertIn("AKFIS: failed:unknown_event_type", rendered)
+        self.assertFalse(akfis_dir.exists())
+        self.assertEqual(len(sink), 1)
+        self.assertEqual(sink[0].status, "failed:unknown_event_type")
+        self.assertEqual(sink[0].unknown_event_types_count, 1)
+        self.assertIsNone(sink[0].capture_path)
+        self.assertIsNone(sink[0].capture_packet_sha256)
+
+    async def test_collect_multi_symbol_without_fail_closed_flag_still_saves(self):
+        """Every manual-tool caller omits fail_closed_on_unknown_events: unaffected."""
+        results, _requests = await LiveSmokeTests.period_analysis_case(self)
+        unknown_result = (await replay_frames(
+            ('{"type":"authorization:abc123"}',)
+        ))[0]
+        results_with_unknown = (*results, unknown_result)
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--symbols", "AKFIS",
+            "--start-date", "2026-09-14", "--end-date", "2026-09-23",
+            "--save-period-analysis-context", "--allow-session-takeover",
+        ))
+        factory, calls = _multi_symbol_collector_factory([
+            {"sent": smoke.PERIOD_ANALYSIS_REQUEST_TYPES, "results": results_with_unknown},
+        ])
+        with tempfile.TemporaryDirectory() as temporary:
+            project_root = Path(temporary)
+            with (
+                patch.object(smoke, "PROJECT_ROOT", project_root),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider"),
+                redirect_stdout(io.StringIO()),
+            ):
+                collector.side_effect = factory
+                code = await smoke._collect_multi_symbol(
+                    args, ("AKFIS",),
+                    date(2026, 9, 14), date(2026, 9, 23), date(2026, 9, 23),
+                )
+            target = (
+                project_root / "data" / "interim" / "period_analysis" / "AKFIS"
+                / "2026-09-14_2026-09-23.json"
+            )
+            self.assertEqual(code, 0)
+            self.assertTrue(target.is_file())
+
+    async def test_collect_multi_symbol_results_sink_records_saved_capture(self):
+        results, _requests = await LiveSmokeTests.period_analysis_case(self)
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--symbols", "AKFIS",
+            "--start-date", "2026-09-14", "--end-date", "2026-09-23",
+            "--save-period-analysis-context", "--allow-session-takeover",
+        ))
+        factory, calls = _multi_symbol_collector_factory([
+            {"sent": smoke.PERIOD_ANALYSIS_REQUEST_TYPES, "results": results},
+        ])
+        with tempfile.TemporaryDirectory() as temporary:
+            project_root = Path(temporary)
+            sink: list = []
+            with (
+                patch.object(smoke, "PROJECT_ROOT", project_root),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                patch.object(smoke, "InteractiveSecretProvider"),
+                redirect_stdout(io.StringIO()),
+            ):
+                collector.side_effect = factory
+                code = await smoke._collect_multi_symbol(
+                    args, ("AKFIS",),
+                    date(2026, 9, 14), date(2026, 9, 23), date(2026, 9, 23),
+                    capture_root=project_root / "data" / "interim" / "daily_capture",
+                    results_sink=sink,
+                )
+        self.assertEqual(code, 0)
+        self.assertEqual(len(sink), 1)
+        result = sink[0]
+        self.assertEqual(result.status, "saved")
+        self.assertEqual(
+            result.capture_path,
+            "data/interim/daily_capture/AKFIS/2026-09-14_2026-09-23.json",
+        )
+        self.assertEqual(len(result.capture_packet_sha256), 64)
+        self.assertEqual(result.unknown_event_types_count, 0)
+        self.assertEqual(result.diagnostics, ())
+
+    async def test_collect_multi_symbol_reuses_caller_provided_secret_provider(self):
+        parser = smoke._parser()
+        args = parser.parse_args((
+            "--symbols", "AKFIS",
+            "--start-date", "2026-06-29", "--end-date", "2026-09-25",
+            "--save-period-analysis-context", "--allow-session-takeover",
+        ))
+        factory, calls = _multi_symbol_collector_factory([{"sent": ()}])
+        my_provider = smoke._CachedSecretProvider(smoke.InteractiveSecretProvider())
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch.object(smoke, "PROJECT_ROOT", Path(temporary)),
+                patch.object(smoke, "WebSocketCollector") as collector,
+                redirect_stdout(io.StringIO()),
+            ):
+                collector.side_effect = factory
+                await smoke._collect_multi_symbol(
+                    args, ("AKFIS",),
+                    date(2026, 6, 29), date(2026, 9, 25), date(2026, 9, 25),
+                    secret_provider=my_provider,
+                )
+        self.assertIs(calls[0].secret_provider, my_provider)
 
 
 if __name__ == "__main__":

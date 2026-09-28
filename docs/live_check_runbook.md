@@ -457,3 +457,97 @@ Kontrol frame'lerinin (`welcome`, `hb`) yalnız event adı gösterilir; payload
 şemaları yorumlanmaz. `Attempt N: <type> - <label>` satırındaki `send
 completed`, yalnız yerel `websocket.send()` çağrısının başarıyla döndüğü
 anlamına gelir — sunucunun isteği kabul ettiğinin kanıtı değildir.
+
+## 6. Günlük çalıştırma (`collect_daily.py`)
+
+Eklendi: 2026-09-28 (ADR [daily_miniapp_collection_adr.md](research/daily_miniapp_collection_adr.md)
+"Uygulama sırası" madde 2, Aşama A — K5: Efe'nin Windows makinesi,
+T+1 08:00–09:30 Europe/Istanbul). Bu bölüm 2a'daki tek seferlik AKFIS dönem
+yakalamasının yerine geçmez; ayrı ve **her işlem günü** çalıştırılan bir
+komuttur: yalnız etkin ayrımın 20 geliştirme hissesini, kayan (S=E-14g,
+E=R-1g) bir pencerede toplar. Ayrıntılı tasarım için
+[collector.md](collector.md#günlük-artımlı-toplama-collect_dailypy).
+
+### 6a. Efe'nin her sabah yapacakları
+
+1. **Mini App'i kapatın** (bölüm 1'deki tek-oturum uyarısı burada da geçerli).
+2. **Mini App'i son kez açıp `initData`'yı alın**, sonra tekrar kapatın.
+   `initData` yalnız bir kez sorulacak ve yalnız bellekte tutulacak (diske
+   yazılmaz, loglanmaz).
+3. **Tek komutu çalıştırın:**
+
+   ```powershell
+   $env:PYTHONPATH = "$PWD\src"
+   .\.venv\Scripts\python.exe scripts\collect_daily.py --allow-session-takeover
+   ```
+
+   `--run-date` verilmezse çalıştırma günü R, sistem saat diliminden değil
+   `Europe/Istanbul`'dan hesaplanır (bkz. 6c). Sembol/tarih pencereleri elle
+   verilmez; planlayıcı bunları `configs/collection/daily_miniapp_v1.json`
+   ve önceki çalıştırma kayıtlarındaki son başarılı pencereden (telafi)
+   türetir. Önce her zamanki gibi `--dry-run` ile planı gözden geçirmek
+   isteğe bağlı ama önerilir (initData istemez, bağlanmaz):
+
+   ```powershell
+   .\.venv\Scripts\python.exe scripts\collect_daily.py --dry-run
+   ```
+
+4. **Bitince exit code'a bakın:** `0` = her sembol `saved` veya beklenen bir
+   `skipped_*` durumunda; `1` = en az bir `failed:*` var ya da çalıştırma
+   429/oturum hatası nedeniyle erken durdu (bölüm 6d); `2` = plan bir insan
+   kararı istiyor (ör. bir sembol 90 günlük azami aralığı aşıyor) — bu durumda
+   hiç `initData` istenmedi, bağlantı açılmadı.
+
+### 6b. Beklenen süre
+
+Ölçüm değil, tasarım tahmini: 20 sembol × (config'teki `symbol_pause_seconds`,
+öneri 30 sn) bekleme ≈ 10 dakika, artı her sembolün kendi bağlantı/istek
+süresi. İnsan adımı (1-3) birkaç dakika. Toplam süre bütçesi
+`max_wall_seconds`'ta sınırlıdır (config, öneri 3600 sn); aşılırsa kalan
+semboller o gün için `skipped_wall_time_guard` olur ve ertesi günün telafi
+penceresi eksikleri kapatır.
+
+### 6c. Çalıştırma kaydının okunması
+
+Her çalıştırma tek bir dosyaya yazılır:
+`data/interim/daily_capture/_runs/<run_id>.json` (şema
+`fintr_daily_collection_run_v1`; `run_id` çalıştırma başlangıcının UTC ISO
+zaman damgasıdır, dosya adında `:` yerine `-`). Bu dosya **finansal değer,
+kurum kodu/adı, initData veya URL içermez** — yalnız sabit durum
+kategorileri, hash'ler ve sayaçlar (`validate_context_contains_no_secrets`
+ile denetlenir; testte de aynı kontrol çalışır).
+
+Okurken bakılacak alanlar:
+
+- `symbols[].status`: sembol başına `saved`, `skipped_existing`,
+  `skipped_holdout`, `skipped_excluded`, `skipped_rate_limited`,
+  `skipped_wall_time_guard`, `skipped_session_failure_stop`, veya
+  `failed:<kategori>` (ör. `failed:unknown_event_type`,
+  `failed:handoff_<neden>`). `saved` olan her satırda `capture_path`
+  (`data/interim/daily_capture/<SYM>/<S>_<E>.json`) ve
+  `capture_packet_sha256` doludur.
+- `rate_limit.stopped_on_429` / `http_429_count`: `true` ise ilk 429
+  görüldüğünde kalan semboller denenmeden atlandı (ADR §6); aynı gün elle
+  yeniden deneme yapılmaz, ertesi günün telafi penceresi eksikleri kapatır.
+- `init_data_status.prompted`/`age_seconds_bucket`/`accepted`: initData bir
+  kez sorulup kabul edildi mi (bkz. 6c-K1b); yaş kovası yalnız `<1h`,
+  `1–24h`, `>24h` — asla değer ya da hash yazılmaz. (Şemada `init_data`
+  değil `init_data_status` adı kullanılır: `validate_context_contains_no_secrets`
+  anahtar adı `init_data`'yı tek başına hassas sayar.)
+- `git_commit`/`git_tree_clean`/`config_sha256`: tekrar üretilebilirlik için;
+  `git_tree_clean=false` ise çalıştırma sırasında commit edilmemiş yerel
+  değişiklik vardı.
+- `price_history`: bu sürümde her zaman `{"status": "skipped"}` — günlük
+  fiyat adımı henüz uygulanmadı (ADR "Uygulama sırası" madde 5, açık iş).
+
+### 6d. Hata durumları (özet; ayrıntı bölüm 5)
+
+| Durum | Anlamı | Ne yapın |
+|---|---|---|
+| Exit 2, hiç `initData` istenmedi | Plan bir sembolü 90 günlük azami aralık nedeniyle bloke etti, ya da `--allow-session-takeover` verilmedi. | Mesajı okuyun; ilkinde elle karar gerekir (bu sürümde `--allow-large-range` yoktur), ikincisinde flag'i ekleyin. |
+| Exit 1, `rate_limit.stopped_on_429=true` | İlk 429'da çalıştırma durdu, kalan semboller `skipped_rate_limited`. | Aynı gün yeniden denemeyin; ertesi günün telafi penceresi kapatır. Sık tekrarlanıyorsa `symbol_pause_seconds`'ı artırmayı düşünün. |
+| Exit 1, bir veya daha fazla `failed:*` | Fail-closed: parse hatası veya bilinmeyen event tipi o sembolün kaydını engelledi. | `diagnostics` alanına bakın (yalnız sabit kategori/aşama, ham metin yok); yeni bir şema varyantıysa bölüm 4'teki gibi kaydedin. |
+| `skipped_session_failure_stop` | İki ardışık sembolde bağlantı hiç istek göndermeden kapandı (bölüm 5'teki aynı desen). | Mini App'in gerçekten kapalı olduğunu ve `initData`'nın taze olduğunu doğrulayın. |
+
+Bu bölüm yalnız süreci anlatır; günlük toplamanın finansal sonuçları bu
+belgede veya yönetici sohbetinde tartışılmaz (`docs/STATUS.md`).
