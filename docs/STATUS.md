@@ -47,8 +47,11 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
   bittikten sonra 30 hissenin verisi toplanıp tek sefer (`run_study.py --split test`).
 - Test kapsamı kararı (Efe, 2026-09-28): birincil = 30 hissenin tamamı (zaman dışı test,
   Holm H1+H2), ikincil (E5) = yalnız 10 holdout; pencere sonu 2027-03-31 zorlanır; tek sefer.
-  DECISIONS.md'ye yazımı ve yürütücü (`run_holdout_test.py`, dry-run varsayılan, kilit)
-  bulutta `holdout-test-runner` dalında yapılıyor.
+  Plan `configs/studies/prereg/test_plan_v1.json` (hash DECISIONS.md'de); `run_study.py --split
+  test` artık `--test-plan/--test-scope` ister; yürütücü `scripts/run_holdout_test.py`
+  (dry-run varsayılan, `--execute` + O_EXCL kilit, yalnız pencere içi kayıtlar). Birleşti
+  2026-09-28; train sonuçları değişmedi (yapısal karşılaştırma). Açık soru: holdout fiyat
+  dosyasının pencere öncesi kısmının düzeltme/ratio-regime tespitinde kullanımı (README).
 
 ## Aşama 2: tarama/uyarı
 
@@ -64,8 +67,7 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
 2. AKFIS kurumsal işlemi (probable 1→6) için Efe'den KAP linki, çarpan, işlem ve takas
    tarihleri → `scripts/register_corporate_action.py`.
 3. Finans sohbeti: AKFIS `analysis.md` eski ("fiyat/hacim yok") — o sohbette güncellenir.
-4. Aşama 2 devamı: `holdout-test-runner` dalı gelince yerelde doğrula ve birleştir;
-   sonra bildirim kanalı ve sürekli veri kaynağı (başlanmadı).
+4. Aşama 2 devamı: bildirim kanalı ve sürekli veri kaynağı (başlanmadı).
 5. KAP erişimi tarayıcıda engelli; KAP belgeleri Efe'den gelir (indirme Java serileştirme
    sarmalıdır, 27 bayt başlık atılınca PDF).
 6. Canlı yanıtlarda bilinmeyen olay tipleri görüldü; fiyat/derinlik protokolü keşfedilmedi.
