@@ -1,0 +1,30 @@
+{
+  "schema": "fintr_scanner_rules_v1",
+  "description": "Gözlem tarayıcısının sabit kural kümesi: dondurulmuş H1-H4 spec'lerine referans. Yeni eşik veya parametre eklemez -- koşul yalnız her spec'in condition alanından gelir. Hash'ler docs/prereg/FREEZE.md ile eşleşmelidir; eşleşmezse yükleyici çalışmaz.",
+  "rules": [
+    {
+      "rule_id": "H1",
+      "spec_path": "configs/studies/prereg/h1_close_premium_vs_vwap_proxy_v1.json",
+      "raw_sha256": "15766a1684f595fa7d0a749feca9431879044dc5243f13b39966a4879307174a",
+      "canonical_sha256": "0a93cb8fb6c512db4e727a5188cb720f9ec832d6dbd64ef33215e38ca546e7c2"
+    },
+    {
+      "rule_id": "H2",
+      "spec_path": "configs/studies/prereg/h2_close_discount_vs_vwap_proxy_v1.json",
+      "raw_sha256": "21a620295b27b4cc2cf207f312faa97dd47ad788211a3bf08d58ea37bbf9b8f6",
+      "canonical_sha256": "2adc380cf25f648afba622ed1e0eea5af5f442abecf0b8aa11d9e8d999acf29c"
+    },
+    {
+      "rule_id": "H3",
+      "spec_path": "configs/studies/prereg/h3_concentrated_flow_close_premium_v1.json",
+      "raw_sha256": "f0d4a5978bae62bd2a74e63b6f4d3e1e6683d2b78167baf944a9195f92645762",
+      "canonical_sha256": "5f6e931205a54dc7ffdaea9f9e78744be3c6082cd5bdd5e0821d20aa2258941d"
+    },
+    {
+      "rule_id": "H4",
+      "spec_path": "configs/studies/prereg/h4_concentrated_flow_close_discount_v1.json",
+      "raw_sha256": "05786bb9a75e2ae3a556b24df439502c478da2fa815776f7db4e4ff9b4cb629f",
+      "canonical_sha256": "f66d7c90e7cac34921da76a8d5111091257199ffb09e5b2aafce388538209b4b"
+    }
+  ]
+}
