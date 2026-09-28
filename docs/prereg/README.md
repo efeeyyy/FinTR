@@ -40,14 +40,19 @@ değil, açıkça işaretlenmiş varsayımlardır.
    /geliştirme örneğidir, doğrulayıcı değildir.
 6. **Tek seferlik holdout testi.** Tüm dört hipotez, train sonucundan
    bağımsız olarak (etkiye göre eleme yok) test aşamasına gider:
-   `--split test` (motor tanımı: sinyal tarihleri `>= 2026-10-01`, tüm
-   bildirilen semboller = 20 geliştirme + 10 holdout). **Açık çelişki:**
-   `holdout-guard` dalıyla gelen CLI koruması `--split test`'te yalnız
-   holdout sembollerini kabul eder ve motoru `symbol_scope="holdout_only"`
-   ile çalıştırır (bkz. `docs/study_engine.md`); bu tanımla çelişir ve
-   dondurmadan önce Efe'nin karara bağlaması gerekir (E5 ile birlikte). Test dönemi
-   **ileriye dönük** toplanır: sinyal penceresi `2026-10-01..2027-03-31`,
-   fiyat verisi pencere sonundan en az 25 tradeable bar sonrasına kadar.
+   `--split test --test-plan configs/studies/prereg/test_plan_v1.json
+   --test-scope primary|secondary` (bkz. "Holdout testi çalıştırma" altında).
+   **Karara bağlandı** (`DECISIONS.md` 2026-09-28, E5 ile birlikte):
+   **birincil** test motorun `--split test` tanımını kullanır (sinyal
+   tarihleri `[2026-10-01, 2027-03-31]`, tüm bildirilen 30 sembol = 20
+   geliştirme + 10 holdout, `symbol_scope="declared"`); Holm (m=2, H1+H2)
+   yalnız bu sonuçlara uygulanır. `holdout-guard` dalıyla gelen CLI
+   koruması (yalnız holdout sembolleri, `symbol_scope="holdout_only"`;
+   bkz. `docs/study_engine.md`) **ikincil** (E5, sağlamlık) kapsam olarak
+   korunur ve tek başına doğrulayıcı değildir. Test dönemi **ileriye
+   dönük** toplanır: sinyal penceresi `2026-10-01..2027-03-31`, fiyat
+   verisi pencere sonundan en az 25 tradeable bar sonrasına kadar (E3,
+   motorda zorlanır: `engine.signal_dates_for_split`'in `window_end`'i).
    Test bir kez çalıştırılır; sonuç ne olursa olsun raporlanır.
 
 Holdout sembollerinin `2026-10-01` öncesi verisi hiçbir aşamada kullanılmaz
@@ -135,9 +140,9 @@ test'iyle eklenip ayrı bir ön kayıt sürümünde kullanılmalıdır.
 |---|---|---|---|
 | E1 | Sinyal tarihine göre hareketli blok bootstrap, tek yönlü p ve tek yönlü sınırlar; farklı sinyal tarihi sayısı | Olaylar aynı gün hisseler arası ve 5 günlük örtüşen pencerelerle bağımlıdır; motor v1'in i.i.d. bootstrap'ı varyansı küçümser | **Uygulandı** (`engine.moving_block_bootstrap`; spec `block_bootstrap`; sonuç `block_bootstrap_difference`, `hypothesis_test`) |
 | E2 | Piyasaya göre düzeltilmiş getiri: olay getirisi − aynı giriş/çıkış tarihlerinde kapsamdaki tüm sembollerin eşit ağırlıklı ortalaması | Olaylar zamanda kümelenirse ham fark piyasa zamanlamasını da ölçer | İkincil analiz için önerilir |
-| E3 | Spec'te test penceresi bitişi (`test_end`) ve train fiyat bitişi zorlaması | Motor şimdi yalnız `>= cutoff` uygular; pencere operatör disipliniyle sınırlanıyor | Önerilir (yoksa operatör kontrol listesi) |
+| E3 | Spec'te test penceresi bitişi (`test_end`) ve train fiyat bitişi zorlaması | Motor şimdi yalnız `>= cutoff` uygular; pencere operatör disipliniyle sınırlanıyor | **Uygulandı** (`engine.signal_dates_for_split`'in `window_end`'i; `run_study.py --test-plan` planın `test_end`'ini geçirir, sonuçta `test_window_end`) |
 | E4 | Sembol başına birden çok dönem capture'ını birleştirme: tekrar eden tarihlerde sonraki capture öncelikli (son gün takas revizyonu), ek yerlerindeki boşlukların raporlanması, girdi hash'leri | AKD/takas istek başına ~3 ay; `run_study.py` sembol başına tek capture alıyor | **Uygulandı, dar yorumla** (`research.capture_merge`; aşağıya bkz.) |
-| E5 | Sembol alt kümesi (yalnız holdout) için havuzlanmış istatistik | Motor test split'i geliştirme + holdout'u birlikte havuzlar | İkincil analiz için önerilir |
+| E5 | Sembol alt kümesi (yalnız holdout) için havuzlanmış istatistik | Motor test split'i geliştirme + holdout'u birlikte havuzlar | **Uygulandı** (`run_study.py --split test --test-scope secondary`, `symbol_scope="holdout_only"`; ikincil/sağlamlık, doğrulayıcı değil) |
 | E6 | Olay bazında çıktı (sembol, sinyal, giriş/çıkış, net getiri, düşme nedeni) | Denetlenebilirlik ve E1'in bağımsız doğrulanması | Önerilir |
 
 ### E4 yorumu (belirsizlikler açıkça)
