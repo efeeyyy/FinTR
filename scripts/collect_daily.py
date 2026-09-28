@@ -109,8 +109,8 @@ def _istanbul_today(*, now: datetime | None = None) -> date:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Plan the daily incremental Mini App collection window per symbol. "
-            "This PR supports --dry-run only; see module docstring."
+            "Plan and, unless --dry-run, run the daily incremental Mini App "
+            "collection window per symbol; see module docstring."
         ),
     )
     parser.add_argument(
@@ -178,14 +178,14 @@ def _display_path(path: Path) -> str:
 def build_run_record_skeleton(
     *, run_date: date, config_path: Path, config_hash: str, guards, plan,
 ) -> dict[str, object]:
-    """The ``fintr_daily_collection_run_v1`` skeleton this dry-run prints.
+    """The ``fintr_daily_collection_run_v1`` skeleton ``--dry-run`` prints.
 
     ``status: "planned"`` throughout -- this is what a real run would start
     from, not a completed run record; no financial value, brokerage name,
-    ``initData`` or URL is ever included (matches
-    ``validate_context_contains_no_secrets``'s scope, reused unmodified by
-    the executor PR, not re-implemented here since this PR opens no
-    network and captures nothing).
+    ``initData`` or URL is ever included (checked with the same
+    ``validate_context_contains_no_secrets`` the live path in ``_run_live``
+    runs on its own, completed record). This function itself opens no
+    network and captures nothing -- see ``_run_live`` for the live path.
     """
     run_id = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     symbols = []
