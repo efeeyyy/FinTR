@@ -598,3 +598,57 @@ Sonuç: Her çıktı uygulanan ayrım ve dışlama dosyasını SHA-256'larıyla
 kaydeder. Bozuk/eksik işaretçi, ayrım veya dışlama dosyası tüm korunan
 araçları durdurur (bilinçli). Kurallar ve tablo:
 [`docs/evaluation_protocol.md`](evaluation_protocol.md).
+
+### Tek seferlik holdout testi: test planı, birincil/ikincil kapsam ve kilitli yürütücü
+
+Problem: `docs/prereg/README.md` 6. madde ile `holdout-guard` dalıyla gelen
+CLI koruması çelişiyordu (motor tanımı 30 sembol/`symbol_scope="declared"`
+diyordu, CLI yalnız `symbol_scope="holdout_only"` çalıştırıyordu) --
+dondurmadan önce Efe'nin karara bağlaması gereken açık bir soru olarak
+işaretlenmişti (`docs/prereg/README.md` "Efe'nin kararları" 4). Ayrıca
+Nisan 2027'deki gerçek çalıştırmanın (a) yanlış spec/parametreyle, (b)
+pencere sonrasına taşan sinyal tarihleriyle veya (c) ikinci kez
+çalıştırılmasıyla tekrar edilemez hale gelmemesi gerekiyordu.
+
+Alternatifler: (a) kapsam çelişkisini `run_study.py`'ye sabit kodlamak
+(yalnız `holdout_only` ya da yalnız `declared`) -- README'deki iki tanımdan
+birini sessizce geçersiz kılardı; reddedildi. (b) test penceresi bitişini
+yalnız operatör disipliniyle sınırlamak (E3'ü "önerilir" durumunda
+bırakmak) -- pencere sonrası veri toplanınca sinyal tarihi sınırı elle
+uygulanmak zorunda kalırdı, kolayca unutulur; reddedildi. (c) tek seferlik
+çalıştırmayı yalnız bir "elle bir kez çalıştır" notuyla belgelemek, kilit
+dosyası olmadan -- iki paralel çalıştırma ya da bir hatadan sonra yanlışlıkla
+tekrar çalıştırma riski taşırdı; reddedildi.
+
+Karar: 2026-09-28 (`docs/prereg/DECISIONS.md`), Efe onayı, yönetici önerisi
+üzerine -- **birincil** test motorun `--split test` tanımını kullanır (30
+sembolün tamamı, `symbol_scope="declared"`; Holm yalnız bu sonuçlara
+uygulanır), `holdout-guard`'ın `symbol_scope="holdout_only"` davranışı
+**ikincil** (E5, sağlamlık) kapsam olarak korunur. `scripts/run_study.py
+--split test` artık `--test-plan`/`--test-scope` (`primary`|`secondary`)
+ister; ikinci bir pre-registration artefact'ı olan `fintr_test_plan_v1`
+(`configs/studies/prereg/test_plan_v1.json`, `fintr.research.test_plan`)
+her spec'in dondurma zamanındaki ham ve kanonik hash'ini taşır ve
+`--spec` dosyası byte-byte eşleşmezse çalıştırma reddedilir. Pencere bitişi
+(E3) `engine.signal_dates_for_split`'in yeni `window_end` parametresiyle
+motor seviyesinde zorlanır (train etkilenmez). Tek seferlik yürütme
+`scripts/run_holdout_test.py`'dedir: varsayılan `--dry-run` altı denetimi
+(plan/spec hash, git temiz ağaç, pencere-sonrası dönem kaydı, 25 tradeable
+bar, AKD/fiyat gün kapsaması, kilit/önceki çıktı yokluğu) yalnız raporlar,
+hiçbir dosya yazmaz; `--execute` önce aynı denetimleri geçmeyi şart koşar,
+sonra `data/interim/studies/test/LOCK`'u atomik (`O_EXCL`) oluşturur --
+kilit varsa manifest tamamlanmış olsa bile reddeder, yarım kalmış bir
+manifest'te durup Efe kararı ister, otomatik yeniden denemez. Stdout'a
+yalnız dosya yolu ve durum yazılır; getiri/p-değeri yalnız kaydedilen
+JSON'dadır.
+
+Sonuç: Test planının SHA-256'sı ve spec hash'leri her `--split test`
+sonucunda (`test_plan_path`, `test_plan_sha256`, `test_scope`) ve
+manifest'te kayıtlıdır. `fintr.research.family.evaluate_primary_family`
+`test_scope`'un aile genelinde tutarlı olmasını zorlar ve doğrulayıcı
+kararı yalnız `test_scope="primary"` (ya da alan hiç yoksa) için verir --
+`secondary` hiçbir zaman tek başına doğrulayıcı değildir. Fiyat geçmişinin
+pencere öncesini de içeren tam serisinin düzeltme sınırı/ratio-regime
+tespitinde kullanılmaya devam etmesi (motorun zaten var olan, train'de de
+geçerli davranışı) bilinçli olarak değiştirilmedi ve
+`docs/prereg/README.md`de açık soru olarak işaretlendi; karar Efe'nindir.

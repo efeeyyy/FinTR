@@ -303,6 +303,74 @@ birincil vade, asgari olay/tarih, SESOI) yükleyici tarafından okunur ve
 doğrulanır; bloğun tamamı `spec_sha256`'ya dahildir. `preregistration`
 taşıyan bir spec `block_bootstrap` olmadan yüklenmez.
 
+## Holdout testi çalıştırma
+
+Nisan 2027'de, pencere (`2026-10-01..2027-03-31`) bittikten ve fiyat/AKD
+verisi toplandıktan sonra, tek seferlik test şu sırayla çalıştırılır.
+`scripts/run_holdout_test.py` **varsayılan olarak `--dry-run`'dır**; hiçbir
+dosya yazmaz, yalnız aşağıdaki altı denetimi ✓/✗ olarak listeler. Gerçek
+çalıştırma için açıkça `--execute` gerekir.
+
+1. **Toplama.** Pencereyi kapsayan (`start >= 2026-10-01`) dönem kayıtları
+   `data/interim/period_analysis/<SYM>/` altına, 30 sembolün tamamı için
+   (çok hisseli koleksiyon, `live_collector_smoke.py --symbols ...
+   --allow-large-range --symbol-pause-seconds 30`). Pencere öncesi kayıt
+   çalıştırıcı tarafından kullanılmaz (bkz. aşağıdaki "Holdout sembollerinin
+   2026-10-01 öncesi verisi..." kuralı, artık 30 sembolün hepsi için
+   geçerlidir).
+2. **Fiyat güncelleme.** `data/interim/price_history/<SYM>/` fiyat geçmişi,
+   pencere sonundan (`2027-03-31`) sonra en az 25 tradeable bar içerecek
+   şekilde güncellenir (`scripts/fetch_price_history_batch.py`).
+3. **Dry-run.**
+
+   ```bash
+   PYTHONPATH=src python scripts/run_holdout_test.py \
+     --test-plan configs/studies/prereg/test_plan_v1.json
+   ```
+
+   Altı denetim: (1) plan ve dört spec hash'i doğru; (2) git çalışma ağacı
+   temiz; (3) her sembol için pencere içinde başlayan (`start >=
+   2026-10-01`) en az bir dönem kaydı var (varsa E4 ile birleştirilir); (4)
+   fiyat geçmişinde `2027-03-31` sonrası en az 25 tradeable bar var; (5) AKD
+   sunucu tarihleri pencere içindeki tradeable fiyat günlerini kapsıyor; (6)
+   kilit (`data/interim/studies/test/LOCK`) veya önceki test çıktısı
+   (`manifest.json`) yok. Hepsi ✓ olana kadar tekrar toplama/güncelleme
+   yapılır; dry-run hiçbir zaman dosya yazmaz.
+4. **Execute.**
+
+   ```bash
+   PYTHONPATH=src python scripts/run_holdout_test.py \
+     --test-plan configs/studies/prereg/test_plan_v1.json --execute
+   ```
+
+   Önce tüm dry-run denetimleri yeniden çalıştırılır; biri bile ✗ ise
+   hiçbir şey çalışmaz. Geçerse ilk iş `LOCK` dosyasının atomik (`O_EXCL`)
+   oluşturulmasıdır -- kilit zaten varsa (yarışma durumu dahil) çalıştırma
+   reddedilir, manifest tamamlanmış olsa bile. Sonra dört spec × iki
+   `--test-scope` (`primary`: 30 sembolün tamamı, `symbol_scope="declared"`;
+   `secondary`: yalnız 10 holdout sembolü, `symbol_scope="holdout_only"`,
+   E5) `scripts/run_study.py --split test --save` ile çalıştırılır, ardından
+   `scripts/evaluate_study_family.py` yalnız primary H1+H2 sonuçları
+   üzerinde (Holm, m=2). Son olarak `data/interim/studies/test/manifest.json`
+   yazılır: tüm girdi/çıktı dosya hash'leri, kod commit'i, plan hash'i,
+   zaman damgası, `completed` bayrağı. Yarım kalmış bir çalıştırma (kilit
+   var ama manifest yok veya `completed: false`) bir sonraki çalıştırmayı
+   otomatik tekrar denemez; Efe'nin kararı gerekir. Stdout'a yalnız dosya
+   yolları ve ✓/✗ durumları yazılır -- getiri, p değeri veya karar metni
+   yalnız kaydedilen JSON dosyalarındadır, hiçbir zaman terminale
+   basılmaz.
+
+**Açık soru (araç kendisi karar vermez):** `fintr.features.price_join.
+join_price_history`'nin düzeltme sınırı ve ratio-regime tespiti, sembolün
+**kaydedilmiş fiyat geçmişinin tamamını** okur -- bu, motorun train
+çalıştırmalarında zaten kullandığı, belgelenmiş davranıştır (bkz.
+`docs/study_engine.md` "Custody scale jumps" / "Ratio-regime" bölümleri),
+`run_holdout_test.py`'nin değiştirdiği bir şey değildir. Holdout sembolünün
+fiyat dosyasının test penceresinden önceki kısmı bu tespit için kullanılmaya
+devam edecek mi (train'in yaptığı gibi) yoksa yalnız pencereyle mi
+sınırlanmalı -- Efe henüz karar vermedi; araç mevcut (tam geçmiş) davranışı
+korur ve bu soruyu burada işaretler, kendi başına seçim yapmaz.
+
 ## Kaynaklar
 
 Gerçek, bildiğim yayınlar (künyeler hafızadan; sayfa/sayı ayrıntıları
