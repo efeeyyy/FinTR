@@ -13,6 +13,15 @@ rewritten (``docs/research/daily_miniapp_collection_adr.md`` "Uygulama
 sırası" madde 2) -- and writes one ``fintr_daily_collection_run_v1`` record
 to ``<capture_root>/_runs/<run_id>.json``.
 
+After the Mini App step (whatever its outcome, including a 429 stop -- a
+separate source) a live run fetches Yahoo price history ``start..E`` for the
+same planned development symbols (ADR §5) through
+``scripts/fetch_price_history_batch.run_symbols`` (no-overwrite, continue on
+symbol failure, stop on the first HTTP 429, pacing floor kept) and records
+per-symbol category status, file path, sha256 and bar count in the run
+record's ``price_history`` block -- never a price or volume value.
+``--skip-price`` omits the step; ``--dry-run`` only prints its plan.
+
 See ``docs/research/daily_miniapp_collection_adr.md`` for the full design
 and ``src/fintr/collection/planner.py`` for the pure planning logic.
 """
@@ -22,16 +31,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import importlib.metadata
 import importlib.util
 import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import tempfile
 from time import monotonic
+from typing import NamedTuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fintr.collection.planner import (
@@ -51,6 +63,7 @@ from fintr.evaluation.symbol_guard import ActiveGuards, SymbolGuardError, load_a
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = Path("configs/collection/daily_miniapp_v1.json")
 RUN_RECORDS_SUBDIR = "_runs"
+DEFAULT_PRICE_START_DATE = date(2023, 1, 2)  # ADR §5: 2023-01-02..E
 _ISTANBUL_FIXED_OFFSET_HOURS = 3  # Türkiye: UTC+3 year-round since 2016, no DST.
 
 
@@ -74,6 +87,23 @@ def _load_live_collector_smoke():
 
 
 smoke = _load_live_collector_smoke()
+
+
+def _load_price_batch():
+    """Load ``fetch_price_history_batch.py`` (itself loads ``fetch_price_history``).
+
+    Same plain-``importlib`` pattern as ``_load_live_collector_smoke``.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "fintr_scripts_fetch_price_history_batch",
+        Path(__file__).resolve().parent / "fetch_price_history_batch.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+price_batch = _load_price_batch()
 
 
 def _date(value: str) -> date:
@@ -126,6 +156,10 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--skip-price", action="store_true",
+        help="Skip the Yahoo price-history step (default: run it after the Mini App step).",
+    )
+    parser.add_argument(
         "--config", type=Path, default=DEFAULT_CONFIG_PATH,
         help=f"default: {DEFAULT_CONFIG_PATH}",
     )
@@ -175,8 +209,200 @@ def _display_path(path: Path) -> str:
         return str(path)
 
 
+class PriceSettings(NamedTuple):
+    start: date
+    pacing_seconds: float
+    timeout: float
+
+
+class PricePlan(NamedTuple):
+    """The price step's scope: same planned development symbols, ``start..E``."""
+
+    start: date
+    end: date
+    symbols: tuple[str, ...]
+    skip_reason: str | None
+
+
+def _price_settings(config: DailyCollectionConfig) -> PriceSettings:
+    raw = config.raw.get("price_history", {})
+    if not isinstance(raw, dict):
+        raise CollectionPlannerError("invalid_price_history_config")
+    try:
+        start = (
+            date.fromisoformat(raw["start_date"]) if "start_date" in raw
+            else DEFAULT_PRICE_START_DATE
+        )
+        pacing = float(raw.get("pacing_seconds", price_batch.DEFAULT_PACING_SECONDS))
+    except (TypeError, ValueError):
+        raise CollectionPlannerError("invalid_price_history_config") from None
+    # The batch tool's floor is a floor for every caller; never lowered by config.
+    pacing = max(pacing, price_batch.MIN_PACING_SECONDS)
+    return PriceSettings(start, pacing, price_batch.fetch.DEFAULT_TIMEOUT_SECONDS)
+
+
+def build_price_plan(
+    plan: DailyCollectionPlan, guards: ActiveGuards, settings: PriceSettings,
+    *, skip_price: bool, today: date,
+) -> PricePlan:
+    """Scope = the Mini App plan's ``planned`` symbols (development only).
+
+    Holdout and excluded symbols are never planned; the explicit re-check
+    below is a second guard so a planner change cannot widen the price scope
+    silently (ADR §7).
+    """
+    symbols: list[str] = []
+    for entry in plan.planned():
+        if guards.is_excluded(entry.symbol) or guards.is_holdout(entry.symbol):
+            raise CollectionPlannerError(f"price_scope_violation: {entry.symbol}")
+        symbols.append(entry.symbol)
+    end = plan.window_end
+    skip_reason = None
+    if skip_price:
+        skip_reason = "skip_price_flag"
+    elif not symbols:
+        skip_reason = "no_planned_symbols"
+    elif end > today:
+        skip_reason = "window_end_in_future"
+    elif end < settings.start:
+        skip_reason = "window_end_before_start"
+    return PricePlan(settings.start, end, tuple(sorted(symbols)), skip_reason)
+
+
+def _price_path(symbol: str, price_plan: PricePlan) -> Path:
+    return price_batch.fetch.target_path(symbol, price_plan.start, price_plan.end)
+
+
+def _price_display_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(Path(price_batch.fetch.PROJECT_ROOT).resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _price_window(price_plan: PricePlan) -> dict[str, str]:
+    return {"start": price_plan.start.isoformat(), "end": price_plan.end.isoformat()}
+
+
+def price_plan_block(price_plan: PricePlan) -> dict[str, object]:
+    """``--dry-run`` view: plan only, no network, no file written."""
+    if price_plan.skip_reason is not None:
+        return {"status": "skipped", "reason": price_plan.skip_reason, "files": []}
+    entries = []
+    for symbol in price_plan.symbols:
+        path = _price_path(symbol, price_plan)
+        entries.append({
+            "symbol": symbol,
+            "status": "skipped_exists" if path.exists() else "planned",
+            "file_path": _price_display_path(path),
+        })
+    return {
+        "status": "planned", "window": _price_window(price_plan), "symbols": entries,
+        "files": [],
+    }
+
+
+_PRICE_FIXED_FAILURES = frozenset({
+    "response_too_large", "capture_already_exists", "capture_write_failed",
+    "capture_directory_unavailable",
+})
+_HTTP_STATUS = re.compile(r"\bhttp_(\d{3})\b")
+
+
+def _price_failure_category(reason: str | None) -> str:
+    """Fixed category from a batch failure reason (which may embed URLs/paths)."""
+    text = reason or ""
+    match = _HTTP_STATUS.search(text)
+    if match:
+        return f"http_{match.group(1)}"
+    if "network_error" in text:
+        return "network_error"
+    head = text.split(":", 1)[0].strip()
+    if head in _PRICE_FIXED_FAILURES:
+        return head
+    return "parse_or_unknown"
+
+
+def _price_file_facts(path: Path) -> tuple[str | None, int | None]:
+    """(sha256, bar count) of a price file; a count only, never a value."""
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return None, None
+    digest = hashlib.sha256(payload).hexdigest()
+    try:
+        count = json.loads(payload)["normalized"]["bar_count"]
+    except (ValueError, KeyError, TypeError):
+        return digest, None
+    return digest, count if type(count) is int else None
+
+
+def run_price_step(
+    price_plan: PricePlan, guards: ActiveGuards, settings: PriceSettings,
+) -> dict[str, object]:
+    """Fetch Yahoo history via the batch tool's loop; return the run-record block."""
+    if price_plan.skip_reason is not None:
+        return {"status": "skipped", "reason": price_plan.skip_reason, "files": []}
+
+    print(
+        f"Price history: {price_plan.start.isoformat()}..{price_plan.end.isoformat()} for "
+        f"{len(price_plan.symbols)} symbol(s) (Yahoo chart v8, unofficial secondary source)."
+    )
+    results = price_batch.run_symbols(
+        list(price_plan.symbols), price_plan.start, price_plan.end,
+        exclusions=guards.exclusions, save=True,
+        pacing_seconds=settings.pacing_seconds, timeout=settings.timeout,
+    )
+    entries: list[dict[str, object]] = []
+    files: list[str] = []
+    for result in results:
+        symbol = result["symbol"]
+        path = _price_path(symbol, price_plan)
+        entry: dict[str, object] = {
+            "symbol": symbol, "file_path": None, "sha256": None, "bar_count": None,
+        }
+        status, reason = result["status"], result.get("reason")
+        if status == "saved":
+            entry["status"] = "saved"
+            entry["sha256"], _count = _price_file_facts(path)
+            entry["bar_count"] = result.get("bar_count")
+        elif status == "skipped" and reason == "target_exists":
+            entry["status"] = "skipped_exists"
+            entry["sha256"], entry["bar_count"] = _price_file_facts(path)
+        elif status == "skipped" and reason == "stopped_after_rate_limit":
+            entry["status"] = "skipped_rate_limited"
+        elif status == "failed":
+            entry["status"] = f"failed:{_price_failure_category(reason)}"
+        else:
+            entry["status"] = status  # skipped_excluded
+        if entry["status"] in ("saved", "skipped_exists"):
+            entry["file_path"] = _price_display_path(path)
+            files.append(entry["file_path"])
+        entries.append(entry)
+
+    if any(entry["status"] == "failed:http_429" for entry in entries):
+        status = "stopped_on_429"
+    elif any(str(entry["status"]).startswith("failed") for entry in entries):
+        status = "partial"
+    else:
+        status = "completed"
+
+    print(f"{'Symbol':<10}{'Price status':<30}Bars")
+    for entry in entries:
+        bars = entry["bar_count"] if entry["bar_count"] is not None else "-"
+        print(f"{entry['symbol']:<10}{entry['status']:<30}{bars}")
+    return {
+        "status": status,
+        "source_id": price_batch.fetch.SOURCE_ID,
+        "permission_status": price_batch.fetch.PERMISSION_STATUS,
+        "window": _price_window(price_plan),
+        "symbols": entries,
+        "files": files,
+    }
+
+
 def build_run_record_skeleton(
-    *, run_date: date, config_path: Path, config_hash: str, guards, plan,
+    *, run_date: date, config_path: Path, config_hash: str, guards, plan, price_plan,
 ) -> dict[str, object]:
     """The ``fintr_daily_collection_run_v1`` skeleton ``--dry-run`` prints.
 
@@ -230,7 +456,7 @@ def build_run_record_skeleton(
         "init_data_status": {"prompted": False, "age_seconds_bucket": None},
         "symbols": symbols,
         "rate_limit": {"http_429_count": 0, "stopped_on_429": False},
-        "price_history": {"status": "planned", "files": []},
+        "price_history": price_plan_block(price_plan),
         "notes": "dry-run plan only; no network opened, no initData prompted",
         "status": "planned",
     }
@@ -252,6 +478,15 @@ def _print_text(plan, run_record: dict[str, object]) -> None:
                 + (" (catch_up)" if entry.window.catch_up else "")
             )
         print(f"{entry.symbol:<10}{entry.role:<14}{entry.status:<28}{window_text}")
+    print("")
+    price = run_record["price_history"]
+    if price["status"] == "skipped":
+        print(f"Price history: skipped ({price['reason']}).")
+    else:
+        window = price["window"]
+        print(f"Price history plan: {window['start']}..{window['end']} (no network in dry-run):")
+        for entry in price["symbols"]:
+            print(f"  {entry['symbol']:<10}{entry['status']:<16}{entry['file_path']}")
     print("")
     print("Run record skeleton (fintr_daily_collection_run_v1, status=planned):")
     print(json.dumps(run_record, ensure_ascii=False, indent=2))
@@ -308,6 +543,8 @@ async def _run_live(
     plan: DailyCollectionPlan,
     run_date: date,
     run_records_dir: Path,
+    price_plan: PricePlan,
+    price_settings: PriceSettings,
 ) -> int:
     """The live executor (ADR "Uygulama sırası" madde 2): one run record.
 
@@ -403,6 +640,10 @@ async def _run_live(
                     symbol, skip_status, 0, None, None, (), 0,
                 ))
 
+    # The price step is a separate source (Yahoo): it runs even when the
+    # Mini App step stopped on a 429 or a session failure.
+    price_history = run_price_step(price_plan, guards, price_settings)
+
     sink_by_symbol = {result.symbol: result for result in results_sink}
     symbols_out: list[dict[str, object]] = []
     for entry in plan.symbols:
@@ -472,10 +713,11 @@ async def _run_live(
         },
         "symbols": symbols_out,
         "rate_limit": {"http_429_count": http_429_count, "stopped_on_429": stopped_on_429},
-        "price_history": {"status": "skipped", "files": []},
+        "price_history": price_history,
         "notes": (
-            "period-analysis capture only; price history not yet implemented "
-            "(ADR 'Uygulama sırası' madde 5); only fixed categories, no financial value"
+            "period-analysis capture, then Yahoo price history (unofficial secondary "
+            "source; separate permission status) unless skipped; only fixed "
+            "categories, file paths, hashes and counts, no financial value"
         ),
         "status": "completed",
     }
@@ -493,7 +735,8 @@ async def _run_live(
     saved = sum(1 for entry in symbols_out if entry["status"] == "saved")
     failed = sum(1 for entry in symbols_out if str(entry["status"]).startswith("failed"))
     print(f"Symbols: {saved} saved, {failed} failed, {len(symbols_out)} total.")
-    return 1 if stopped_reason is not None or failed > 0 else 0
+    price_failed = price_history["status"] in ("partial", "stopped_on_429")
+    return 1 if stopped_reason is not None or failed > 0 or price_failed else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -531,10 +774,21 @@ def main(argv: list[str] | None = None) -> int:
         max_span_days=config.max_span_days,
     )
 
+    try:
+        price_settings = _price_settings(config)
+        price_plan = build_price_plan(
+            plan, guards, price_settings, skip_price=args.skip_price,
+            today=price_batch.fetch._today(),
+        )
+    except CollectionPlannerError as exc:
+        print(f"Plan failed: {exc}", file=sys.stderr)
+        return 1
+
     if args.dry_run:
         run_record = build_run_record_skeleton(
             run_date=run_date, config_path=args.config,
             config_hash=config_sha256(args.config), guards=guards, plan=plan,
+            price_plan=price_plan,
         )
         if args.format == "json":
             print(json.dumps(run_record, ensure_ascii=False, indent=2))
@@ -556,7 +810,7 @@ def main(argv: list[str] | None = None) -> int:
 
     return asyncio.run(_run_live(
         args, config=config, guards=guards, plan=plan, run_date=run_date,
-        run_records_dir=run_records_dir,
+        run_records_dir=run_records_dir, price_plan=price_plan, price_settings=price_settings,
     ))
 
 

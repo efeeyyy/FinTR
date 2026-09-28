@@ -125,6 +125,9 @@ class LiveRunCliTests(guard_fixtures.GuardEnvMixin, unittest.TestCase):
         )
 
     def _run(self, root, argv, plan, *, init_data="query_id=1&auth_date=100&hash=abc"):
+        # These tests cover the Mini App step; the price step (own tests in
+        # test_daily_price_step.py) must never reach the network from here.
+        argv = [*argv, "--skip-price"]
         factory, calls = _collector_factory(plan)
         out, err = io.StringIO(), io.StringIO()
         with (
