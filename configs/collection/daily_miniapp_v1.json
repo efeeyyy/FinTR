@@ -1,0 +1,28 @@
+{
+  "schema": "fintr_daily_collection_config_v1",
+  "source_id": "veri_terminali_miniapp_ws_v1",
+  "symbol_scope": "split_development_only",
+  "split_config": "configs/splits/current.json",
+  "exclusions_config": "configs/exclusions/symbols.json",
+  "window": {
+    "end_offset_days": 1,
+    "lookback_calendar_days": 14,
+    "max_span_days": 90
+  },
+  "pacing": {
+    "symbol_pause_seconds": 30,
+    "max_wall_seconds": 3600
+  },
+  "collector": {
+    "max_frames": 16,
+    "timeout_seconds": 15,
+    "max_message_mib": 4
+  },
+  "stop_on_http_status": [429],
+  "capture_root": "data/interim/daily_capture",
+  "permission_status": "user_asserted_2026-09-28_not_independently_verified",
+  "price_history": {
+    "start_date": "2023-01-02",
+    "pacing_seconds": 1.5
+  }
+}
