@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import tempfile
 from time import monotonic
+from typing import NamedTuple
 
 from fintr.collector import (
     CollectorConfig,
@@ -582,11 +583,36 @@ class _CachedSecretProvider:
         return self._cached
 
 
-def _multi_symbol_period_target(symbol: str, start: date, end: date) -> Path:
-    return (
-        PROJECT_ROOT / "data" / "interim" / "period_analysis" / symbol
-        / f"{start.isoformat()}_{end.isoformat()}.json"
+def _multi_symbol_period_target(
+    symbol: str, start: date, end: date, *, capture_root: Path | None = None,
+) -> Path:
+    root = (
+        capture_root if capture_root is not None
+        else PROJECT_ROOT / "data" / "interim" / "period_analysis"
     )
+    return root / symbol / f"{start.isoformat()}_{end.isoformat()}.json"
+
+
+class SymbolCollectionResult(NamedTuple):
+    """One symbol's outcome, shaped for the ``fintr_daily_collection_run_v1``
+    run record (``docs/research/daily_miniapp_collection_adr.md`` "Şemalar").
+    Never contains a financial value, a brokerage name/code, ``initData``, or
+    a URL -- only the same allowlisted categories already safe to print.
+
+    A plain ``NamedTuple``, not ``@dataclass``: this module is loaded by
+    tests via ``importlib.util.spec_from_file_location`` without a
+    ``sys.modules`` entry, and ``@dataclass`` on a module in that state
+    crashes resolving ``from __future__ import annotations`` string
+    annotations (``sys.modules.get(cls.__module__)`` is ``None``).
+    """
+
+    symbol: str
+    status: str
+    frames_used: int
+    capture_path: str | None
+    capture_packet_sha256: str | None
+    diagnostics: tuple[dict[str, object], ...]
+    unknown_event_types_count: int
 
 
 def _normalize_multi_symbol(value: str, parser: argparse.ArgumentParser) -> str:
@@ -697,7 +723,14 @@ def _print_multi_symbol_dry_run(
 
 async def _collect_multi_symbol(
     args: argparse.Namespace, symbols: tuple[str, ...], start: date, end: date, today: date,
-    *, excluded: tuple[str, ...] = (),
+    *,
+    excluded: tuple[str, ...] = (),
+    capture_root: Path | None = None,
+    daily_collection_metadata: Mapping[str, object] | None = None,
+    stop_on_http_status: frozenset[int] = frozenset(),
+    fail_closed_on_unknown_events: bool = False,
+    secret_provider: "_CachedSecretProvider | None" = None,
+    results_sink: list[SymbolCollectionResult] | None = None,
 ) -> int:
     """Capture one period packet per symbol, sequentially, one connection each.
 
@@ -705,6 +738,27 @@ async def _collect_multi_symbol(
     shares a connection between symbols, because akd_data responses carry no
     server-echoed symbol/period: local provenance only binds a response when
     exactly one request of that type was sent on that connection.
+
+    Every new keyword argument defaults to exactly today's manual-tool
+    behavior; the daily collector (``scripts/collect_daily.py``) is the only
+    caller that sets them, reusing this same flow rather than duplicating it
+    (ADR "Uygulama sırası" madde 2):
+
+    - ``capture_root``/``daily_collection_metadata``: threaded through to
+      ``_save_period_analysis_capture``.
+    - ``stop_on_http_status``: when a handshake is rejected with one of
+      these HTTP statuses, the run stops and every remaining symbol is
+      reported ``skipped_rate_limited`` (ADR §6 "429").
+    - ``fail_closed_on_unknown_events``: an unknown event type observed
+      during a symbol's attempts blocks that symbol's capture, regardless
+      of whether the four expected responses still matched (ADR §6
+      "Fail-closed").
+    - ``secret_provider``: lets the caller keep its own
+      ``_CachedSecretProvider`` instance to read back ``initData`` metadata
+      (e.g. K1b's age bucket) after the run.
+    - ``results_sink``: when given, one ``SymbolCollectionResult`` per
+      attempted symbol (not the excluded ones) is appended, for the
+      caller's run record.
     """
     print(
         f"Multi-symbol period mode: {len(symbols)} symbol(s) "
@@ -728,7 +782,9 @@ async def _collect_multi_symbol(
     period_expected_events = {
         REQUEST_RESPONSE_EVENTS[request_type] for request_type in PERIOD_ANALYSIS_REQUEST_TYPES
     }
-    secret_provider = _CachedSecretProvider(InteractiveSecretProvider())
+    if secret_provider is None:
+        secret_provider = _CachedSecretProvider(InteractiveSecretProvider())
+    stop_categories = {f"handshake_rejected_http_{code}" for code in stop_on_http_status}
 
     rows: list[tuple[str, str, int]] = [(symbol, "skipped_excluded", 0) for symbol in excluded]
     consecutive_session_failures = 0
@@ -742,20 +798,30 @@ async def _collect_multi_symbol(
             )
             for symbol in remaining:
                 rows.append((symbol, "skipped_wall_time_guard", 0))
+                if results_sink is not None:
+                    results_sink.append(SymbolCollectionResult(
+                        symbol, "skipped_wall_time_guard", 0, None, None, (), 0,
+                    ))
             remaining = []
             break
 
         symbol = remaining.pop(0)
-        target = _multi_symbol_period_target(symbol, start, end)
+        target = _multi_symbol_period_target(symbol, start, end, capture_root=capture_root)
         if target.exists():
             print(f"{symbol}: skipped_existing")
             rows.append((symbol, "skipped_existing", 0))
+            if results_sink is not None:
+                results_sink.append(SymbolCollectionResult(
+                    symbol, "skipped_existing", 0,
+                    target.relative_to(PROJECT_ROOT).as_posix(), None, (), 0,
+                ))
             if remaining:
                 await asyncio.sleep(args.symbol_pause_seconds)
             continue
 
         requests = _period_analysis_requests(symbol, start, end)
         send_observations: list[SendObservation] = []
+        attempt_diagnostics: list[AttemptDiagnostic] = []
 
         def report_send(observation: SendObservation) -> None:
             send_observations.append(observation)
@@ -765,6 +831,7 @@ async def _collect_multi_symbol(
             )
 
         def report_failure(diagnostic: AttemptDiagnostic) -> None:
+            attempt_diagnostics.append(diagnostic)
             print(
                 f"{symbol} attempt {diagnostic.attempt}: failure at "
                 f"{diagnostic.stage} ({diagnostic.category})"
@@ -789,19 +856,31 @@ async def _collect_multi_symbol(
         any_sent = any(
             observation.status == "sent" for observation in send_observations
         )
-        frames_used = 0
+        frames_used = len(results) if results is not None else 0
+        unknown_event_types_count = (
+            sum(1 for result in results if not result.known) if results is not None else 0
+        )
+        capture_path: str | None = None
+        capture_packet_sha256: str | None = None
         if results is None or not any_sent:
             status = "failed:session_no_send" if not any_sent else "failed:connection_error"
+        elif fail_closed_on_unknown_events and unknown_event_types_count > 0:
+            print(f"{symbol}: unknown event type observed; fail-closed, no capture saved")
+            status = "failed:unknown_event_type"
         else:
-            frames_used = len(results)
             try:
                 packet = _period_analysis_packet(
                     results, requests, send_observations,
                     symbol=symbol, start=start, end=end,
                 )
                 validate_context_contains_no_secrets(_secret_validation_copy(packet))
-                _save_period_analysis_capture(packet)
+                saved_path = _save_period_analysis_capture(
+                    packet, capture_root=capture_root,
+                    daily_collection_metadata=daily_collection_metadata,
+                )
                 status = "saved"
+                capture_path = saved_path.relative_to(PROJECT_ROOT).as_posix()
+                capture_packet_sha256 = _packet_sha256(packet)
             except PeriodAnalysisHandoffError as exc:
                 print(f"{symbol}: period-analysis handoff validation ({exc})")
                 status = f"failed:handoff_{exc.reason}"
@@ -817,6 +896,32 @@ async def _collect_multi_symbol(
 
         print(f"{symbol}: {status}")
         rows.append((symbol, status, frames_used))
+        diagnostics = tuple(
+            {"attempt": d.attempt, "stage": d.stage, "category": d.category}
+            for d in attempt_diagnostics
+        )
+        if results_sink is not None:
+            results_sink.append(SymbolCollectionResult(
+                symbol, status, frames_used, capture_path, capture_packet_sha256,
+                diagnostics, unknown_event_types_count,
+            ))
+
+        rate_limited = stop_categories and any(
+            d.category in stop_categories for d in attempt_diagnostics
+        )
+        if rate_limited:
+            print(
+                f"Stopping: rate limit ({', '.join(sorted(stop_categories))}) observed for "
+                f"{symbol}; {len(remaining)} symbol(s) not attempted (skipped_rate_limited)."
+            )
+            for skipped in remaining:
+                rows.append((skipped, "skipped_rate_limited", 0))
+                if results_sink is not None:
+                    results_sink.append(SymbolCollectionResult(
+                        skipped, "skipped_rate_limited", 0, None, None, (), 0,
+                    ))
+            remaining = []
+            break
 
         consecutive_session_failures = (
             consecutive_session_failures + 1 if status == "failed:session_no_send" else 0
@@ -830,6 +935,10 @@ async def _collect_multi_symbol(
             )
             for skipped in remaining:
                 rows.append((skipped, "skipped_session_failure_stop", 0))
+                if results_sink is not None:
+                    results_sink.append(SymbolCollectionResult(
+                        skipped, "skipped_session_failure_stop", 0, None, None, (), 0,
+                    ))
             remaining = []
             break
 
@@ -838,10 +947,11 @@ async def _collect_multi_symbol(
 
     _print_multi_symbol_table(rows)
 
-    session_failure_stop = any(
-        status == "skipped_session_failure_stop" for _, status, _ in rows
+    stopped = any(
+        status in ("skipped_session_failure_stop", "skipped_rate_limited")
+        for _, status, _ in rows
     )
-    return 1 if session_failure_stop else 0
+    return 1 if stopped else 0
 
 
 async def _run_multi_symbol(
@@ -1309,6 +1419,13 @@ def _canonical_period_json(value) -> str:
     if isinstance(value, (list, tuple)):
         return "[" + ",".join(_canonical_period_json(item) for item in value) + "]"
     return _compact_json(value)
+
+
+def _packet_sha256(packet: dict[str, object]) -> str:
+    """The same hash ``_period_analysis_capture_payload`` records; exposed so
+    a caller (the daily run record) can report it without re-reading the
+    saved file."""
+    return hashlib.sha256(_canonical_period_json(packet).encode("utf-8")).hexdigest()
 
 
 def _period_analysis_capture_payload(
