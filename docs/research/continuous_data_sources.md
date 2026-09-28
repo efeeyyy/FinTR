@@ -310,7 +310,9 @@ Yalnız tasarım; kod yazılmadı. Uygulamadan önce AGENTS.md gereği kısa bir
 (`source_id = "veri_terminali_miniapp_ws_v1"`); mevcut `WebSocketCollector`,
 request builder'ları ve `Live*Response` parser'larını sarmalar, yeni protokol
 yazmaz. Arayüz, ileride yedek kaynak gerekirse ikinci adaptörün aynı günlük kayda
-yazabilmesi için kaynak-nötr tutulur. Doğrulama planında "yeni kaynak" ifadeleri,
+yazabilmesi için kaynak-nötr tutulur. Günlük toplamanın somut tasarımı (kayan pencere,
+birleştirici, çalıştırma kaydı) ayrı ADR taslağındadır:
+[daily_miniapp_collection_adr.md](daily_miniapp_collection_adr.md). Doğrulama planında "yeni kaynak" ifadeleri,
 Mini App'in **günlük artımlı kayıtları** olarak okunmalıdır (aşağıdaki D0).
 
 ### Kaynak adaptörü arayüzü
