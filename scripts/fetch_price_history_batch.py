@@ -182,6 +182,44 @@ def _is_rate_limited(reason: str | None) -> bool:
     return reason is not None and "http_429" in reason
 
 
+def run_symbols(
+    symbols: list[str], start: date, end: date, *, exclusions: Any, save: bool,
+    pacing_seconds: float, timeout: float,
+) -> list[dict[str, Any]]:
+    """Per-symbol loop shared with ``scripts/collect_daily.py``'s price step.
+
+    Excluded symbols are never requested; a symbol whose target file exists
+    is skipped (no overwrite); a symbol failure does not abort the rest; the
+    first HTTP 429 stops every remaining request (those symbols get status
+    ``skipped`` / reason ``stopped_after_rate_limit``); consecutive network
+    requests are separated by ``pacing_seconds`` (callers enforce the floor).
+    """
+    results: list[dict[str, Any]] = []
+    rate_limited = False
+    previous_made_request = False
+    for symbol in symbols:
+        if exclusions.is_excluded(symbol):
+            results.append({"symbol": symbol, "status": "skipped_excluded", "reason": "excluded_symbol"})
+            continue
+        if rate_limited:
+            results.append({"symbol": symbol, "status": "skipped", "reason": "stopped_after_rate_limit"})
+            continue
+
+        path = fetch.target_path(symbol, start, end)
+        will_request = save and not path.exists()
+        if will_request and previous_made_request:
+            time.sleep(pacing_seconds)
+
+        result = _process_symbol(symbol, start, end, timeout=timeout, save=save)
+        previous_made_request = will_request
+        results.append(result)
+
+        if result["status"] == "failed" and _is_rate_limited(result.get("reason")):
+            rate_limited = True
+            print(f"Rate limit detected on {symbol}: stopping remaining requests (no hammering).")
+    return results
+
+
 def _print_table(results: list[dict[str, Any]]) -> None:
     header = f"{'SYMBOL':<10}{'STATUS':<18}{'BARS':>6}  {'DATE_SOURCE':<22}{'ZERO_VOL_FLAT':>14}  REASON"
     print(header)
@@ -223,31 +261,10 @@ def main(argv: list[str] | None = None) -> int:
         f"excluded: {', '.join(excl['excluded_symbols']) or 'none'})"
     )
 
-    results: list[dict[str, Any]] = []
-    rate_limited = False
-    previous_made_request = False
-    for symbol in symbols:
-        if exclusions.is_excluded(symbol):
-            results.append({"symbol": symbol, "status": "skipped_excluded", "reason": "excluded_symbol"})
-            continue
-        if rate_limited:
-            results.append({"symbol": symbol, "status": "skipped", "reason": "stopped_after_rate_limit"})
-            continue
-
-        path = fetch.target_path(symbol, args.start_date, args.end_date)
-        will_request = args.save and not path.exists()
-        if will_request and previous_made_request:
-            time.sleep(args.pacing_seconds)
-
-        result = _process_symbol(
-            symbol, args.start_date, args.end_date, timeout=args.timeout, save=args.save,
-        )
-        previous_made_request = will_request
-        results.append(result)
-
-        if result["status"] == "failed" and _is_rate_limited(result.get("reason")):
-            rate_limited = True
-            print(f"Rate limit detected on {symbol}: stopping remaining requests (no hammering).")
+    results = run_symbols(
+        symbols, args.start_date, args.end_date, exclusions=exclusions,
+        save=args.save, pacing_seconds=args.pacing_seconds, timeout=args.timeout,
+    )
 
     _print_table(results)
     any_failed = any(result["status"] == "failed" for result in results)
