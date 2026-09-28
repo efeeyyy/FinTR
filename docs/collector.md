@@ -558,9 +558,64 @@ $env:PYTHONPATH = "$PWD\src"
 ```
 
 `--dry-run` (varsayılan davranış değişmedi: initData istemez, bağlanmaz,
-diske yazmaz) planı ve boş bir çalıştırma kaydı iskeletini yazdırır; canlı
+diske yazmaz) planı (fiyat adımı planı dahil) ve boş bir çalıştırma kaydı iskeletini yazdırır; canlı
 mod aynı `--allow-session-takeover` onayını ister (bölüm "Live smoke"'daki
 gibi).
+
+### Günlük fiyat adımı
+
+Mini App adımından sonra (sonucu ne olursa olsun; 429 ile durmuş olsa bile,
+çünkü ayrı bir kaynak) canlı çalıştırma, planlanan **aynı geliştirme
+hisseleri** için Yahoo fiyat geçmişini `2023-01-02..E` aralığıyla çeker
+(`E` = günlük çalıştırmanın hedef işlem günü, planlayıcının pencere sonu;
+başlangıç config'te `price_history.start_date`). Sembol başına mantık
+`scripts/fetch_price_history_batch.py` içindeki `run_symbols` döngüsüdür
+(kopyalanmadı): hedef dosya varsa `skipped_exists` (asla üzerine yazılmaz),
+sembol hatasında devam, ilk Yahoo HTTP 429'unda kalan fiyat istekleri durur
+(`skipped_rate_limited`), istekler arası bekleme tabanı (1,5 sn) config ile
+düşürülemez. Holdout, dışlanan semboller ve DSTKF hiçbir zaman istenmez.
+
+- `--skip-price`: fiyat adımını atlar (varsayılan: çalıştırır). `--dry-run`
+  fiyat için yalnız planı gösterir (ağ yok, dosya yok).
+- Çalıştırma kaydında `price_history`: `status` (`completed` / `partial` /
+  `stopped_on_429` / `skipped`), sembol başına kategori durum (`saved`,
+  `skipped_exists`, `skipped_rate_limited`, `failed:<kategori>`), dosya yolu,
+  sha256 ve bar sayısı. Fiyat/hacim değeri yazılmaz. `partial` ve
+  `stopped_on_429` exit code 1 verir.
+- Kaynak/lisans: Yahoo için `fetch_price_history.py`'deki mevcut beyan
+  (`user_asserted_2026-09-26_not_independently_verified`) geçerlidir; Mini App
+  izni (2026-09-28) Yahoo'yu kapsamaz ve ADR'deki risk notu genişletilmedi.
+- Günlük fiyat dosyaları her gün yeni bir `2023-01-02_<E>.json` olarak birikir;
+  saklama/temizlik politikası ayrı bir karardır (ADR §5).
+
+## D0 karşılaştırması (`compare_daily_d0.py`)
+
+`scripts/compare_daily_d0.py`, günlük kayan kayıtların **2026-09-25 ve
+öncesine** düşen günlerini temel yıllık kayıtla
+(`data/interim/period_analysis/<SYM>/2025-09-26_2026-09-25.json`) tarih × aile
+(`akd`, `akd_market`, `custody`, varsa `metadata`) bazında karşılaştırır. Kesme
+tarihi kodda sabittir (`D0_CUTOFF_DATE`; ADR §7) ve değiştiren bir bayrak yoktur;
+yalnız kesmeden önce başlayan pencere dosyaları açılır.
+
+- Yükleme `load_period_capture` ile (paket hash'i doğrulanır); hash
+  uyuşmazlığında yalnız o sembol `failed:<kategori>` olur, diğerleri sürer.
+- Günlük taraf, `compose_period_capture`'ın (tarih, aile) kazananıdır (en yeni
+  `captured_at_utc`); satır hash'i ve farklı kod sayısı birleştiricinin public
+  `family_row_hash` / `differing_code_count` yardımcılarıdır.
+- Çıktı yalnız sayımdır: sembol × aile için `compared_days`, `matched_days`,
+  `match_rate`, `differing_days`, `differing_code_count_total`, `only_base`,
+  `only_daily` (yalnız bir tarafta olan günler eşleşme oranına girmez); girdi
+  dosya yolları + sha256; kod commit'i. Lot/net/fiyat/oran değeri ve kurum kodu
+  listesi yazılmaz. Rapor `<daily-root>/_d0/<UTC zaman damgası>.json`
+  (`O_EXCL`, üzerine yazılmaz); stdout'ta kısa tablo.
+- Holdout, DSTKF ve aktif ayrımın geliştirme hissesi olmayan semboller
+  reddedilir (exit 1); `--symbols` verilmezse günlük kökte dizini bulunan
+  geliştirme hisseleri alınır.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\compare_daily_d0.py --dry-run
+.\.venv\Scripts\python.exe scripts\compare_daily_d0.py
+```
 
 ## Rate ve retry güvenliği
 
