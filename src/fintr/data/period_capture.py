@@ -13,6 +13,7 @@ from typing import Any
 
 from fintr.data.brokerage_index import BrokerageResolutionStatus, LiveBrokerageIndex
 from fintr.data.models import LiveBrokerageRow, LiveBrokeragesResponse
+from fintr.data.period_composition import CompositionLineage
 from fintr.data.parsers.common import (
     MarketDataParseError,
     require_date,
@@ -112,7 +113,14 @@ class BrokerageDirectoryInfo:
 
 @dataclass(frozen=True, slots=True)
 class PeriodCapture:
-    """Validated period capture; every dated series is in ascending date order."""
+    """Validated period capture; every dated series is in ascending date order.
+
+    ``composition`` is ``None`` for every capture loaded by
+    ``load_period_capture`` (no saved packet schema carries it); it is set
+    only by ``fintr.research.compose_period_capture.compose_period_capture``
+    for an in-memory capture assembled from several base/rolling captures.
+    See ``docs/research/daily_miniapp_collection_adr.md`` §3.
+    """
 
     symbol: str
     start: date
@@ -129,6 +137,17 @@ class PeriodCapture:
     custodian_diff: tuple[CustodianDiffRow, ...]
     metadata: tuple[PeriodMetadataDay, ...]
     brokerage_directory: BrokerageDirectoryInfo
+    composition: CompositionLineage | None = None
+
+    def __post_init__(self) -> None:
+        if self.composition is None:
+            return
+        if self.composition.period_aggregates_available:
+            raise PeriodCaptureError(
+                "composed_capture_must_mark_period_aggregates_unavailable"
+            )
+        if self.period_akd_net or self.custodian_diff:
+            raise PeriodCaptureError("composed_capture_must_not_carry_period_aggregates")
 
 
 def canonical_json(value: Any) -> str:

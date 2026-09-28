@@ -377,6 +377,13 @@ def build_period_report(
     """Build the report; every number is computed here, not by a model."""
     if type(top_n) is not int or top_n < 1:
         raise ValueError("top_n must be a positive integer")
+    if capture.composition is not None:
+        raise ValueError(
+            "composite_capture_rejected: a capture composed from several rolling/base "
+            "captures carries no period aggregates (period_akd_net, custodian_diff) -- "
+            "see docs/research/daily_miniapp_collection_adr.md §3 rule 5; run this "
+            "report against the underlying single-file period_analysis capture instead"
+        )
 
     reconciliation = reconcile_daily_akd(capture)
     diff_check = check_custodian_diff(
