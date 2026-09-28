@@ -707,3 +707,33 @@ pencere öncesini de içeren tam serisinin düzeltme sınırı/ratio-regime
 tespitinde kullanılmaya devam etmesi (motorun zaten var olan, train'de de
 geçerli davranışı) bilinçli olarak değiştirilmedi ve
 Efe 2026-09-28'de bunu onayladı (DECISIONS.md "Holdout fiyat geçmişi kararı"): tam geçmiş yalnız bu veri kalitesi tespiti için kullanılır.
+
+### Bildirim kanalı: Telegram (`fintr.notify`, aşama 2 adım 2)
+
+Problem: `docs/scanner.md`'deki gözlem tarayıcısı çıktıyı yalnız
+`data/interim/scanner/<as_of>/observations.json` dosyasına yazıyor; Efe'nin
+bunu her seferinde elle açması yerine, gözlem üretildiğinde kendisine
+otomatik olarak ulaşan bir kanal gerekiyordu.
+
+Alternatifler: (a) e-posta (SMTP) -- kurulum için bir SMTP sağlayıcısı/uygulama
+şifresi gerektirir, mobil bildirim gecikmeli olabilir; (b) yerel bildirim
+(masaüstü toast/dosya izleyici) -- yalnız Efe'nin makinesi açıkken çalışır,
+bulut oturumundan (`claude.ai/code`) tetiklenemez, mobilde görünmez.
+
+Karar: 2026-09-28 (Efe) -- Telegram Bot API (`sendMessage`, düz metin).
+Gerekçe: Efe'nin zaten kullandığı, mobilde anlık bildirim veren, kurulumu
+tek bir bot token'ı ve chat id'den ibaret bir kanal; yalnız standart
+kütüphane (`urllib`) ile, yeni bağımlılık eklemeden çağrılabiliyor. Sürekli
+veri toplama için daha önce reddedilen Telegram Mini App yaklaşımından
+(bkz. `docs/STATUS.md` "Amaç ve sınırlar" -- tek oturum, 429 hız sınırı)
+farklı: burada Telegram yalnız çıkış kanalı, veri toplama veya AKD/fiyat
+kaynağı değil.
+
+Sonuç: `src/fintr/notify/format.py` (saf biçimlendirme) ve
+`src/fintr/notify/telegram.py` (yalnız `urllib` ile `sendMessage`),
+`scripts/notify_observations.py` (varsayılan dry-run, `--send` ile gerçek
+gönderim, token/chat id yalnız `FINTR_TELEGRAM_BOT_TOKEN`/
+`FINTR_TELEGRAM_CHAT_ID` ortam değişkenlerinden). Bildirim de tarayıcı gibi
+bir gözlem bildirimidir -- getiri, hedef, puan, sıralama veya al/sat
+üretmez; her mesajın sonunda tarayıcının sabit uyarı metni ve
+`validation_status` bulunur. Ayrıntılar `docs/notify.md`.
