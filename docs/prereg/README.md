@@ -360,7 +360,7 @@ dosya yazmaz, yalnız aşağıdaki altı denetimi ✓/✗ olarak listeler. Gerç
    yalnız kaydedilen JSON dosyalarındadır, hiçbir zaman terminale
    basılmaz.
 
-**Açık soru (araç kendisi karar vermez):** `fintr.features.price_join.
+**Karara bağlandı (2026-09-28, DECISIONS.md "Holdout fiyat geçmişi kararı"): tam geçmiş kullanılır.** Önceki açık soru: `fintr.features.price_join.
 join_price_history`'nin düzeltme sınırı ve ratio-regime tespiti, sembolün
 **kaydedilmiş fiyat geçmişinin tamamını** okur -- bu, motorun train
 çalıştırmalarında zaten kullandığı, belgelenmiş davranıştır (bkz.

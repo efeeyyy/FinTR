@@ -50,8 +50,8 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
   Plan `configs/studies/prereg/test_plan_v1.json` (hash DECISIONS.md'de); `run_study.py --split
   test` artık `--test-plan/--test-scope` ister; yürütücü `scripts/run_holdout_test.py`
   (dry-run varsayılan, `--execute` + O_EXCL kilit, yalnız pencere içi kayıtlar). Birleşti
-  2026-09-28; train sonuçları değişmedi (yapısal karşılaştırma). Açık soru: holdout fiyat
-  dosyasının pencere öncesi kısmının düzeltme/ratio-regime tespitinde kullanımı (README).
+  2026-09-28; train sonuçları değişmedi (yapısal karşılaştırma). Holdout fiyat
+  dosyasının tamamı yalnız düzeltme/ratio-regime tespitinde kullanılır (Efe, 2026-09-28).
 
 ## Aşama 2: tarama/uyarı
 

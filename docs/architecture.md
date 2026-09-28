@@ -706,4 +706,4 @@ kararı yalnız `test_scope="primary"` (ya da alan hiç yoksa) için verir --
 pencere öncesini de içeren tam serisinin düzeltme sınırı/ratio-regime
 tespitinde kullanılmaya devam etmesi (motorun zaten var olan, train'de de
 geçerli davranışı) bilinçli olarak değiştirilmedi ve
-`docs/prereg/README.md`de açık soru olarak işaretlendi; karar Efe'nindir.
+Efe 2026-09-28'de bunu onayladı (DECISIONS.md "Holdout fiyat geçmişi kararı"): tam geçmiş yalnız bu veri kalitesi tespiti için kullanılır.

@@ -19,7 +19,7 @@ No return, p-value or decision text is ever written to stdout here: only
 file paths and check statuses. Every statistic goes to the JSON result
 files ``run_study.py``/``evaluate_study_family.py`` write, never printed.
 
-**Open question this tool does not decide** (see ``docs/prereg/README.md``
+**Decided 2026-09-28 (docs/prereg/DECISIONS.md, "Holdout fiyat geçmişi kararı"): full price history is kept, for data-quality detection only.** Background of the former open question (see ``docs/prereg/README.md``
 E3/E4 notes and ``docs/study_engine.md``'s "Custody scale jumps" /
 "Ratio-regime" sections): ``fintr.features.price_join.join_price_history``
 and the engine's adjustment-boundary/ratio-regime detection read a symbol's

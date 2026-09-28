@@ -46,3 +46,19 @@ hesaplandığı için çıkış penceresi rejim içinde kalan olaylar ayrıca d�
 Gerekçe: 2026-10-01 sonrası veri hiçbir sembol için görülmedi ve spec'ler train getirileri okunmadan donduruldu. 30 sembol daha fazla olay (güç) sağlar. Holdout-only analizi, hiç görülmemiş sembollerde ek bir kontrol sağlar.
 
 Test planı config'i: `configs/studies/prereg/test_plan_v1.json` (şema `fintr_test_plan_v1`), SHA-256 `b5070b39ed17c5c432cb2567fdb1917d52c1a4e4f552c4ae114a747f11d9182a`.
+
+## 2026-09-28 — Holdout fiyat geçmişi kararı (Efe onayı, yönetici önerisi; test verisi toplanmadan)
+
+Holdout testinde her sembolün kaydedilmiş fiyat geçmişinin **tamamı** (test_start öncesi
+dahil) kullanılmaya devam eder; dosya pencereye kırpılmaz. Kullanım yalnız veri kalitesi
+tespitiyle sınırlıdır: `fintr.features.price_join.join_price_history` düzeltme sınırı ve
+ratio-regime tespiti (train'deki mevcut davranış). Sinyal, koşul değerlendirmesi ve getiri
+hesabı pencere öncesi fiyatı kullanmaz; pencere öncesi AKD/takas kayıtları yürütücü
+tarafından reddedilmeye devam eder.
+
+Bu, README'deki "holdout sembollerinin 2026-10-01 öncesi verisi hiçbir aşamada
+kullanılmaz" kuralına yalnız bu veri kalitesi kullanımı için açık bir istisnadır.
+
+Gerekçe: rejim/düzeltme tespiti uzun seriye dayanır; kırpmak pencere başında başlayan
+bir ölçek değişikliğini kaçırma riski doğurur. Kural, AKD/takas analizine yönelik
+sızıntıyı önlemek için konmuştur ve bu kullanım sonuç değişkenine dokunmaz.
