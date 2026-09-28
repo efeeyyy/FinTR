@@ -1,7 +1,10 @@
 # Sürekli veri kaynağı araştırması (öneri belgesi)
 
-Hazırlık: 2026-09-28. Durum: **öneri** — karar Efe'nindir. Bu belge yatırım
-tavsiyesi değildir; finansal değer içermez. Kod ve config değiştirilmemiştir.
+Hazırlık: 2026-09-28. Durum: **karar verildi** (Efe, 2026-09-28) — sürekli kaynak
+Telegram Mini App'tir; bkz. [Karar](#karar-2026-09-28). Karar öncesi yazılan
+kaynak karşılaştırması ve lisanslı dağıtıcı önerisi yalnız yedek/alternatif analiz
+olarak korunmuştur. Bu belge yatırım tavsiyesi değildir; finansal değer içermez.
+Kod ve config değiştirilmemiştir.
 
 ## Erişim sınırı (önce okuyun)
 
@@ -30,19 +33,55 @@ doğrulanmalıdır (açık soru S1).
 
 ## Özet
 
-1. AKD (gün sonu "AKD", gün içi "AKDE") ve MKK takas verisi kullanıcı başı lisanslı ve ücretli; takas 2025-01-01'den beri [AÖ].
-2. Otomatik (non-display) kullanım BIST ile ya da yetkili dağıtıcı üzerinden ayrı sözleşme ister; ekran lisansı yetmez [AÖ].
-3. API'si belgelenmiş en somut aday Matriks veri servisleri (REST/MQTT/XML, bireysel satış, yeniden dağıtım yok) [AÖ].
-4. Matriks API'sinde AKD+takas alanları, geçmiş derinliği, hız sınırı ve fiyat doğrulanmadı.
-5. Bilinen tek halka açık aracı kurum API'si (Algolab) 2025-12-31'de kapatıldı [GH].
-6. MKK e-Yatırımcı/VAP ve KAP kurum bazında günlük AKD/takas API'si sunmuyor (bulunamadı).
-7. Mini App sürekli, insansız toplamaya uygun değil: insan `initData`, tek oturum, 429, belgesiz protokol, lisans bilinmiyor [RP].
-8. Yahoo ve TradingView koşulları otomatik veri çekmeyi yasaklıyor [AÖ].
-9. Öneri, birincil: AKD + MKK takas + OHLCV'yi otomatik kullanım için yazılı kapsayan lisanslı dağıtıcı servisi (ilk aday Matriks).
-10. Öneri, yedek: ikinci lisanslı dağıtıcı (Foreks/ForInvest veya İdeal Data); OHLCV için BIST DataStore gün sonu dosyaları.
-11. Maliyet bilinmiyor; ekran lisansı referansı 2026: AKD ₺173 + MKK ₺98 (tek aracı kurum tablosu) [AÖ].
-12. Geçiş: önce yazılı lisans kapsamı ve alan tanımları, sonra geliştirme hisselerinde gün gün mutabakat.
-13. Web erişimi kısıtlıydı: [AÖ] etiketli her iddia birincil sayfadan yeniden doğrulanmalı.
+1. **Karar (Efe, 2026-09-28):** AKD, takas ve kurum dizini Telegram Mini App'ten çekilecek; Efe'nin beyanına göre lisansı var, veri çekimi ücretsiz.
+2. Lisans beyanı repo kuralı gereği `user_asserted_2026-09-28_not_independently_verified` olarak kaydedilir.
+3. Lisans/maliyet engeli beyanla kalktı; teknik engeller duruyor: insan `initData`, tek oturum, 429, belgesiz protokol [RP].
+4. Önerilen işletim: her işlem günü T+1 sabahı, Efe'nin başlattığı tek oturumda artımlı (yalnız yeni günler) kayıt.
+5. Tam insansız çalışma `initData`'nın saklanmasını gerektirir; ömrü bilinmiyor, secret politikası kararı ve ADR ister.
+6. OHLCV: Mini App fiyat protokolü keşfedilmedi; o zamana kadar Yahoo chart v8 (gayriresmî) sürer.
+7. Doğrulama artık kaynaklar arası değil, aynı kaynakta: günlük kayıtlar ↔ mevcut dönem kayıtları (revizyon), kod kararlılığı, takas farkı tutarlılığı.
+8. Karar öncesi analiz: AKD/AKDE ve MKK takas BIST'te kullanıcı başı lisanslı; otomatik kullanım ayrı sözleşme ister [AÖ].
+9. Programatik lisanslı alternatif adayı Matriks veri servisleri [AÖ]; yalnız Mini App protokolü kırılırsa yedek.
+10. Algolab 2025-12-31'de kapandı [GH]; MKK/KAP kurum bazında günlük API sunmuyor (bulunamadı); Yahoo/TradingView otomasyonu yasaklıyor [AÖ].
+11. Web erişimi kısıtlıydı: [AÖ] etiketli iddialar birincil sayfadan doğrulanmadı.
+
+## Karar (2026-09-28)
+
+Efe'nin talimatı: "Verileri Telegram app'inden çekeceğiz; orada lisansım var ve veri
+çekimi için herhangi bir maliyet yok."
+
+- **Birincil kaynak:** Veri Terminali Mini App WebSocket akışı — AKD (`get_akd`,
+  `custody_analysis.akd`), takas (`custody_analysis.custody`, `get_custodian`,
+  `get_custodian_diff`, dağılım/istatistik), kurum dizini (`get_brokerages`).
+- **Lisans kaydı:** Beyan bu çalışmada bağımsız doğrulanmadı (Mini App koşulları
+  erişilebilir değil). Mevcut `price_history` ve pilot kayıtlarındaki desenle aynı
+  biçimde provenance'a `permission_provenance.status =
+  user_asserted_2026-09-28_not_independently_verified` yazılması önerilir. Beyanın
+  zamanlanmış/programatik erişimi de kapsadığı varsayılır; kapsam notu Efe
+  tarafından eklenebilir (açık soru S10).
+- **Maliyet:** Veri için 0 (beyan). Kalan maliyet yalnız işletim: çalışacak makine,
+  Efe'nin günlük `initData` girişi.
+- **Alternatifler:** "Alternatif kaynaklar" bölümü karar öncesi analizdir; yalnız
+  Mini App erişimi kalıcı olarak bozulursa yeniden değerlendirilir. Sağlayıcılarla
+  iletişim veya sözleşme öngörülmez.
+
+### Mini App ile günlük toplama: kalan teknik engeller ve öneri
+
+Lisans kararı teknik sınırları değiştirmez [RP]. Her biri için önerilen yaklaşım
+(yalnız tasarım; kod yazılmadı):
+
+| Engel | Öneri |
+|---|---|
+| `initData` insan tarafından girilir, saklanmaz, yenilenmez | **Aşama A (önerilen başlangıç):** yarı otomatik — Efe her işlem günü bir kez komutu başlatıp `initData`'yı gizli prompt'a girer; geri kalan tüm evren tek oturumda insansız biter. **Aşama B (ayrı karar):** tam insansız çalışma için `initData`'nın işletim sistemi anahtar deposunda saklanması; önce `initData`'nın sunucuda ne kadar süre kabul edildiği gözlenmeli (her gün girilen değerin giriş tarihi ve kabul/ret sonucu, değer yazılmadan kaydedilir). Secret-at-rest mevcut politikayı değiştirdiği için ADR gerekir. |
+| Tek aktif oturum; Mini App kapanır | Çalışma saati sabitlenir (ör. T+1 08:00–09:30 Europe/Istanbul, seans öncesi); Efe o pencerede Mini App'i kullanmaz; `--allow-session-takeover` onayı korunur. |
+| 429 hız sınırı | Günlük artımlı yük küçük tutulur: hisse başına `custody_analysis` yalnız eksik günler için (tek gün ya da kısa aralık), `get_akd` aynı gün, `get_brokerages` çalıştırma başına bir kez. Mevcut semboller arası bekleme ve oturum düzeyinde durdurma korunur; 429 görülürse o gün durup ertesi çalıştırmada eksik günler doldurulur (hammer yok). Gözlenen 429 zamanları/sayıları provenance'a yazılır ki sınır zamanla ölçülsün. Bütçe (ölçüm değil): 30 hisse × 30 s bekleme ≈ 15 dk + istek süreleri. |
+| Veri zamanlaması | Aynı gün verisi eksik olabilir; takas ertesi güne kadar kesinleşmeyebilir (runbook). T+1 sabahı çalıştırılır; hedef gün T. Gelecek tarih koruması korunur. |
+| Belgesiz protokol, sürüm kayması | Her çalıştırmada `[UNKNOWN_EVENT_TYPE]` ve parse hatası sayıları raporlanır; beklenmeyen şema değişiminde o gün kayıt yazılmaz (fail-closed) ve Efe'ye bildirilir. |
+| Collector diske günlük kayıt yazmıyor | Yeni günlük kayıt şeması gerekir (bkz. "Geçiş taslağı"); mevcut `fintr_period_analysis_capture_v1` yükleyicisi değişmeden, günlük kayıtlar dönem paketlerine birleştirilebilir. |
+| Eksik gün / kesinti | Her çalıştırma "son başarılı gün"den bugüne kadar eksik işlem günlerini planlar (≤90 gün `--allow-large-range` gerektirmez); `--dry-run` planı gösterir. |
+
+Holdout/dışlama: toplama holdout hisseleri için izinli, analiz reddedilir; DSTKF
+toplanmaz (mevcut kurallar aynen).
 
 ## Veri aileleri ve hedef
 
@@ -220,13 +259,16 @@ olmadığı **doğrulanamadı** (dağıtıcı listesi okunamadı). Bu belge bir 
 etmez; yalnız lisans zincirinin bilinmediğini kaydeder. Otomatik, zamanlanmış
 kullanımın uygulamanın izin verdiği bir kullanım olduğu da doğrulanmadı.
 
-**Sonuç:** Birincil sürekli kaynak olarak uygun değil. Geçiş döneminde yalnız insan
-tarafından başlatılan, mutabakat referansı sağlayan tek seferlik kayıtlar için
-(mevcut kullanım gibi) kalabilir.
+**Sonuç (karar öncesi):** Birincil sürekli kaynak olarak uygun görülmemişti.
+**Karar sonrası (2026-09-28):** Efe lisansı olduğunu ve maliyet olmadığını beyan etti;
+Mini App birincil kaynaktır. Yukarıdaki teknik maddeler geçerliliğini korur ve
+[Karar](#karar-2026-09-28) bölümündeki işletim önerisiyle ele alınır.
 
-## Öneri
+## Alternatif kaynaklar (karar öncesi öneri; artık yalnız yedek)
 
-Bu bölüm önerisidir; hiçbir sağlayıcıyla iletişim kurulmamıştır.
+Bu bölüm 2026-09-28 kararından önce yazıldı; birincil kaynak artık Mini App'tir.
+Yalnız Mini App erişimi kalıcı olarak bozulursa başvurulacak yedek analizi olarak
+korunur. Hiçbir sağlayıcıyla iletişim kurulmamıştır.
 
 **Birincil:** BIST lisanslı bir veri dağıtıcısının programatik veri servisi;
 sözleşme **yazılı olarak** şunları kapsamalı: AKD (gün sonu yeterli) + MKK saklama
@@ -263,6 +305,13 @@ ND lisans ücreti ayrıca ve muhtemelen daha yüksektir; **doğrulanmadı**.
 
 Yalnız tasarım; kod yazılmadı. Uygulamadan önce AGENTS.md gereği kısa bir ADR veya
 `docs/architecture.md` güncellemesi yazılmalı.
+
+**Karar sonrası kapsam:** İlk (ve şimdilik tek) adaptör Mini App adaptörüdür
+(`source_id = "veri_terminali_miniapp_ws_v1"`); mevcut `WebSocketCollector`,
+request builder'ları ve `Live*Response` parser'larını sarmalar, yeni protokol
+yazmaz. Arayüz, ileride yedek kaynak gerekirse ikinci adaptörün aynı günlük kayda
+yazabilmesi için kaynak-nötr tutulur. Doğrulama planında "yeni kaynak" ifadeleri,
+Mini App'in **günlük artımlı kayıtları** olarak okunmalıdır (aşağıdaki D0).
 
 ### Kaynak adaptörü arayüzü
 
@@ -316,6 +365,14 @@ mutabakat girdisi olmaz (holdout için yalnız yapısal kontroller: satır sayı
 kümesi, şema). Kabul eşikleri **veri görülmeden önce** Efe tarafından dondurulur;
 aşağıdaki eşikler yalnız öneridir.
 
+- **D0 — Aynı kaynakta revizyon ve süreklilik (karar sonrası birincil kontrol).**
+  Günlük artımlı Mini App kayıtları, aynı hisse/gün için daha önce kaydedilmiş dönem
+  paketleriyle (`period_analysis/<SYM>/2025-09-26_2026-09-25.json`) yalnız
+  geliştirme hisselerinde karşılaştırılır: AKD `net_size`, `total_size/total_cost`,
+  takas `lot_count` kurum bazında tam eşleşmeli; farklar sağlayıcı revizyonu olarak
+  raporlanır, sessizce üzerine yazılmaz. Ayrıca: gün başına kurum kodu kümesinin
+  kararlılığı, `server_dates` ile işlem takvimi uyumu, eksik gün sayısı.
+  Aşağıdaki D1–D3 aynı ölçütleri kullanır; D4 OHLCV için Yahoo'yla sürer.
 - **D1 — AKD mutabakatı.** Aynı (hisse, gün) için yeni kaynağın `net_lots`'u ile
   kayıtlı `daily_akd_net` (`net_size`) kurum bazında karşılaştırılır. Çıktı: tam
   eşleşme oranı, yalnız bir tarafta olan kodlar, fark dağılımı. Öneri: ortak kodlarda
@@ -352,7 +409,7 @@ Her ham ve normalize kayıtta:
 | `source_id`, `source_version` | adaptör ve sağlayıcı API sürümü |
 | `vendor_legal_name`, `product_name`, `endpoint` | endpoint secret içermez |
 | `license_ref` | sözleşme no/tarihi, kapsam bayrakları: `personal`, `non_display`, `storage`, `derived_output`, `redistribution=false` |
-| `permission_provenance.status` | ör. `contract_signed_YYYY-MM-DD` veya `user_asserted_..._not_independently_verified` |
+| `permission_provenance.status` | Mini App için: `user_asserted_2026-09-28_not_independently_verified` (Efe beyanı: lisans var, veri çekimi ücretsiz) |
 | `bist_license_codes` | ör. AKD, MKK (sağlayıcının belirttiği) |
 | `request` | sembol, işlem günü, aile, parametreler (secret'sız) |
 | `accessed_at_utc`, `http_status`, `rate_limit_observed` | erişim ve hız sınırı gözlemi |
@@ -365,6 +422,9 @@ Her ham ve normalize kayıtta:
 | `retention` | saklama süresi ve lisans dayanağı |
 
 ## Açık sorular
+
+Karar sonrası öncelikli sorular S10–S13'tür; S2–S4 ve S9 yalnız yedek
+değerlendirmesi için geçerlidir.
 
 - **S1.** [AÖ] işaretli her iddia birincil sayfadan doğrulanmalı (ağ izni gerekir).
 - **S2.** BIST veri dağıtıcı listesinde hangi firmalar var? Matriks, Foreks/ForInvest,
@@ -383,6 +443,14 @@ Her ham ve normalize kayıtta:
   yapılmadı.)
 - **S9.** Yahoo yerine OHLCV'yi de lisanslı kaynaktan almak, mevcut fiyat geçmişiyle
   süreklilik için geriye dönük dolum gerektirir mi?
+- **S10.** Efe'nin lisans beyanı zamanlanmış/programatik erişimi ve yerel saklamayı
+  açıkça kapsıyor mu? (Provenance notu için; karar değişmez.)
+- **S11.** `initData` sunucuda ne kadar süre kabul ediliyor? Aşama B (insansız) buna
+  bağlı; ölçüm yalnız Efe'nin normal kullanımında, değer kaydedilmeden yapılır.
+- **S12.** OHLCV Mini App'ten mi alınacak? Fiyat/grafik protokolü keşfedilmedi
+  (STATUS açık iş 6); keşfedilene kadar Yahoo sürer.
+- **S13.** Günlük çalıştırma penceresi ve makinesi (Efe'nin Windows makinesi mi,
+  sürekli açık başka bir makine mi) ve bildirim kanalı.
 
 ## Kaynakça
 
