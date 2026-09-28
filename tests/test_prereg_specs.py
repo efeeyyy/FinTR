@@ -39,7 +39,10 @@ def _feature_names(node) -> set[str]:
 class PreregSpecTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.paths = sorted(PREREG_DIR.glob("*.json"))
+        # h*.json only: configs/studies/prereg/ also holds test_plan_v1.json
+        # (fintr_test_plan_v1, tests/test_holdout_test_runner.py), not a
+        # fintr_study_spec_v1 hypothesis spec.
+        cls.paths = sorted(PREREG_DIR.glob("h*.json"))
         cls.split = json.loads(SPLIT_PATH.read_text(encoding="utf-8"))
         cls.split_sha256 = hashlib.sha256(SPLIT_PATH.read_bytes()).hexdigest()
         cls.excluded = set(json.loads(EXCLUSIONS_PATH.read_text(encoding="utf-8"))["symbols"])

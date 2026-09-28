@@ -665,9 +665,18 @@ def symbols_for_split(spec: StudySpec, split: str) -> tuple[str, ...]:
     raise EngineError("invalid_split")
 
 
-def signal_dates_for_split(capture: PeriodCapture, cutoff: date, split: str) -> tuple[date, ...]:
+def signal_dates_for_split(
+    capture: PeriodCapture, cutoff: date, split: str, *, window_end: date | None = None,
+) -> tuple[date, ...]:
+    """``window_end`` (test split only): drop signal dates after it (E3, the
+    pre-registered test-window end; ``docs/prereg/DECISIONS.md`` 2026-09-28).
+    ``None`` (default, and always for ``train``) applies no upper bound,
+    unchanged from the pre-E3 behaviour."""
     if split == "train":
         return tuple(d for d in capture.server_dates if d < cutoff)
     if split == "test":
-        return tuple(d for d in capture.server_dates if d >= cutoff)
+        dates = tuple(d for d in capture.server_dates if d >= cutoff)
+        if window_end is not None:
+            dates = tuple(d for d in dates if d <= window_end)
+        return dates
     raise EngineError("invalid_split")

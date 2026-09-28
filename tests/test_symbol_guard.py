@@ -16,7 +16,7 @@ import importlib.util
 import io
 import json
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 import tempfile
 import unittest
@@ -300,6 +300,34 @@ def _write_symbol_data(directory: Path, symbol: str) -> str:
     return f"{symbol}={period_path},{price_path}"
 
 
+def _write_test_plan(root: Path, spec_path: Path) -> Path:
+    """A minimal ``fintr_test_plan_v1`` matching ``spec_path``'s actual raw
+    and canonical hashes; used by guard tests that are not about the real
+    prereg specs, so ``--test-scope`` alone picks primary vs. secondary."""
+    spec = parse_study_spec(json.loads(spec_path.read_text(encoding="utf-8")))
+    raw_sha256 = hashlib.sha256(spec_path.read_bytes()).hexdigest()
+    plan_doc = {
+        "schema": "fintr_test_plan_v1",
+        "plan_id": "synthetic_test_plan",
+        "test_start": spec.train_test_cutoff.isoformat(),
+        "test_end": (spec.train_test_cutoff + timedelta(days=180)).isoformat(),
+        "min_tradeable_bars_after_end": 1,
+        "cost_bps_per_side": "10",
+        "primary": {
+            "symbol_scope": "all_declared", "family_id": "synthetic_family",
+            "primary_family_members": ["H1"], "multiple_comparison": "holm",
+        },
+        "secondary": {"symbol_scope": "holdout_only"},
+        "specs": [{
+            "path": str(spec_path), "spec_id": spec.spec_id,
+            "raw_sha256": raw_sha256, "canonical_sha256": spec.spec_sha256,
+        }],
+    }
+    path = root / "test_plan.json"
+    path.write_text(json.dumps(plan_doc), encoding="utf-8")
+    return path
+
+
 class RunStudyGuardTests(GuardEnvMixin, unittest.TestCase):
     def setUp(self):
         self.root = self.make_env()
@@ -344,41 +372,119 @@ class RunStudyGuardTests(GuardEnvMixin, unittest.TestCase):
         self.assertFalse(result["split_guard"]["guard_bypassed"])
         self.assertEqual(result["symbols"], ["DEVA"])
 
+    def test_test_split_requires_test_plan_and_test_scope(self):
+        spec = self._write_spec(frozen=True)
+        plan = _write_test_plan(self.root, spec)
+        for argv in (
+            ["--spec", str(spec), "--data", "HOLDA=a,b", "--split", "test"],
+            ["--spec", str(spec), "--data", "HOLDA=a,b", "--split", "test",
+             "--test-plan", str(plan)],
+            ["--spec", str(spec), "--data", "HOLDA=a,b", "--split", "test",
+             "--test-scope", "secondary"],
+        ):
+            with self.subTest(argv=argv):
+                code, _out, err = self._run(argv)
+                self.assertEqual(code, 1)
+                self.assertIn("requires --test-plan and --test-scope", err)
+
     def test_test_split_rejects_unfrozen_spec(self):
         spec = self._write_spec(frozen=False)
-        code, _out, err = self._run(["--spec", str(spec), "--data", "HOLDA=a,b", "--split", "test"])
+        code, _out, err = self._run([
+            "--spec", str(spec), "--data", "HOLDA=a,b", "--split", "test",
+            "--test-plan", str(self.root / "unused_plan.json"), "--test-scope", "secondary",
+        ])
         self.assertEqual(code, 1)
         self.assertIn("requires a frozen spec", err)
 
     def test_test_split_rejects_non_holdout_data_symbol(self):
         spec = self._write_spec(frozen=True)
+        plan = _write_test_plan(self.root, spec)
         code, _out, err = self._run([
             "--spec", str(spec), "--data", "HOLDA=a,b", "--data", "DEVA=a,b", "--split", "test",
+            "--test-plan", str(plan), "--test-scope", "secondary",
         ])
         self.assertEqual(code, 1)
-        self.assertIn("accepts only holdout symbols of the frozen split (DEVA are not)", err)
+        self.assertIn(
+            "--test-scope secondary requires --data to be exactly the spec's symbol_holdout "
+            "(missing: yok; extra: DEVA)",
+            err,
+        )
 
     def test_test_split_rejects_spec_holdout_outside_split_holdout(self):
         spec = self._write_spec(frozen=True, symbol_holdout=["DEVB"])
-        code, _out, err = self._run(["--spec", str(spec), "--data", "DEVB=a,b", "--split", "test"])
+        code, _out, err = self._run([
+            "--spec", str(spec), "--data", "DEVB=a,b", "--split", "test",
+            "--test-plan", str(self.root / "unused_plan.json"), "--test-scope", "secondary",
+        ])
         self.assertEqual(code, 1)
         self.assertIn("not holdout symbols of the frozen split (DEVB)", err)
 
     def test_test_split_rejects_spec_without_symbol_holdout(self):
         spec = self._write_spec(frozen=True, symbol_holdout=[])
-        code, _out, err = self._run(["--spec", str(spec), "--data", "HOLDA=a,b", "--split", "test"])
+        code, _out, err = self._run([
+            "--spec", str(spec), "--data", "HOLDA=a,b", "--split", "test",
+            "--test-plan", str(self.root / "unused_plan.json"), "--test-scope", "secondary",
+        ])
         self.assertEqual(code, 1)
         self.assertIn("requires the spec to declare symbol_holdout", err)
 
-    def test_test_split_frozen_spec_evaluates_only_holdout_symbols(self):
+    def test_test_split_secondary_scope_evaluates_only_holdout_symbols(self):
         data = _write_symbol_data(self.root, "HOLDA")
         spec = self._write_spec(frozen=True)
-        code, out, err = self._run(["--spec", str(spec), "--data", data, "--split", "test", "--format", "json"])
+        plan = _write_test_plan(self.root, spec)
+        code, out, err = self._run([
+            "--spec", str(spec), "--data", data, "--split", "test", "--format", "json",
+            "--test-plan", str(plan), "--test-scope", "secondary",
+        ])
         self.assertEqual(code, 0, err)
         result = json.loads(out)
         self.assertEqual(result["symbol_scope"], "holdout_only")
         self.assertEqual(result["symbols"], ["HOLDA"])
         self.assertEqual(result["split_guard"]["split_id"], "synthetic_split_v1")
+        self.assertEqual(result["test_scope"], "secondary")
+        self.assertEqual(result["test_plan_path"], str(plan))
+        self.assertEqual(result["test_plan_sha256"], hashlib.sha256(plan.read_bytes()).hexdigest())
+
+    def test_test_split_primary_scope_requires_every_declared_symbol(self):
+        spec = self._write_spec(frozen=True, symbols=["DEVA", "DEVB"], symbol_holdout=["HOLDA", "HOLDB"])
+        plan = _write_test_plan(self.root, spec)
+        data = [_write_symbol_data(self.root, s) for s in ("DEVA", "HOLDA")]
+        argv = ["--spec", str(spec), "--split", "test", "--test-plan", str(plan),
+                "--test-scope", "primary"]
+        for entry in data:
+            argv += ["--data", entry]
+        code, _out, err = self._run(argv)
+        self.assertEqual(code, 1)
+        self.assertIn("--test-scope primary requires --data to be exactly the spec's declared symbols", err)
+        self.assertIn("missing: DEVB,HOLDB", err)
+
+    def test_test_split_primary_scope_evaluates_every_declared_symbol(self):
+        spec = self._write_spec(frozen=True, symbols=["DEVA", "DEVB"], symbol_holdout=["HOLDA", "HOLDB"])
+        plan = _write_test_plan(self.root, spec)
+        argv = ["--spec", str(spec), "--split", "test", "--format", "json",
+                "--test-plan", str(plan), "--test-scope", "primary"]
+        for symbol in ("DEVA", "DEVB", "HOLDA", "HOLDB"):
+            argv += ["--data", _write_symbol_data(self.root, symbol)]
+        code, out, err = self._run(argv)
+        self.assertEqual(code, 0, err)
+        result = json.loads(out)
+        self.assertEqual(result["symbol_scope"], "declared")
+        self.assertEqual(result["symbols"], ["DEVA", "DEVB", "HOLDA", "HOLDB"])
+        self.assertEqual(result["test_scope"], "primary")
+        self.assertEqual(result["test_window_end"], (date(2026, 1, 1) + timedelta(days=180)).isoformat())
+
+    def test_test_split_rejects_spec_data_hash_mismatch_with_plan(self):
+        spec = self._write_spec(frozen=True)
+        plan = _write_test_plan(self.root, spec)
+        # Edit the spec after the plan recorded its hashes.
+        spec.write_text(json.dumps(_spec(frozen=True, description="edited after freeze")), encoding="utf-8")
+        data = _write_symbol_data(self.root, "HOLDA")
+        code, _out, err = self._run([
+            "--spec", str(spec), "--data", data, "--split", "test",
+            "--test-plan", str(plan), "--test-scope", "secondary",
+        ])
+        self.assertEqual(code, 1)
+        self.assertIn("does not match the hashes recorded", err)
 
     def test_excluded_symbol_rejected_even_with_no_split_guard(self):
         spec = self._write_spec()

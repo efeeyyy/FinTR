@@ -628,7 +628,7 @@ class RunStudyCliMergeAndCostTests(guard_fixtures.GuardEnvMixin, unittest.TestCa
 
 class PreregSpecsCarryE1AndFamilyTests(unittest.TestCase):
     def test_every_prereg_spec_loads_frozen_with_block_bootstrap(self):
-        paths = sorted((ROOT / "configs/studies/prereg").glob("*.json"))
+        paths = sorted((ROOT / "configs/studies/prereg").glob("h*.json"))
         self.assertEqual(len(paths), 4)
         for path in paths:
             spec = load_study_spec(path)

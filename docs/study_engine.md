@@ -121,21 +121,67 @@ and the symbol exclusions before any data file is read:
 
 - `--split train`: refused if the spec's `symbols` or any `--data` symbol
   is a holdout symbol of the split.
-- `--split test`: refused unless the spec is `frozen: true`, declares a
-  non-empty `symbol_holdout` that is a subset of the split's holdout
-  symbols, and every `--data` symbol is a holdout symbol. The engine then
-  runs with `symbol_scope="holdout_only"`: only `symbol_holdout` is
-  evaluated (no development symbol mixed into the one-shot holdout result).
+- `--split test`: additionally requires `--test-plan` and `--test-scope`
+  (`primary` | `secondary`, no default; see "Test plan" below). The spec
+  must be `frozen: true` and declare a non-empty `symbol_holdout` that is a
+  subset of the split's holdout symbols. `--test-scope primary` then
+  requires `--data` to be exactly the spec's full declared symbol set
+  (development + holdout, `symbol_scope="declared"`); `--test-scope
+  secondary` requires `--data` to be exactly `symbol_holdout`
+  (`symbol_scope="holdout_only"`, unchanged from the pre-test-plan
+  behaviour). `--no-split-guard` bypasses these checks (and the test-plan
+  scope logic) entirely for non-BIST 30 exploration -- `--test-plan`/
+  `--test-scope` are still required to be present, but unused; the result
+  falls back to `symbol_scope="declared"`.
 - Excluded symbols (`configs/exclusions/symbols.json`), in `--data` or
   anywhere in the spec, are always refused; there is no override.
-- `--no-split-guard` disables only the holdout checks (non-BIST 30
-  exploration); the test split then falls back to `symbol_scope="declared"`.
-  The result's `split_guard` block records `guard_bypassed: true`, the
-  warning and `bypassed_holdout_symbols`, and the text output starts with a
-  `!!! UYARI` line.
+- The result's `split_guard` block records `guard_bypassed: true`, the
+  warning and `bypassed_holdout_symbols` under `--no-split-guard`, and the
+  text output starts with a `!!! UYARI` line.
 
 Every result carries `split_guard` (split file, its SHA-256, split id,
 exclusions file and its SHA-256) and `symbol_scope`.
+
+## Test plan (`fintr_test_plan_v1`) and the one-shot holdout test
+
+`fintr.research.test_plan.load_test_plan` parses a second, narrower
+pre-registration artifact sitting on top of a spec's own `frozen`/
+`preregistration` block: the test window (`test_start`..`test_end`), the
+minimum post-window tradeable-bar count, the per-side cost, and -- per spec
+-- the exact raw file and canonical (`spec_sha256`) hashes recorded at
+freeze time (`docs/prereg/FREEZE.md`). `scripts/run_study.py --split test`
+refuses to run unless the given `--spec` file matches, byte-for-byte, the
+plan's entry for its `spec_id`, and unless `spec.train_test_cutoff` equals
+the plan's `test_start`. The result records `test_plan_path`,
+`test_plan_sha256` and `test_scope`.
+
+**E3 (window end):** the plan's `test_end` is passed to `fintr.research.
+report.run_study` as `test_window_end`; `fintr.research.engine.
+signal_dates_for_split`'s optional `window_end` then drops every test-split
+signal date after it (train is never affected; `window_end=None`, the
+default, reproduces the pre-E3 behaviour exactly). The result records
+`test_window_end` (`null` when not given).
+
+`fintr.research.family.evaluate_primary_family` also checks that every
+input result shares the same `test_scope`, and only treats `split ==
+"test"` as `confirmatory` when `test_scope` is `"primary"` (or absent, for
+results predating this field) -- a `secondary` (holdout-only, E5) family
+decision is always a robustness check, never confirmatory on its own
+(`docs/prereg/DECISIONS.md` 2026-09-28).
+
+`scripts/run_holdout_test.py` is the one-shot executor: `--dry-run`
+(default) checks plan/spec hashes, a clean git tree, per-symbol
+period-analysis/price-history coverage (E4-merging several period records
+whose `start >= test_start`; a pre-window-only record is never used) and
+the absence of a lock or a completed manifest, writing nothing.
+`--execute` re-checks all of that, atomically creates
+`data/interim/studies/test/LOCK` (`O_EXCL`), runs the four specs in both
+test scopes via `run_study.py --save`, runs `evaluate_study_family.py` on
+the primary H1+H2 results only, and writes `data/interim/studies/test/
+manifest.json` (`completed: true` only on full success). See
+`docs/prereg/README.md` ("Holdout testi çalıştırma") for the full
+procedure and the open question about pre-window price history still being
+read by the adjustment-boundary/ratio-regime detection.
 
 ## Transaction cost (per side)
 
@@ -281,10 +327,13 @@ $env:PYTHONPATH = "$PWD\src"
   --split train --cost-bps 10 --save
 ```
 
-`--split test` is refused unless the spec's `frozen` is `true` and only
-holdout symbols of the frozen split are passed (see above). AKFIS is outside
-the BIST 30 split and not a holdout symbol, so the train example above passes
-the guard; a BIST 30 holdout symbol would not.
+`--split test` is refused unless `--test-plan`/`--test-scope` are given, the
+spec's `frozen` is `true`, it matches the plan's recorded hashes, and (for
+`--test-scope secondary`) only holdout symbols of the frozen split are
+passed (see above). AKFIS is outside the BIST 30 split and not a holdout
+symbol, so the train example above passes the guard; a BIST 30 holdout
+symbol would not. See "Holdout testi çalıştırma" in `docs/prereg/README.md`
+for a full `--split test` example.
 
 ## Ön kayıtlı hipotez önerileri
 

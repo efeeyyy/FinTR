@@ -32,6 +32,7 @@ from fintr.research.capture_merge import CaptureMergeError, CaptureSource, merge
 from fintr.research.engine import EngineError, load_symbol_data, tradeable_price_bars
 from fintr.research.report import RunParameters, build_reproducibility_block, render_text, run_study
 from fintr.research.study_spec import StudySpecError, load_study_spec
+from fintr.research.test_plan import ALLOWED_TEST_SCOPES, TestPlanError, load_test_plan
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -91,6 +92,24 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--split", choices=("train", "test"), default="train",
                         help="test refuses to run unless the spec's frozen flag is true")
+    parser.add_argument(
+        "--test-plan", type=Path, default=None, metavar="TEST_PLAN_JSON",
+        help=(
+            "fintr_test_plan_v1 JSON (e.g. configs/studies/prereg/test_plan_v1.json); "
+            "required with --split test (no default). The --spec file must match one "
+            "of the plan's declared specs byte-for-byte (raw and canonical sha256)"
+        ),
+    )
+    parser.add_argument(
+        "--test-scope", choices=ALLOWED_TEST_SCOPES, default=None,
+        help=(
+            "required with --split test (no default). 'primary': every symbol the "
+            "spec declared (--data must match exactly, symbol_scope=declared) -- the "
+            "confirmatory scope (docs/prereg/DECISIONS.md 2026-09-28). "
+            "'secondary': only the spec's symbol_holdout (symbol_scope=holdout_only), "
+            "a robustness check, never confirmatory on its own"
+        ),
+    )
     parser.add_argument("--cost-bps", type=_non_negative_decimal, default=Decimal(0),
                         help="transaction cost assumption in basis points PER SIDE, charged at "
                              "entry and at exit: net = gross - 2 * bps / 10000 (round-trip = "
@@ -132,11 +151,12 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _save(out_dir: Path, spec_id: str, split: str, payload: bytes) -> Path:
+def _save(out_dir: Path, spec_id: str, split: str, payload: bytes, *, test_scope: str | None = None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
+    label = split if test_scope is None else f"{split}_{test_scope}"
     for attempt in range(1000):
         suffix = "" if attempt == 0 else f"-{attempt}"
-        target = out_dir / f"{spec_id}_{split}{suffix}.json"
+        target = out_dir / f"{spec_id}_{label}{suffix}.json"
         if target.exists():
             continue
         temporary: Path | None = None
@@ -158,16 +178,20 @@ def _save(out_dir: Path, spec_id: str, split: str, payload: bytes) -> Path:
     raise RuntimeError("could_not_allocate_result_filename")
 
 
-def check_study_symbols(spec, data_symbols, *, split: str, guards) -> str | None:
+def check_study_symbols(spec, data_symbols, *, split: str, guards, test_scope: str | None = None) -> str | None:
     """First reason the requested run violates the exclusions or the frozen
     holdout split, or ``None``. Exclusions are checked unconditionally;
     holdout rules are skipped only under ``--no-split-guard``.
 
     train: no holdout symbol in the spec's train symbols or in ``--data``.
     test: the spec must be frozen, must declare a non-empty ``symbol_holdout``
-    that is a subset of the split's holdout symbols, and every ``--data``
-    symbol must be a holdout symbol (the engine then evaluates only
-    ``symbol_holdout``; see ``symbol_scope``).
+    that is a subset of the split's holdout symbols. ``test_scope``
+    (``--test-scope``) then decides: ``"primary"`` requires ``--data`` to be
+    exactly the spec's full declared symbol set (development + holdout, the
+    engine's ``symbol_scope="declared"``); ``"secondary"`` requires ``--data``
+    to be exactly the spec's ``symbol_holdout`` (``symbol_scope=
+    "holdout_only"``). ``test_scope=None`` (only reachable when the split
+    guard itself is bypassed) applies no scope-specific check.
     """
     declared = spec.all_declared_symbols()
     excluded = sorted(
@@ -197,17 +221,52 @@ def check_study_symbols(spec, data_symbols, *, split: str, guards) -> str | None
             "spec symbol_holdout lists symbols that are not holdout symbols of the "
             f"frozen split ({','.join(not_holdout_spec)})"
         )
-    not_holdout_data = sorted(s for s in data_symbols if not guards.is_holdout(s))
-    if not_holdout_data:
-        return (
-            "--split test accepts only holdout symbols of the frozen split "
-            f"({','.join(not_holdout_data)} are not)"
-        )
+    if test_scope is None:
+        return None
+    if test_scope == "primary":
+        required = set(declared)
+        given = set(data_symbols)
+        missing = sorted(required - given)
+        extra = sorted(given - required)
+        if missing or extra:
+            return (
+                "--test-scope primary requires --data to be exactly the spec's "
+                f"declared symbols (missing: {','.join(missing) or 'yok'}; "
+                f"extra: {','.join(extra) or 'yok'})"
+            )
+        split_all = {s for s in guards.split.all_symbols() if not guards.is_excluded(s)}
+        if required != split_all:
+            mismatch = sorted(required ^ split_all)
+            return (
+                "--test-scope primary requires the spec's declared symbols to equal "
+                f"the active split's symbols minus exclusions (mismatch: {','.join(mismatch)})"
+            )
+        return None
+    if test_scope == "secondary":
+        required = set(spec.symbol_holdout)
+        given = set(data_symbols)
+        missing = sorted(required - given)
+        extra = sorted(given - required)
+        if missing or extra:
+            return (
+                "--test-scope secondary requires --data to be exactly the spec's "
+                f"symbol_holdout (missing: {','.join(missing) or 'yok'}; "
+                f"extra: {','.join(extra) or 'yok'})"
+            )
+        return None
     return None
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+
+    if args.split == "test" and (args.test_plan is None or args.test_scope is None):
+        print(
+            "Study failed: --split test requires --test-plan and --test-scope "
+            "(no default)",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         spec = load_study_spec(args.spec)
@@ -221,7 +280,10 @@ def main(argv: list[str] | None = None) -> int:
     except SymbolGuardError as exc:
         print(f"Study failed: {exc}", file=sys.stderr)
         return 1
-    guard_problem = check_study_symbols(spec, data_symbols, split=args.split, guards=guards)
+    test_scope = args.test_scope if args.split == "test" and not guards.split_guard_bypassed else None
+    guard_problem = check_study_symbols(
+        spec, data_symbols, split=args.split, guards=guards, test_scope=test_scope,
+    )
     if guard_problem is not None:
         print(
             f"Study failed: {guard_problem}; split={guards.report()['split_file']} "
@@ -232,11 +294,49 @@ def main(argv: list[str] | None = None) -> int:
     if guards.split_guard_bypassed:
         print(NO_SPLIT_GUARD_WARNING, file=sys.stderr)
     split_guard = guards.report(processed_symbols=data_symbols)
-    # Under the guard a test run evaluates only the spec's symbol_holdout.
-    symbol_scope = (
-        "holdout_only" if args.split == "test" and not guards.split_guard_bypassed
-        else "declared"
-    )
+    # Under the guard a test run evaluates only the spec's symbol_holdout,
+    # unless --test-scope primary asked for every declared symbol.
+    symbol_scope = "declared" if test_scope in (None, "primary") else "holdout_only"
+
+    test_plan_path: str | None = None
+    test_plan_sha256: str | None = None
+    test_window_end = None
+    if test_scope is not None:
+        try:
+            plan = load_test_plan(args.test_plan)
+        except TestPlanError as exc:
+            print(f"Study failed: invalid test plan ({exc})", file=sys.stderr)
+            return 1
+        spec_ref = plan.spec_by_id(spec.spec_id)
+        if spec_ref is None:
+            print(
+                f"Study failed: spec {spec.spec_id} is not declared in test plan {args.test_plan}",
+                file=sys.stderr,
+            )
+            return 1
+        raw_spec_sha256 = hashlib.sha256(args.spec.read_bytes()).hexdigest()
+        if raw_spec_sha256 != spec_ref.raw_sha256 or spec.spec_sha256 != spec_ref.canonical_sha256:
+            print(
+                f"Study failed: --spec {args.spec} does not match the hashes recorded for "
+                f"{spec.spec_id} in test plan {args.test_plan} (raw={raw_spec_sha256}, "
+                f"canonical={spec.spec_sha256})",
+                file=sys.stderr,
+            )
+            return 1
+        if not spec.frozen:
+            print("Study failed: test plan requires a frozen spec (spec frozen=false)", file=sys.stderr)
+            return 1
+        if plan.test_start != spec.train_test_cutoff:
+            print(
+                f"Study failed: test plan test_start ({plan.test_start.isoformat()}) does not "
+                f"match spec train_test_cutoff ({spec.train_test_cutoff.isoformat()})",
+                file=sys.stderr,
+            )
+            return 1
+        plan.scope(test_scope)  # validates the scope block exists and is well-formed
+        test_plan_path = str(args.test_plan)
+        test_plan_sha256 = plan.plan_sha256
+        test_window_end = plan.test_end
 
     grouped: dict[str, list[tuple[Path, Path]]] = {}
     for symbol, period_path, price_path in args.data:
@@ -293,6 +393,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = run_study(
             spec, symbol_data, split=args.split, params=params, symbol_scope=symbol_scope,
+            test_window_end=test_window_end,
         )
     except EngineError as exc:
         print(f"Study failed: {exc}", file=sys.stderr)
@@ -300,6 +401,9 @@ def main(argv: list[str] | None = None) -> int:
 
     result["split_guard"] = split_guard
     result["capture_merge"] = capture_merge
+    result["test_plan_path"] = test_plan_path
+    result["test_plan_sha256"] = test_plan_sha256
+    result["test_scope"] = test_scope
     result["reproducibility"] = build_reproducibility_block(
         project_root=PROJECT_ROOT, spec=spec, input_files=input_file_hashes,
         seed=spec.bootstrap.seed,
@@ -307,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
     if args.save:
-        saved = _save(args.out_dir, spec.spec_id, args.split, payload)
+        saved = _save(args.out_dir, spec.spec_id, args.split, payload, test_scope=test_scope)
         print(f"Result saved: {saved}", file=sys.stderr)
 
     if args.format == "json":

@@ -40,14 +40,19 @@ değil, açıkça işaretlenmiş varsayımlardır.
    /geliştirme örneğidir, doğrulayıcı değildir.
 6. **Tek seferlik holdout testi.** Tüm dört hipotez, train sonucundan
    bağımsız olarak (etkiye göre eleme yok) test aşamasına gider:
-   `--split test` (motor tanımı: sinyal tarihleri `>= 2026-10-01`, tüm
-   bildirilen semboller = 20 geliştirme + 10 holdout). **Açık çelişki:**
-   `holdout-guard` dalıyla gelen CLI koruması `--split test`'te yalnız
-   holdout sembollerini kabul eder ve motoru `symbol_scope="holdout_only"`
-   ile çalıştırır (bkz. `docs/study_engine.md`); bu tanımla çelişir ve
-   dondurmadan önce Efe'nin karara bağlaması gerekir (E5 ile birlikte). Test dönemi
-   **ileriye dönük** toplanır: sinyal penceresi `2026-10-01..2027-03-31`,
-   fiyat verisi pencere sonundan en az 25 tradeable bar sonrasına kadar.
+   `--split test --test-plan configs/studies/prereg/test_plan_v1.json
+   --test-scope primary|secondary` (bkz. "Holdout testi çalıştırma" altında).
+   **Karara bağlandı** (`DECISIONS.md` 2026-09-28, E5 ile birlikte):
+   **birincil** test motorun `--split test` tanımını kullanır (sinyal
+   tarihleri `[2026-10-01, 2027-03-31]`, tüm bildirilen 30 sembol = 20
+   geliştirme + 10 holdout, `symbol_scope="declared"`); Holm (m=2, H1+H2)
+   yalnız bu sonuçlara uygulanır. `holdout-guard` dalıyla gelen CLI
+   koruması (yalnız holdout sembolleri, `symbol_scope="holdout_only"`;
+   bkz. `docs/study_engine.md`) **ikincil** (E5, sağlamlık) kapsam olarak
+   korunur ve tek başına doğrulayıcı değildir. Test dönemi **ileriye
+   dönük** toplanır: sinyal penceresi `2026-10-01..2027-03-31`, fiyat
+   verisi pencere sonundan en az 25 tradeable bar sonrasına kadar (E3,
+   motorda zorlanır: `engine.signal_dates_for_split`'in `window_end`'i).
    Test bir kez çalıştırılır; sonuç ne olursa olsun raporlanır.
 
 Holdout sembollerinin `2026-10-01` öncesi verisi hiçbir aşamada kullanılmaz
@@ -135,9 +140,9 @@ test'iyle eklenip ayrı bir ön kayıt sürümünde kullanılmalıdır.
 |---|---|---|---|
 | E1 | Sinyal tarihine göre hareketli blok bootstrap, tek yönlü p ve tek yönlü sınırlar; farklı sinyal tarihi sayısı | Olaylar aynı gün hisseler arası ve 5 günlük örtüşen pencerelerle bağımlıdır; motor v1'in i.i.d. bootstrap'ı varyansı küçümser | **Uygulandı** (`engine.moving_block_bootstrap`; spec `block_bootstrap`; sonuç `block_bootstrap_difference`, `hypothesis_test`) |
 | E2 | Piyasaya göre düzeltilmiş getiri: olay getirisi − aynı giriş/çıkış tarihlerinde kapsamdaki tüm sembollerin eşit ağırlıklı ortalaması | Olaylar zamanda kümelenirse ham fark piyasa zamanlamasını da ölçer | İkincil analiz için önerilir |
-| E3 | Spec'te test penceresi bitişi (`test_end`) ve train fiyat bitişi zorlaması | Motor şimdi yalnız `>= cutoff` uygular; pencere operatör disipliniyle sınırlanıyor | Önerilir (yoksa operatör kontrol listesi) |
+| E3 | Spec'te test penceresi bitişi (`test_end`) ve train fiyat bitişi zorlaması | Motor şimdi yalnız `>= cutoff` uygular; pencere operatör disipliniyle sınırlanıyor | **Uygulandı** (`engine.signal_dates_for_split`'in `window_end`'i; `run_study.py --test-plan` planın `test_end`'ini geçirir, sonuçta `test_window_end`) |
 | E4 | Sembol başına birden çok dönem capture'ını birleştirme: tekrar eden tarihlerde sonraki capture öncelikli (son gün takas revizyonu), ek yerlerindeki boşlukların raporlanması, girdi hash'leri | AKD/takas istek başına ~3 ay; `run_study.py` sembol başına tek capture alıyor | **Uygulandı, dar yorumla** (`research.capture_merge`; aşağıya bkz.) |
-| E5 | Sembol alt kümesi (yalnız holdout) için havuzlanmış istatistik | Motor test split'i geliştirme + holdout'u birlikte havuzlar | İkincil analiz için önerilir |
+| E5 | Sembol alt kümesi (yalnız holdout) için havuzlanmış istatistik | Motor test split'i geliştirme + holdout'u birlikte havuzlar | **Uygulandı** (`run_study.py --split test --test-scope secondary`, `symbol_scope="holdout_only"`; ikincil/sağlamlık, doğrulayıcı değil) |
 | E6 | Olay bazında çıktı (sembol, sinyal, giriş/çıkış, net getiri, düşme nedeni) | Denetlenebilirlik ve E1'in bağımsız doğrulanması | Önerilir |
 
 ### E4 yorumu (belirsizlikler açıkça)
@@ -297,6 +302,74 @@ bloğunun bir alt kümesi (hipotez kimliği, aile rolü/üyeleri/boyutu, α, yö
 birincil vade, asgari olay/tarih, SESOI) yükleyici tarafından okunur ve
 doğrulanır; bloğun tamamı `spec_sha256`'ya dahildir. `preregistration`
 taşıyan bir spec `block_bootstrap` olmadan yüklenmez.
+
+## Holdout testi çalıştırma
+
+Nisan 2027'de, pencere (`2026-10-01..2027-03-31`) bittikten ve fiyat/AKD
+verisi toplandıktan sonra, tek seferlik test şu sırayla çalıştırılır.
+`scripts/run_holdout_test.py` **varsayılan olarak `--dry-run`'dır**; hiçbir
+dosya yazmaz, yalnız aşağıdaki altı denetimi ✓/✗ olarak listeler. Gerçek
+çalıştırma için açıkça `--execute` gerekir.
+
+1. **Toplama.** Pencereyi kapsayan (`start >= 2026-10-01`) dönem kayıtları
+   `data/interim/period_analysis/<SYM>/` altına, 30 sembolün tamamı için
+   (çok hisseli koleksiyon, `live_collector_smoke.py --symbols ...
+   --allow-large-range --symbol-pause-seconds 30`). Pencere öncesi kayıt
+   çalıştırıcı tarafından kullanılmaz (bkz. aşağıdaki "Holdout sembollerinin
+   2026-10-01 öncesi verisi..." kuralı, artık 30 sembolün hepsi için
+   geçerlidir).
+2. **Fiyat güncelleme.** `data/interim/price_history/<SYM>/` fiyat geçmişi,
+   pencere sonundan (`2027-03-31`) sonra en az 25 tradeable bar içerecek
+   şekilde güncellenir (`scripts/fetch_price_history_batch.py`).
+3. **Dry-run.**
+
+   ```bash
+   PYTHONPATH=src python scripts/run_holdout_test.py \
+     --test-plan configs/studies/prereg/test_plan_v1.json
+   ```
+
+   Altı denetim: (1) plan ve dört spec hash'i doğru; (2) git çalışma ağacı
+   temiz; (3) her sembol için pencere içinde başlayan (`start >=
+   2026-10-01`) en az bir dönem kaydı var (varsa E4 ile birleştirilir); (4)
+   fiyat geçmişinde `2027-03-31` sonrası en az 25 tradeable bar var; (5) AKD
+   sunucu tarihleri pencere içindeki tradeable fiyat günlerini kapsıyor; (6)
+   kilit (`data/interim/studies/test/LOCK`) veya önceki test çıktısı
+   (`manifest.json`) yok. Hepsi ✓ olana kadar tekrar toplama/güncelleme
+   yapılır; dry-run hiçbir zaman dosya yazmaz.
+4. **Execute.**
+
+   ```bash
+   PYTHONPATH=src python scripts/run_holdout_test.py \
+     --test-plan configs/studies/prereg/test_plan_v1.json --execute
+   ```
+
+   Önce tüm dry-run denetimleri yeniden çalıştırılır; biri bile ✗ ise
+   hiçbir şey çalışmaz. Geçerse ilk iş `LOCK` dosyasının atomik (`O_EXCL`)
+   oluşturulmasıdır -- kilit zaten varsa (yarışma durumu dahil) çalıştırma
+   reddedilir, manifest tamamlanmış olsa bile. Sonra dört spec × iki
+   `--test-scope` (`primary`: 30 sembolün tamamı, `symbol_scope="declared"`;
+   `secondary`: yalnız 10 holdout sembolü, `symbol_scope="holdout_only"`,
+   E5) `scripts/run_study.py --split test --save` ile çalıştırılır, ardından
+   `scripts/evaluate_study_family.py` yalnız primary H1+H2 sonuçları
+   üzerinde (Holm, m=2). Son olarak `data/interim/studies/test/manifest.json`
+   yazılır: tüm girdi/çıktı dosya hash'leri, kod commit'i, plan hash'i,
+   zaman damgası, `completed` bayrağı. Yarım kalmış bir çalıştırma (kilit
+   var ama manifest yok veya `completed: false`) bir sonraki çalıştırmayı
+   otomatik tekrar denemez; Efe'nin kararı gerekir. Stdout'a yalnız dosya
+   yolları ve ✓/✗ durumları yazılır -- getiri, p değeri veya karar metni
+   yalnız kaydedilen JSON dosyalarındadır, hiçbir zaman terminale
+   basılmaz.
+
+**Açık soru (araç kendisi karar vermez):** `fintr.features.price_join.
+join_price_history`'nin düzeltme sınırı ve ratio-regime tespiti, sembolün
+**kaydedilmiş fiyat geçmişinin tamamını** okur -- bu, motorun train
+çalıştırmalarında zaten kullandığı, belgelenmiş davranıştır (bkz.
+`docs/study_engine.md` "Custody scale jumps" / "Ratio-regime" bölümleri),
+`run_holdout_test.py`'nin değiştirdiği bir şey değildir. Holdout sembolünün
+fiyat dosyasının test penceresinden önceki kısmı bu tespit için kullanılmaya
+devam edecek mi (train'in yaptığı gibi) yoksa yalnız pencereyle mi
+sınırlanmalı -- Efe henüz karar vermedi; araç mevcut (tam geçmiş) davranışı
+korur ve bu soruyu burada işaretler, kendi başına seçim yapmaz.
 
 ## Kaynaklar
 
