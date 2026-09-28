@@ -30,6 +30,7 @@ from fintr.research.engine import (
     detect_custody_scale_jumps,
     drop_ratio_regime_signal_dates,
     load_symbol_data,
+    signal_dates_for_split,
     summarize_horizon,
 )
 from fintr.research.features import FeatureError, evaluate_feature, truncate_period_capture, validate_feature_params
@@ -451,6 +452,52 @@ class RatioRegimeSignalDropTests(unittest.TestCase):
         result = run_study(spec, {"TST": data}, split="train", params=params)
         self.assertEqual(result["ratio_regime_quality"]["TST"], {"regimes": [], "dropped_signal_dates": 0})
         self.assertEqual(result["overall"]["1"]["event_count"], 2)
+
+
+class TestWindowEndTests(unittest.TestCase):
+    """E3 (docs/prereg/DECISIONS.md 2026-09-28): a test-split window_end
+    drops signal dates after it; train is never affected."""
+
+    def test_window_end_drops_dates_after_it_on_test_split_only(self):
+        cutoff = D[5]
+        dates = tuple(D[0:15])
+        self.assertEqual(
+            signal_dates_for_split(_capture(server_dates=dates), cutoff, "test", window_end=D[9]),
+            (D[5], D[6], D[7], D[8], D[9]),
+        )
+        # No window_end (default None): unchanged pre-E3 behaviour.
+        self.assertEqual(
+            signal_dates_for_split(_capture(server_dates=dates), cutoff, "test"),
+            tuple(D[5:15]),
+        )
+        # window_end is a test-split-only concept; train ignores it.
+        self.assertEqual(
+            signal_dates_for_split(_capture(server_dates=dates), cutoff, "train", window_end=D[2]),
+            tuple(D[0:5]),
+        )
+
+    def test_run_study_end_to_end_excludes_signals_after_window_end(self):
+        bars = tuple(
+            _bar(D[i], o=100 + i, h=100 + i, l=100 + i, c=100 + i, adj=100 + i, v=1000)
+            for i in range(20)
+        )
+        capture = _capture(server_dates=tuple(D[5:15]))
+        data = load_symbol_data(
+            "TST", capture, _price("TST", bars),
+            adjustment_ratio_epsilon=Decimal("0.0005"), custody_scale_jump_ratio=Decimal("3"),
+        )
+        spec = parse_study_spec(_spec_doc(frozen=True, train_test_cutoff=D[5].isoformat()))
+        params = RunParameters(Decimal(0), Decimal("0.5"), Decimal("0.0005"), Decimal("3"))
+
+        unclipped = run_study(spec, {"TST": data}, split="test", params=params)
+        self.assertEqual(unclipped["overall"]["1"]["event_count"], 10)
+        self.assertIsNone(unclipped["test_window_end"])
+
+        clipped = run_study(
+            spec, {"TST": data}, split="test", params=params, test_window_end=D[9],
+        )
+        self.assertEqual(clipped["overall"]["1"]["event_count"], 5)
+        self.assertEqual(clipped["test_window_end"], D[9].isoformat())
 
 
 class FrozenSpecGateTests(unittest.TestCase):
