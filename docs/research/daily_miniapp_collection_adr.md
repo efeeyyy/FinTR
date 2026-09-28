@@ -1,8 +1,9 @@
 # ADR taslağı: Mini App ile günlük artımlı toplama
 
-Tarih: 2026-09-28. Durum: **önerildi** — "Efe'nin kararları" bölümündeki K1–K5
-onaylanınca kabul edilir; kabul edilen özet uygulama PR'ıyla birlikte
-`docs/architecture.md`'ye eklenir. Kod ve config bu turda değiştirilmedi.
+Tarih: 2026-09-28. Durum: **kabul edildi** (Efe, 2026-09-28 — bkz. "Efe'nin
+kararları" K1–K5). Özet, `docs/architecture.md`'ye ayrı bir uygulama adımıyla
+eklenecek ("Uygulama sırası" madde 6; bu turda yalnız madde 1 ve 3
+uygulanmıştır, madde 6 açık iş olarak kalır).
 Dayanak: [continuous_data_sources.md](continuous_data_sources.md#karar-2026-09-28)
 (Efe, 2026-09-28: kaynak Telegram Mini App; lisans var; veri çekimi ücretsiz).
 
@@ -153,6 +154,11 @@ dosyalarının temizliği ayrı karar (saklama politikası).
   olarak da yazar).
 - D0 revizyon karşılaştırması (günlük ↔ temel kayıt) holdout testinden önce yalnız
   **2026-09-25 ve öncesi** tarihlerde yapılır.
+- Efe kararı K4 (2026-09-28), ek süreç kuralı: 2027-03-31'e kadar H1–H4 için
+  test penceresi verisiyle **ara performans değerlendirmesi yapılmaz**
+  (gözlem sonrası getiri hesabı veya isabet sayımı dahil, günlük toplanan
+  geliştirme hisseleri için de); bu, kural ve eşiklerin dondurulmuş halini
+  değiştirmez, yalnız test penceresi bitmeden sonuç bakılmasını engeller.
 
 ## Şemalar
 
@@ -286,6 +292,13 @@ Canlı (Efe, kabul sonrası):
   `continuous_data_sources.md`'de.
 - Disk: ≈3 MB/gün kayan kayıt + günlük fiyat dosyaları; saklama/temizlik politikası
   ayrıca kararlaştırılmalı.
+- **Risk notu (2026-09-28):** Yahoo'nun kullanım koşulları otomatik veri
+  çekimini yasaklıyor olabilir (doğrulanmadı; bkz.
+  [continuous_data_sources.md](continuous_data_sources.md#6-kamuya-açık-web-kaynakları)).
+  Efe'nin izin beyanı (`user_asserted_2026-09-28_not_independently_verified`)
+  yalnız Mini App kaynağı içindir; Yahoo `price_history` için ayrı ve önceki
+  (`user_asserted_2026-09-26_not_independently_verified`) beyanla sınırlıdır,
+  bu ADR onu genişletmez.
 
 ## Uygulama sırası (küçük, ayrı PR'lar)
 
@@ -299,11 +312,13 @@ Canlı (Efe, kabul sonrası):
 
 ## Efe'nin kararları
 
-| # | Soru | Öneri |
-|---|---|---|
-| K1 | Aşama A (günlük tek `initData` girişi) ile başlansın mı? | Evet; B ayrı ADR |
-| K1b | `initData` ömrünü ölçmek için değer içinden yalnız `auth_date` bellekte okunup çalıştırma kaydına yaş kovası (ör. `<1h`, `1–24h`, `>24h`) ve kabul/ret yazılsın mı? Değer ve hash asla yazılmaz. | Evet; B kararının ön koşulu |
-| K2 | Günlük kapsam yalnız 20 geliştirme hissesi mi? | Evet |
-| K3 | Depolama: kayan pencere + birleştirici (c) mi? | Evet |
-| K4 | Holdout testi kaynağı Nisan 2027 tek seferlik kayıt olarak kalsın; test penceresi gözlemleri spec/kural değişikliğine girdi olmasın mı? | Evet |
-| K5 | Çalıştırma penceresi ve makine (Efe'nin Windows makinesi, T+1 08:00–09:30)? | Efe belirler |
+| # | Soru | Öneri | Efe'nin yanıtı (2026-09-28) |
+|---|---|---|---|
+| K1 | Aşama A (günlük tek `initData` girişi) ile başlansın mı? | Evet; B ayrı ADR | Evet (Aşama A). |
+| K1b | `initData` ömrünü ölçmek için değer içinden yalnız `auth_date` bellekte okunup çalıştırma kaydına yaş kovası (ör. `<1h`, `1–24h`, `>24h`) ve kabul/ret yazılsın mı? Değer ve hash asla yazılmaz. | Evet; B kararının ön koşulu | Evet, ama yalnız kayıt amaçlı. Ömür ölçümü Aşama B'de ayrı bir deneydir; taze girilen değerin yaşı ömrü göstermez. |
+| K2 | Günlük kapsam yalnız 20 geliştirme hissesi mi? | Evet | Evet. |
+| K3 | Depolama: kayan pencere + birleştirici (c) mi? | Evet | Evet. |
+| K4 | Holdout testi kaynağı Nisan 2027 tek seferlik kayıt olarak kalsın; test penceresi gözlemleri spec/kural değişikliğine girdi olmasın mı? | Evet | Evet. Ek süreç kuralı: 2027-03-31'e kadar H1–H4 için test penceresi verisiyle ara performans değerlendirmesi yapılmaz (gözlem sonrası getiri hesabı veya isabet sayımı dahil); kural ve eşik değişikliği yok. |
+| K5 | Çalıştırma penceresi ve makine (Efe'nin Windows makinesi, T+1 08:00–09:30)? | Efe belirler | Efe'nin Windows bilgisayarı, T+1 08:00–09:30 (Europe/Istanbul). Sağlayıcının yayın saati doğrulanmadı; son günün eksik gelmesi boşluk sayılır ve sonraki çalıştırmada tamamlanır, bu durum çalıştırma kaydında izlenir. |
+
+K4'ün ek süreç kuralı §7'ye de işlendi (aşağıda).
