@@ -76,8 +76,13 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    K1–K5 Efe onaylı 2026-09-28; kaynak Mini App, lisans Efe beyanı, doğrulanmadı). PR1
    (planlayıcı, `scripts/collect_daily.py --dry-run`) ve PR3 (`compose_period_capture`)
    birleşti 2026-09-28 (781 test; gerçek 1 yıllık kayıt tek başına birleştirilince seriler
-   birebir). Sırada: PR2 (canlı çalıştırıcı; `date.today()` yerine Europe/Istanbul),
-   PR4 (`--daily-root`), PR5 (fiyat + D0), PR6 (architecture.md özeti). 2027-03-31'e kadar H1–H4 için ara
+   birebir). PR2 (canlı çalıştırıcı `collect_daily.py`, Europe/Istanbul, 429'da durma,
+   çalıştırma kaydı `daily_capture/_runs/`) ve PR4 (`scan_observations.py --daily-root`,
+   gözlem şeması v2, bildirim v1+v2) birleşti 2026-09-28 (816 test). İlk canlı günlük
+   çalıştırma Efe'de (runbook bölüm 6). Sırada: PR5 (fiyat + D0), PR6 (architecture.md
+   özeti); ayrıca yalnız temel kayıtta görülen AKD günleri "kesinleşmemiş" sayılıyor
+   (tasarım gereği) — bildirimdeki sayım as_of penceresiyle sınırlanmalı. `tzdata` venv'de
+   yok (UTC+3 yedeği çalışıyor). 2027-03-31'e kadar H1–H4 için ara
    performans değerlendirmesi yok (K4).
 7. Telegram botu: Efe BotFather'dan açıp token/chat id'yi ortam değişkenine koyacak
    (`docs/notify.md`); ilk gerçek `--send` denemesi Efe'de.
