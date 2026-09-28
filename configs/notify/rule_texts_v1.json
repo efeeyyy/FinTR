@@ -1,0 +1,10 @@
+{
+  "schema": "fintr_notify_rule_texts_v1",
+  "description": "Bildirimde H1-H4 için kullanılan sabit kısa açıklamalar. Yeni iddia eklemez; her metin ilgili dondurulmuş spec dosyasının (configs/studies/prereg/h1..h4_*.json) condition alanından, yalnız o günün ölçülebilir koşulunu tarif eder -- ileri getiri/tersine dönüş hipotezini tekrar etmez (bu bir gözlem bildirimidir, çalışma değil).",
+  "rules": {
+    "H1": "Kapanış, AKD türevi VWAP proxy'sinin en az ~%1 üzerinde (birincil ön kayıtlı kural)",
+    "H2": "Kapanış, AKD türevi VWAP proxy'sinin en az ~%1 altında (birincil ön kayıtlı kural, H1'in simetriği)",
+    "H3": "Tek bir aracı kurumun AKD net payı günlük sum_total_size'ın en az %10'u VE kapanış VWAP proxy'sinin en az ~%1 üzerinde (ikincil/tanımlayıcı ön kayıtlı kural)",
+    "H4": "Tek bir aracı kurumun AKD net payı günlük sum_total_size'ın en az %10'u VE kapanış VWAP proxy'sinin en az ~%1 altında (ikincil/tanımlayıcı ön kayıtlı kural, H3'ün simetriği)"
+  }
+}

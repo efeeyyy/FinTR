@@ -1,0 +1,635 @@
+"""Offline tests for ``fintr.notify`` (``format.py``/``telegram.py``) and
+``scripts/notify_observations.py``.
+
+No network: every HTTP call is mocked at ``urllib.request.urlopen``.
+Observation documents here are synthetic, built directly to the
+``fintr_scanner_observations_v1`` shape (``docs/scanner.md``); nothing is
+a real capture, a real financial figure or a real Telegram token.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import os
+import re
+import tempfile
+import unittest
+import urllib.error
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
+
+from fintr.notify import format as fmt
+from fintr.notify.telegram import SendResult, TelegramSendError, send_message
+from fintr.scanner.observe import NOTICE_TEXT_TR, VALIDATION_STATUS
+
+from test_symbol_guard import DEVELOPMENT, EXCLUDED, HOLDOUT, GuardEnvMixin
+
+
+ROOT = Path(__file__).resolve().parents[1]
+REAL_RULE_TEXTS_FILE = ROOT / "configs" / "notify" / "rule_texts_v1.json"
+
+FAKE_TOKEN = "123456789:AAFakeNotARealTelegramBotTokenXYZ"
+FAKE_CHAT_ID = "555000111"
+
+RULE_TEXTS = {
+    "H1": "sentetik H1 açıklaması",
+    "H2": "sentetik H2 açıklaması",
+    "H3": "sentetik H3 açıklaması",
+    "H4": "sentetik H4 açıklaması",
+}
+
+_FORBIDDEN_WORDS = ("score", "rank", "return", "target", "al", "sat", "öneri")
+
+
+def _load_script(name: str):
+    spec = importlib.util.spec_from_file_location(f"notify_test_{name}", ROOT / "scripts" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+notify = _load_script("notify_observations")
+
+
+def _assert_no_forbidden_words(testcase: unittest.TestCase, text: str) -> None:
+    lowered = text.lower()
+    for word in _FORBIDDEN_WORDS:
+        pattern = r"(?<!\w)" + re.escape(word) + r"(?!\w)"
+        matches = re.findall(pattern, lowered)
+        testcase.assertFalse(matches, f"forbidden word {word!r} found in: {text!r}")
+
+
+def _feature(name: str, value, *, institution_labels: dict | None = None) -> dict:
+    return {
+        "name": name,
+        "params": {},
+        "formula": "synthetic formula text, not a real computation",
+        "value": value,
+        "data_families": ["price"],
+        "min_date": "2026-09-25",
+        "max_date": "2026-09-25",
+        "institution_labels": institution_labels or {},
+    }
+
+
+def _obs(rule_id: str, *, condition_met, suppressed=None, features=()) -> dict:
+    return {
+        "rule_id": rule_id,
+        "family_role": "primary" if rule_id in ("H1", "H2") else "secondary_descriptive",
+        "as_of": "2026-09-25",
+        "suppressed": suppressed,
+        "condition_met": condition_met,
+        "not_evaluable_reason": "missing_data" if condition_met is None and suppressed is None else None,
+        "features": list(features),
+        "validation_status": VALIDATION_STATUS,
+    }
+
+
+def _freshness(**overrides) -> dict:
+    base = {
+        "last_akd_server_date": "2026-09-25",
+        "last_custody_date": "2026-09-23",
+        "last_price_date": "2026-09-25",
+        "custody_behind_akd_server_dates": 2,
+        "custody_flagged_stale_t_plus_2": True,
+    }
+    base.update(overrides)
+    return base
+
+
+def _document(symbols: dict, *, warning: str | None = NOTICE_TEXT_TR) -> dict:
+    return {
+        "schema": fmt.OBSERVATIONS_SCHEMA,
+        "generated_at_utc": "2026-09-25T12:00:00Z",
+        "code_commit": "deadbeef",
+        "python_version": "3.11.0",
+        "rules_file": "configs/scanner/rules_v1.json",
+        "rules_file_sha256": "0" * 64,
+        "split_guard": {"schema": "fintr_symbol_guard_report_v1"},
+        "warning": warning,
+        "symbols": symbols,
+    }
+
+
+def _symbol_block(*, scans: list) -> dict:
+    return {
+        "as_of_source": "explicit",
+        "input_files": {
+            "period_capture": {"path": "synthetic", "sha256": "0" * 64},
+            "price_history": {"path": "synthetic", "sha256": "0" * 64},
+        },
+        "scans": scans,
+    }
+
+
+# --- format.py -----------------------------------------------------------
+
+
+class FormatTests(unittest.TestCase):
+    def test_no_positive_observations_when_all_false_or_null(self):
+        document = _document({
+            "AKFIS": _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(),
+                "observations": [_obs("H1", condition_met=False), _obs("H2", condition_met=None)],
+            }]),
+        })
+        self.assertFalse(fmt.has_positive_observations(document))
+
+    def test_positive_observations_detected(self):
+        document = _document({
+            "AKFIS": _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(),
+                "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.0123")])],
+            }]),
+        })
+        self.assertTrue(fmt.has_positive_observations(document))
+
+    def test_observation_line_includes_rule_text_and_feature_value(self):
+        document = _document({
+            "AKFIS": _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.0123")])],
+            }]),
+        })
+        text = fmt.render_notification_text(document, RULE_TEXTS)
+        self.assertIn("AKFIS H1: sentetik H1 açıklaması", text)
+        self.assertIn("vwap_proxy_vs_close=-0.0123", text)
+
+    def test_institution_label_included_when_resolved(self):
+        document = _document({
+            "AKFIS": _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H3", condition_met=True, features=[
+                    _feature("flow_run_length", "3", institution_labels={
+                        "XYZ": {"status": "resolved", "title": "Sentetik Aracı Kurum", "short_title": "SAK"},
+                        "ABC": {"status": "unresolved", "title": None, "short_title": None},
+                    }),
+                ])],
+            }]),
+        })
+        text = fmt.render_notification_text(document, RULE_TEXTS)
+        self.assertIn("XYZ Sentetik Aracı Kurum", text)
+        self.assertNotIn("ABC", text)
+
+    def test_no_observations_renders_short_notice(self):
+        document = _document({
+            "AKFIS": _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=False)],
+            }]),
+        })
+        text = fmt.render_notification_text(document, RULE_TEXTS)
+        self.assertIn("Bu taramada condition_met=true gözlem yok.", text)
+
+    def test_suppressed_counts_grouped_by_reason(self):
+        document = _document({
+            "AKFIS": _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [
+                    _obs("H1", condition_met=None, suppressed="ratio_regime"),
+                    _obs("H2", condition_met=None, suppressed="ratio_regime"),
+                    _obs("H3", condition_met=None, suppressed="custody_scale_jump"),
+                ],
+            }]),
+        })
+        text = fmt.render_notification_text(document, RULE_TEXTS)
+        self.assertIn("oran rejimi=2", text)
+        self.assertIn("takas ölçek sıçraması=1", text)
+
+    def test_freshness_warnings_for_stale_and_missing_data(self):
+        document = _document({
+            "AKFIS": _symbol_block(scans=[{
+                "as_of": "2026-09-25",
+                "freshness": _freshness(last_price_date=None, custody_flagged_stale_t_plus_2=True),
+                "observations": [_obs("H1", condition_met=False)],
+            }]),
+        })
+        text = fmt.render_notification_text(document, RULE_TEXTS)
+        self.assertIn("T+2 gerisinde", text)
+        self.assertIn("eksik veri (fiyat)", text)
+
+    def test_ends_with_fixed_warning_and_validation_status(self):
+        document = _document({})
+        text = fmt.render_notification_text(document, RULE_TEXTS)
+        suffix = "\n".join([NOTICE_TEXT_TR, f"Durum: {VALIDATION_STATUS}"]) + "\n"
+        self.assertTrue(text.endswith(suffix))
+
+    def test_no_forbidden_words_outside_fixed_disclaimer(self):
+        document = _document({
+            "AKFIS": _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(last_price_date=None),
+                "observations": [
+                    _obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.0123")]),
+                    _obs("H4", condition_met=True, features=[
+                        _feature("top1_akd_net_share_of_volume", "0.15"),
+                        _feature("vwap_proxy_vs_close", "0.02"),
+                    ]),
+                ],
+            }]),
+            "GARAN": _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(),
+                "observations": [_obs("H1", condition_met=None, suppressed="ratio_regime")],
+            }]),
+        })
+        text = fmt.render_notification_text(document, RULE_TEXTS)
+        suffix = "\n".join([NOTICE_TEXT_TR, f"Durum: {VALIDATION_STATUS}"]) + "\n"
+        self.assertTrue(text.endswith(suffix))
+        body = text[: -len(suffix)]
+        _assert_no_forbidden_words(self, body)
+
+    def test_split_message_keeps_short_text_as_one_message(self):
+        text = "kısa mesaj"
+        self.assertEqual(fmt.split_message(text), [text])
+
+    def test_split_message_splits_on_line_boundaries_within_limit(self):
+        lines = [f"satır {i}: " + ("x" * 80) for i in range(200)]
+        text = "\n".join(lines)
+        self.assertGreater(len(text), fmt.TELEGRAM_MESSAGE_LIMIT)
+        chunks = fmt.split_message(text)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), fmt.TELEGRAM_MESSAGE_LIMIT)
+        self.assertEqual("\n".join(chunks), text)
+
+    def test_split_message_never_exceeds_limit_for_a_single_long_line(self):
+        text = "y" * 9000
+        chunks = fmt.split_message(text)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), fmt.TELEGRAM_MESSAGE_LIMIT)
+        self.assertEqual("".join(chunks), text)
+
+
+class RealRuleTextsFileTests(unittest.TestCase):
+    def test_real_rule_texts_file_has_h1_to_h4_no_forbidden_words(self):
+        rule_texts = notify.load_rule_texts(REAL_RULE_TEXTS_FILE)
+        self.assertEqual(set(rule_texts), {"H1", "H2", "H3", "H4"})
+        for rule_id, description in rule_texts.items():
+            with self.subTest(rule_id=rule_id):
+                _assert_no_forbidden_words(self, description)
+
+    def test_wrong_schema_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rule_texts.json"
+            path.write_text(json.dumps({"schema": "other", "rules": {"H1": "x"}}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                notify.load_rule_texts(path)
+
+
+# --- telegram.py -----------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def _http_error(code: int, body: dict) -> urllib.error.HTTPError:
+    payload = json.dumps(body).encode("utf-8")
+    return urllib.error.HTTPError(url="https://api.telegram.org/x", code=code, msg="err",
+                                   hdrs=None, fp=io.BytesIO(payload))
+
+
+class TelegramSendTests(unittest.TestCase):
+    def test_empty_token_or_chat_id_rejected(self):
+        with self.assertRaises(ValueError):
+            send_message("", FAKE_CHAT_ID, "hi")
+        with self.assertRaises(ValueError):
+            send_message(FAKE_TOKEN, "", "hi")
+
+    def test_success_returns_message_id(self):
+        response = _FakeResponse(json.dumps({"ok": True, "result": {"message_id": 42}}).encode("utf-8"))
+        with patch("fintr.notify.telegram.urllib.request.urlopen", return_value=response) as urlopen:
+            result = send_message(FAKE_TOKEN, FAKE_CHAT_ID, "merhaba")
+        self.assertEqual(result, SendResult(message_id=42))
+        urlopen.assert_called_once()
+
+    def test_429_short_retry_after_retries_once_and_succeeds(self):
+        error = _http_error(429, {"ok": False, "parameters": {"retry_after": 5}})
+        success = _FakeResponse(json.dumps({"ok": True, "result": {"message_id": 7}}).encode("utf-8"))
+        with patch("fintr.notify.telegram.urllib.request.urlopen", side_effect=[error, success]), \
+             patch("fintr.notify.telegram.time.sleep") as sleep:
+            result = send_message(FAKE_TOKEN, FAKE_CHAT_ID, "merhaba")
+        self.assertEqual(result.message_id, 7)
+        sleep.assert_called_once_with(5.0)
+
+    def test_429_long_retry_after_raises_without_retry(self):
+        error = _http_error(429, {"ok": False, "parameters": {"retry_after": 45}})
+        with patch("fintr.notify.telegram.urllib.request.urlopen", side_effect=[error]) as urlopen, \
+             patch("fintr.notify.telegram.time.sleep") as sleep:
+            with self.assertRaises(TelegramSendError):
+                send_message(FAKE_TOKEN, FAKE_CHAT_ID, "merhaba")
+        sleep.assert_not_called()
+        self.assertEqual(urlopen.call_count, 1)
+
+    def test_error_message_never_contains_token_or_url(self):
+        error = _http_error(400, {
+            "ok": False,
+            "description": f"Bad Request: reflecting bot{FAKE_TOKEN} back for debugging",
+        })
+        with patch("fintr.notify.telegram.urllib.request.urlopen", side_effect=[error]):
+            with self.assertRaises(TelegramSendError) as ctx:
+                send_message(FAKE_TOKEN, FAKE_CHAT_ID, "merhaba")
+        self.assertNotIn(FAKE_TOKEN, str(ctx.exception))
+
+    def test_url_error_message_redacted(self):
+        with patch("fintr.notify.telegram.urllib.request.urlopen",
+                   side_effect=[urllib.error.URLError("connection refused")]):
+            with self.assertRaises(TelegramSendError) as ctx:
+                send_message(FAKE_TOKEN, FAKE_CHAT_ID, "merhaba")
+        self.assertNotIn(FAKE_TOKEN, str(ctx.exception))
+
+    def test_incomplete_read_on_success_path_redacted(self):
+        # http.client.IncompleteRead is neither an OSError nor a ValueError
+        # subclass, so a truncated response body must still be caught and
+        # redacted, not escape as a raw, unredacted exception.
+        import http.client
+
+        class _TruncatedResponse(_FakeResponse):
+            def read(self):
+                raise http.client.IncompleteRead(b"", expected=10)
+
+        with patch("fintr.notify.telegram.urllib.request.urlopen",
+                   return_value=_TruncatedResponse(b"")):
+            with self.assertRaises(TelegramSendError) as ctx:
+                send_message(FAKE_TOKEN, FAKE_CHAT_ID, "merhaba")
+        self.assertNotIn(FAKE_TOKEN, str(ctx.exception))
+
+    def test_incomplete_read_on_http_error_body_redacted(self):
+        import http.client
+
+        class _TruncatedHTTPError(urllib.error.HTTPError):
+            def read(self, *args, **kwargs):
+                raise http.client.IncompleteRead(b"", expected=10)
+
+        error = _TruncatedHTTPError(url=f"https://api.telegram.org/bot{FAKE_TOKEN}/sendMessage",
+                                     code=400, msg="err", hdrs=None, fp=None)
+        with patch("fintr.notify.telegram.urllib.request.urlopen", side_effect=[error]):
+            with self.assertRaises(TelegramSendError) as ctx:
+                send_message(FAKE_TOKEN, FAKE_CHAT_ID, "merhaba")
+        self.assertNotIn(FAKE_TOKEN, str(ctx.exception))
+
+
+# --- scripts/notify_observations.py ----------------------------------------
+
+
+class ScriptTests(GuardEnvMixin, unittest.TestCase):
+    def _write_observations(self, scanner_dir: Path, as_of: str, document: dict) -> Path:
+        target_dir = scanner_dir / as_of
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / "observations.json"
+        target.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+        return target
+
+    def _base_argv(self, scanner_dir: Path, out_dir: Path, as_of: str) -> list[str]:
+        return [
+            "--as-of", as_of,
+            "--scanner-dir", str(scanner_dir),
+            "--out-dir", str(out_dir),
+            "--rule-texts", str(REAL_RULE_TEXTS_FILE),
+        ]
+
+    def test_dry_run_never_touches_network(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({
+                DEVELOPMENT[0]: _symbol_block(scans=[{
+                    "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                    "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.01")])],
+                }]),
+            })
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            with patch("fintr.notify.telegram.urllib.request.urlopen",
+                       side_effect=AssertionError("dry-run must never touch the network")):
+                stdout = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                    code = notify.main(self._base_argv(root / "scanner", root / "out", "2026-09-25"))
+            self.assertEqual(code, 0)
+            self.assertIn(f"{DEVELOPMENT[0]} H1:", stdout.getvalue())
+            self.assertFalse((root / "out").exists())
+
+    def test_send_without_flag_sends_nothing(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({DEVELOPMENT[0]: _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=False)],
+            }])})
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            with patch.object(notify, "send_message") as send:
+                code = notify.main(self._base_argv(root / "scanner", root / "out", "2026-09-25"))
+            self.assertEqual(code, 0)
+            send.assert_not_called()
+
+    def test_wrong_schema_rejected(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_observations(root / "scanner", "2026-09-25", {"schema": "not_the_right_schema"})
+            with redirect_stderr(io.StringIO()) as errors:
+                code = notify.main(self._base_argv(root / "scanner", root / "out", "2026-09-25"))
+            self.assertEqual(code, 1)
+            self.assertIn("şema", errors.getvalue())
+
+    def test_holdout_symbol_rejected_defense_in_depth(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({HOLDOUT[0]: _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.01")])],
+            }])})
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            with patch.object(notify, "send_message") as send, redirect_stderr(io.StringIO()) as errors:
+                code = notify.main(self._base_argv(root / "scanner", root / "out", "2026-09-25"))
+            self.assertEqual(code, 1)
+            self.assertIn("holdout", errors.getvalue())
+            send.assert_not_called()
+
+    def test_excluded_symbol_rejected_defense_in_depth(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({EXCLUDED: _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.01")])],
+            }])})
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            with patch.object(notify, "send_message") as send, redirect_stderr(io.StringIO()) as errors:
+                code = notify.main(self._base_argv(root / "scanner", root / "out", "2026-09-25"))
+            self.assertEqual(code, 1)
+            self.assertIn("dışlanan", errors.getvalue())
+            send.assert_not_called()
+
+    def test_skip_empty_sends_nothing_when_no_positive_observations(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({DEVELOPMENT[0]: _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=False)],
+            }])})
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            argv = self._base_argv(root / "scanner", root / "out", "2026-09-25") + ["--skip-empty"]
+            stdout = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                code = notify.main(argv)
+            self.assertEqual(code, 0)
+            self.assertEqual(stdout.getvalue(), "")
+
+    def test_empty_without_skip_empty_prints_short_notice(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({DEVELOPMENT[0]: _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=False)],
+            }])})
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            stdout = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                code = notify.main(self._base_argv(root / "scanner", root / "out", "2026-09-25"))
+            self.assertEqual(code, 0)
+            self.assertIn("gözlem yok", stdout.getvalue())
+
+    def test_send_requires_env_vars(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({DEVELOPMENT[0]: _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.01")])],
+            }])})
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            argv = self._base_argv(root / "scanner", root / "out", "2026-09-25") + ["--send"]
+            with patch.dict(os.environ, {"FINTR_TELEGRAM_BOT_TOKEN": "", "FINTR_TELEGRAM_CHAT_ID": ""}), \
+                 patch.object(notify, "send_message") as send, redirect_stderr(io.StringIO()) as errors:
+                code = notify.main(argv)
+            self.assertEqual(code, 1)
+            self.assertIn("FINTR_TELEGRAM_BOT_TOKEN", errors.getvalue())
+            send.assert_not_called()
+            self.assertFalse((root / "out").exists())
+
+    def test_send_success_writes_receipt_without_secrets(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({DEVELOPMENT[0]: _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.01")])],
+            }])})
+            obs_path = self._write_observations(root / "scanner", "2026-09-25", document)
+            argv = self._base_argv(root / "scanner", root / "out", "2026-09-25") + ["--send"]
+            with patch.dict(os.environ, {"FINTR_TELEGRAM_BOT_TOKEN": FAKE_TOKEN, "FINTR_TELEGRAM_CHAT_ID": FAKE_CHAT_ID}), \
+                 patch.object(notify, "send_message", return_value=SendResult(message_id=777)) as send:
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    code = notify.main(argv)
+            self.assertEqual(code, 0)
+            send.assert_called_once()
+            receipt_path = root / "out" / "2026-09-25" / "receipt.json"
+            self.assertTrue(receipt_path.exists())
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            self.assertEqual(receipt["schema"], "fintr_notify_receipt_v1")
+            self.assertEqual(receipt["telegram_message_ids"], [777])
+            self.assertEqual(receipt["observations_sha256"],
+                              __import__("hashlib").sha256(obs_path.read_bytes()).hexdigest())
+            self.assertNotIn("token", json.dumps(receipt).lower())
+            self.assertNotIn("chat_id", json.dumps(receipt))
+            combined = stdout.getvalue() + stderr.getvalue() + json.dumps(receipt)
+            self.assertNotIn(FAKE_TOKEN, combined)
+
+    def test_second_send_without_resend_is_rejected_receipt_not_overwritten(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({DEVELOPMENT[0]: _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.01")])],
+            }])})
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            argv = self._base_argv(root / "scanner", root / "out", "2026-09-25") + ["--send"]
+            with patch.dict(os.environ, {"FINTR_TELEGRAM_BOT_TOKEN": FAKE_TOKEN, "FINTR_TELEGRAM_CHAT_ID": FAKE_CHAT_ID}), \
+                 patch.object(notify, "send_message", return_value=SendResult(message_id=1)):
+                code = notify.main(argv)
+            self.assertEqual(code, 0)
+            receipt_path = root / "out" / "2026-09-25" / "receipt.json"
+            original_content = receipt_path.read_text(encoding="utf-8")
+
+            with patch.dict(os.environ, {"FINTR_TELEGRAM_BOT_TOKEN": FAKE_TOKEN, "FINTR_TELEGRAM_CHAT_ID": FAKE_CHAT_ID}), \
+                 patch.object(notify, "send_message", return_value=SendResult(message_id=2)) as send, \
+                 redirect_stderr(io.StringIO()) as errors:
+                code = notify.main(argv)
+            self.assertEqual(code, 1)
+            self.assertIn("receipt zaten var", errors.getvalue())
+            send.assert_not_called()
+            self.assertEqual(receipt_path.read_text(encoding="utf-8"), original_content)
+
+    def test_resend_writes_new_receipt_file_original_untouched(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({DEVELOPMENT[0]: _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.01")])],
+            }])})
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            argv = self._base_argv(root / "scanner", root / "out", "2026-09-25") + ["--send"]
+            with patch.dict(os.environ, {"FINTR_TELEGRAM_BOT_TOKEN": FAKE_TOKEN, "FINTR_TELEGRAM_CHAT_ID": FAKE_CHAT_ID}), \
+                 patch.object(notify, "send_message", return_value=SendResult(message_id=1)):
+                code = notify.main(argv)
+            self.assertEqual(code, 0)
+            receipt_dir = root / "out" / "2026-09-25"
+            receipt_path = receipt_dir / "receipt.json"
+            original_content = receipt_path.read_text(encoding="utf-8")
+
+            with patch.dict(os.environ, {"FINTR_TELEGRAM_BOT_TOKEN": FAKE_TOKEN, "FINTR_TELEGRAM_CHAT_ID": FAKE_CHAT_ID}), \
+                 patch.object(notify, "send_message", return_value=SendResult(message_id=2)):
+                code = notify.main(argv + ["--resend"])
+            self.assertEqual(code, 0)
+            self.assertEqual(receipt_path.read_text(encoding="utf-8"), original_content)
+            other_receipts = [p for p in receipt_dir.iterdir() if p != receipt_path]
+            self.assertEqual(len(other_receipts), 1)
+            new_receipt = json.loads(other_receipts[0].read_text(encoding="utf-8"))
+            self.assertEqual(new_receipt["telegram_message_ids"], [2])
+            self.assertTrue(new_receipt["resend"])
+
+    def test_token_redacted_end_to_end_on_network_failure(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = _document({DEVELOPMENT[0]: _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.01")])],
+            }])})
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            argv = self._base_argv(root / "scanner", root / "out", "2026-09-25") + ["--send"]
+            error = _http_error(400, {"ok": False, "description": f"reflecting bot{FAKE_TOKEN} back"})
+            with patch.dict(os.environ, {"FINTR_TELEGRAM_BOT_TOKEN": FAKE_TOKEN, "FINTR_TELEGRAM_CHAT_ID": FAKE_CHAT_ID}), \
+                 patch("fintr.notify.telegram.urllib.request.urlopen", side_effect=[error]):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    code = notify.main(argv)
+            self.assertEqual(code, 1)
+            self.assertNotIn(FAKE_TOKEN, stdout.getvalue())
+            self.assertNotIn(FAKE_TOKEN, stderr.getvalue())
+            self.assertFalse((root / "out").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
