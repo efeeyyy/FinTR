@@ -128,10 +128,14 @@ def _symbol_block(*, scans: list, composition: dict | None = None) -> dict:
     return block
 
 
-def _composition_block(*, gaps=0, unsettled=0, revisions=0) -> dict:
+def _composition_block(*, gaps=0, unsettled=0, revisions=0, window=...,
+                       in_window=(0, 0, 0)) -> dict:
     """Minimal ``composition`` block shape (ADR §4; docs/scanner.md) --
-    only the fields ``fintr.notify.format`` actually reads."""
-    return {
+    only the fields ``fintr.notify.format`` actually reads. ``window`` left
+    at its default omits the window fields (an older v2 file); ``None`` or a
+    ``{"start","end"}`` dict adds them with ``in_window`` = (gaps, unsettled,
+    revisions)."""
+    block = {
         "composition_sha256": "0" * 64,
         "composer_version": "compose_period_capture_v1",
         "inputs": [{"kind": "base", "path": "synthetic", "sha256": "0" * 64}],
@@ -139,6 +143,12 @@ def _composition_block(*, gaps=0, unsettled=0, revisions=0) -> dict:
         "unsettled": {"day_count": unsettled, "entries": []},
         "revisions": {"day_count": revisions, "entries": []},
     }
+    if window is not ...:
+        block["window"] = window
+        block["gaps"]["in_window_count"] = in_window[0] if window else None
+        block["unsettled"]["in_window_day_count"] = in_window[1] if window else None
+        block["revisions"]["in_window_day_count"] = in_window[2] if window else None
+    return block
 
 
 # --- format.py -----------------------------------------------------------
@@ -303,8 +313,36 @@ class FormatTests(unittest.TestCase):
         })
         text = fmt.render_notification_text(document, RULE_TEXTS)
         self.assertIn(
-            "AKFIS veri durumu: boşluk=2, kesinleşmemiş gün=3, revize gün=1", text,
+            "AKFIS veri durumu (tüm dönem): boşluk=2, kesinleşmemiş gün=3, revize gün=1", text,
         )
+
+    def _one_symbol_text(self, composition: dict) -> str:
+        document = _document({
+            "AKFIS": _symbol_block(
+                scans=[{
+                    "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                    "observations": [_obs("H1", condition_met=False)],
+                }],
+                composition=composition,
+            ),
+        })
+        return fmt.render_notification_text(document, RULE_TEXTS)
+
+    def test_data_status_line_uses_in_window_counts_when_window_present(self):
+        text = self._one_symbol_text(_composition_block(
+            gaps=9, unsettled=300, revisions=8,
+            window={"start": "2026-09-08", "end": "2026-09-25"}, in_window=(1, 2, 0),
+        ))
+        self.assertIn(
+            "AKFIS veri durumu (2026-09-08..2026-09-25): boşluk=1, kesinleşmemiş gün=2, "
+            "revize gün=0", text,
+        )
+        self.assertNotIn("300", text)
+
+    def test_data_status_line_null_window_reports_no_window(self):
+        text = self._one_symbol_text(_composition_block(gaps=9, unsettled=300, window=None))
+        self.assertIn("AKFIS veri durumu: pencere yok (günlük kayıt yok)", text)
+        self.assertNotIn("300", text)
 
     def test_data_status_line_present_per_symbol_only_when_composed(self):
         document = _document({
@@ -321,8 +359,8 @@ class FormatTests(unittest.TestCase):
             }]),
         })
         text = fmt.render_notification_text(document, RULE_TEXTS)
-        self.assertIn("AKFIS veri durumu:", text)
-        self.assertNotIn("GARAN veri durumu:", text)
+        self.assertIn("AKFIS veri durumu (", text)
+        self.assertNotIn("GARAN veri durumu", text)
 
     def test_data_status_line_carries_no_forbidden_words(self):
         document = _document({
@@ -562,7 +600,7 @@ class ScriptTests(GuardEnvMixin, unittest.TestCase):
                 code = notify.main(self._base_argv(root / "scanner", root / "out", "2026-09-25"))
             self.assertEqual(code, 0, errors.getvalue())
             self.assertIn(f"{DEVELOPMENT[0]} H1:", stdout.getvalue())
-            self.assertIn(f"{DEVELOPMENT[0]} veri durumu:", stdout.getvalue())
+            self.assertIn(f"{DEVELOPMENT[0]} veri durumu (", stdout.getvalue())
 
     def test_holdout_symbol_rejected_defense_in_depth(self):
         self.make_env()

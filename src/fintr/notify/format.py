@@ -111,12 +111,27 @@ def _freshness_lines(symbol: str, as_of: str, freshness: dict) -> list[str]:
 
 def _data_status_line(symbol: str, composition: dict) -> str:
     """One line, per symbol, of composed-data counts only -- no value, claim
-    or buy/sell wording (ADR §4: ``--daily-root`` output only)."""
-    gaps = composition.get("gaps", {}).get("count", 0)
-    unsettled = composition.get("unsettled", {}).get("day_count", 0)
-    revisions = composition.get("revisions", {}).get("day_count", 0)
+    or buy/sell wording (ADR §4: ``--daily-root`` output only).
+
+    Counts are window-bounded when the observation file carries the
+    ``window`` field (docs/scanner.md); an older v2 file without it falls
+    back to the whole-period totals, labelled as such. A file with
+    ``window: null`` had no rolling input, so no window count exists."""
+    if "window" not in composition:
+        gaps = composition.get("gaps", {}).get("count", 0)
+        unsettled = composition.get("unsettled", {}).get("day_count", 0)
+        revisions = composition.get("revisions", {}).get("day_count", 0)
+        scope = "tüm dönem"
+    else:
+        window = composition["window"]
+        if window is None:
+            return f"{symbol} veri durumu: pencere yok (günlük kayıt yok)"
+        gaps = composition.get("gaps", {}).get("in_window_count", 0)
+        unsettled = composition.get("unsettled", {}).get("in_window_day_count", 0)
+        revisions = composition.get("revisions", {}).get("in_window_day_count", 0)
+        scope = f"{window['start']}..{window['end']}"
     return (
-        f"{symbol} veri durumu: boşluk={gaps}, kesinleşmemiş gün={unsettled}, "
+        f"{symbol} veri durumu ({scope}): boşluk={gaps}, kesinleşmemiş gün={unsettled}, "
         f"revize gün={revisions}"
     )
 
