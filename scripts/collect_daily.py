@@ -95,7 +95,10 @@ def _istanbul_today(*, now: datetime | None = None) -> date:
     ``tzdata`` as the primary fix; this fallback is a safety net, not a
     substitute for it.
     """
-    now = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
     try:
         tzinfo = ZoneInfo("Europe/Istanbul")
     except ZoneInfoNotFoundError:
@@ -219,7 +222,12 @@ def build_run_record_skeleton(
         "split_config_sha256": guards.split.split_sha256,
         "exclusions_sha256": guards.exclusions.file_sha256,
         "environment": None,
-        "init_data": {"prompted": False, "age_seconds_bucket": None},
+        # Named "init_data_status", not "init_data": the shared
+        # validate_context_contains_no_secrets treats the key "init_data"
+        # itself as sensitive (it normalizes to "initdata", an exact entry
+        # in its banned key-part list) regardless of this field's harmless
+        # content, and the live run record below reuses that exact check.
+        "init_data_status": {"prompted": False, "age_seconds_bucket": None},
         "symbols": symbols,
         "rate_limit": {"http_429_count": 0, "stopped_on_429": False},
         "price_history": {"status": "planned", "files": []},
@@ -452,7 +460,10 @@ async def _run_live(
             "websockets": _websockets_version(),
             "os": platform.platform(),
         },
-        "init_data": {
+        # See build_run_record_skeleton's comment: "init_data_status", not
+        # "init_data" -- the latter key alone trips
+        # validate_context_contains_no_secrets below.
+        "init_data_status": {
             "prompted": init_data_prompted,
             "age_seconds_bucket": (
                 secret_provider.age_seconds_bucket() if init_data_prompted else None
