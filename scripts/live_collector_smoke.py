@@ -565,22 +565,71 @@ def _period_analysis_requests(symbol: str, start: date, end: date):
     )
 
 
+_INIT_DATA_AGE_BUCKET_UNDER_1H = "<1h"
+_INIT_DATA_AGE_BUCKET_1_TO_24H = "1–24h"  # en dash, matches the ADR's own label
+_INIT_DATA_AGE_BUCKET_OVER_24H = ">24h"
+
+
+def _parse_init_data_auth_date(raw: str) -> int | None:
+    """Read only ``auth_date`` (a Unix timestamp) out of initData; nothing else.
+
+    ADR K1b: "initData'dan yalnız auth_date bellekte okunur". Returns
+    ``None`` on any parse failure -- age-bucket reporting is best-effort
+    diagnostics, never a reason to fail a run.
+    """
+    from urllib.parse import parse_qsl
+
+    try:
+        pairs = parse_qsl(raw, strict_parsing=False)
+        for key, value in pairs:
+            if key == "auth_date":
+                return int(value)
+    except (ValueError, TypeError):
+        return None
+    return None
+
+
 class _CachedSecretProvider:
     """Wrap a secret provider so initData is prompted for at most once per run.
 
     The value is kept only in this process's memory for the run's duration
     (never written to disk or logged) and reused across every per-symbol
-    ``WebSocketCollector`` connection.
+    ``WebSocketCollector`` connection. ``age_seconds_bucket`` and
+    ``was_prompted`` support the daily run record's K1b field (ADR §6):
+    only a coarse age bucket and the prompted/accepted booleans are ever
+    readable from the outside -- never the raw value, never ``auth_date``
+    itself, never a hash of either.
     """
 
     def __init__(self, inner) -> None:
         self._inner = inner
         self._cached: str | None = None
+        self._auth_date: int | None = None
 
     def get_init_data(self) -> str:
         if self._cached is None:
             self._cached = self._inner.get_init_data()
+            self._auth_date = _parse_init_data_auth_date(self._cached)
         return self._cached
+
+    @property
+    def was_prompted(self) -> bool:
+        return self._cached is not None
+
+    def age_seconds_bucket(self, *, now: datetime | None = None) -> str | None:
+        if self._auth_date is None:
+            return None
+        now = now if now is not None else datetime.now(timezone.utc)
+        age_seconds = (
+            now - datetime.fromtimestamp(self._auth_date, tz=timezone.utc)
+        ).total_seconds()
+        if age_seconds < 0:
+            return None
+        if age_seconds < 3600:
+            return _INIT_DATA_AGE_BUCKET_UNDER_1H
+        if age_seconds < 86400:
+            return _INIT_DATA_AGE_BUCKET_1_TO_24H
+        return _INIT_DATA_AGE_BUCKET_OVER_24H
 
 
 def _multi_symbol_period_target(
