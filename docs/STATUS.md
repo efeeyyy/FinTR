@@ -59,6 +59,11 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
   `docs/scanner.md`. Çevrimdışı; kurallar dondurulmuş H1–H4 koşulları (hash kontrollü), yalnız
   geliştirme hisseleri, gözlem bildirir (getiri/puan/al-sat yok), `validation_status` =
   holdout testi bekleniyor.
+- `notify-telegram` birleşti (2026-09-28): `scripts/notify_observations.py`, `src/fintr/notify/`,
+  `docs/notify.md`. Gözlem dosyasını Efe'nin Telegram botuyla düz metin gönderir; varsayılan
+  dry-run, `--send` gerekir; token/chat id yalnız `FINTR_TELEGRAM_*` ortam değişkeninde, tüm
+  hata yolları redakte (yerel kontrolde IncompleteRead sızıntısı bulunup düzeltildi);
+  receipt ile tekrar gönderim engeli (`--resend`).
 
 ## Açık işler
 
@@ -67,9 +72,13 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
 2. AKFIS kurumsal işlemi (probable 1→6) için Efe'den KAP linki, çarpan, işlem ve takas
    tarihleri → `scripts/register_corporate_action.py`.
 3. Finans sohbeti: AKFIS `analysis.md` eski ("fiyat/hacim yok") — o sohbette güncellenir.
-4. Aşama 2 devamı (bulutta, 2026-09-28): `notify-telegram` (bildirim kanalı Telegram botu,
-   Efe kararı; dry-run varsayılan, token yalnız ortam değişkeninde) ve `research-data-sources`
-   (sürekli veri kaynağı araştırması, yalnız `docs/research/`). Raporlar gelince doğrula/birleştir.
+4. Aşama 2 devamı: günlük Mini App toplama (ADR `docs/research/daily_miniapp_collection_adr.md`,
+   K1–K5 Efe onaylı 2026-09-28; kaynak Mini App, lisans Efe beyanı, doğrulanmadı). İlk tur
+   (planlayıcı + birleştirici, ağ yok) bulutta `daily-collection-1` dalında; sonra PR2 (canlı
+   çalıştırıcı), PR4 (`--daily-root`), PR5 (fiyat + D0). 2027-03-31'e kadar H1–H4 için ara
+   performans değerlendirmesi yok (K4).
+7. Telegram botu: Efe BotFather'dan açıp token/chat id'yi ortam değişkenine koyacak
+   (`docs/notify.md`); ilk gerçek `--send` denemesi Efe'de.
 5. KAP erişimi tarayıcıda engelli; KAP belgeleri Efe'den gelir (indirme Java serileştirme
    sarmalıdır, 27 bayt başlık atılınca PDF).
 6. Canlı yanıtlarda bilinmeyen olay tipleri görüldü; fiyat/derinlik protokolü keşfedilmedi.
