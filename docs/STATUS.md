@@ -67,7 +67,9 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
 2. AKFIS kurumsal işlemi (probable 1→6) için Efe'den KAP linki, çarpan, işlem ve takas
    tarihleri → `scripts/register_corporate_action.py`.
 3. Finans sohbeti: AKFIS `analysis.md` eski ("fiyat/hacim yok") — o sohbette güncellenir.
-4. Aşama 2 devamı: bildirim kanalı ve sürekli veri kaynağı (başlanmadı).
+4. Aşama 2 devamı (bulutta, 2026-09-28): `notify-telegram` (bildirim kanalı Telegram botu,
+   Efe kararı; dry-run varsayılan, token yalnız ortam değişkeninde) ve `research-data-sources`
+   (sürekli veri kaynağı araştırması, yalnız `docs/research/`). Raporlar gelince doğrula/birleştir.
 5. KAP erişimi tarayıcıda engelli; KAP belgeleri Efe'den gelir (indirme Java serileştirme
    sarmalıdır, 27 bayt başlık atılınca PDF).
 6. Canlı yanıtlarda bilinmeyen olay tipleri görüldü; fiyat/derinlik protokolü keşfedilmedi.
