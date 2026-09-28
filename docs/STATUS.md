@@ -73,9 +73,11 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    tarihleri → `scripts/register_corporate_action.py`.
 3. Finans sohbeti: AKFIS `analysis.md` eski ("fiyat/hacim yok") — o sohbette güncellenir.
 4. Aşama 2 devamı: günlük Mini App toplama (ADR `docs/research/daily_miniapp_collection_adr.md`,
-   K1–K5 Efe onaylı 2026-09-28; kaynak Mini App, lisans Efe beyanı, doğrulanmadı). İlk tur
-   (planlayıcı + birleştirici, ağ yok) bulutta `daily-collection-1` dalında; sonra PR2 (canlı
-   çalıştırıcı), PR4 (`--daily-root`), PR5 (fiyat + D0). 2027-03-31'e kadar H1–H4 için ara
+   K1–K5 Efe onaylı 2026-09-28; kaynak Mini App, lisans Efe beyanı, doğrulanmadı). PR1
+   (planlayıcı, `scripts/collect_daily.py --dry-run`) ve PR3 (`compose_period_capture`)
+   birleşti 2026-09-28 (781 test; gerçek 1 yıllık kayıt tek başına birleştirilince seriler
+   birebir). Sırada: PR2 (canlı çalıştırıcı; `date.today()` yerine Europe/Istanbul),
+   PR4 (`--daily-root`), PR5 (fiyat + D0), PR6 (architecture.md özeti). 2027-03-31'e kadar H1–H4 için ara
    performans değerlendirmesi yok (K4).
 7. Telegram botu: Efe BotFather'dan açıp token/chat id'yi ortam değişkenine koyacak
    (`docs/notify.md`); ilk gerçek `--send` denemesi Efe'de.
