@@ -19,7 +19,12 @@
     "max_message_mib": 4
   },
   "stop_on_http_status": [429],
+  "tolerated_control_event_types": ["hb", "request_queued", "welcome"],
   "capture_root": "data/interim/daily_capture",
+  "base_capture": {
+    "root": "data/interim/period_analysis",
+    "filename": "2025-09-26_2026-09-25.json"
+  },
   "permission_status": "user_asserted_2026-09-28_not_independently_verified",
   "price_history": {
     "start_date": "2023-01-02",

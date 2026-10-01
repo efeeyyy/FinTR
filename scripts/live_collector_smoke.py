@@ -662,6 +662,34 @@ class SymbolCollectionResult(NamedTuple):
     capture_packet_sha256: str | None
     diagnostics: tuple[dict[str, object], ...]
     unknown_event_types_count: int
+    # Unknown event-type names (sanitized like ``_event_status_label``) with
+    # counts, sorted by name: split by whether the caller tolerates them.
+    tolerated_event_types: tuple[tuple[str, int], ...] = ()
+    blocking_event_types: tuple[tuple[str, int], ...] = ()
+
+
+def _split_unknown_event_types(
+    results, tolerated: frozenset[str],
+) -> tuple[tuple[tuple[str, int], ...], tuple[tuple[str, int], ...]]:
+    """(tolerated, blocking) ``(sanitized name, count)`` pairs of unknown events.
+
+    A name that fails the showable-name rule is recorded as
+    ``[UNKNOWN_EVENT_TYPE]`` and can never be tolerated (the tolerated set
+    only holds names that pass the rule).
+    """
+    counts: dict[str, int] = {}
+    for result in results:
+        if result.known:
+            continue
+        name = _event_status_label(result.event_type, show_unknown_event_types=True)
+        counts[name] = counts.get(name, 0) + 1
+    tolerated_pairs = tuple(sorted(
+        (name, count) for name, count in counts.items() if name in tolerated
+    ))
+    blocking_pairs = tuple(sorted(
+        (name, count) for name, count in counts.items() if name not in tolerated
+    ))
+    return tolerated_pairs, blocking_pairs
 
 
 def _normalize_multi_symbol(value: str, parser: argparse.ArgumentParser) -> str:
@@ -778,6 +806,7 @@ async def _collect_multi_symbol(
     daily_collection_metadata: Mapping[str, object] | None = None,
     stop_on_http_status: frozenset[int] = frozenset(),
     fail_closed_on_unknown_events: bool = False,
+    tolerated_control_event_types: frozenset[str] = frozenset(),
     secret_provider: "_CachedSecretProvider | None" = None,
     results_sink: list[SymbolCollectionResult] | None = None,
 ) -> int:
@@ -802,6 +831,10 @@ async def _collect_multi_symbol(
       during a symbol's attempts blocks that symbol's capture, regardless
       of whether the four expected responses still matched (ADR §6
       "Fail-closed").
+    - ``tolerated_control_event_types``: names of unknown event types that
+      do not trigger ``fail_closed_on_unknown_events`` (the daily config's
+      control-frame list, ADR K6); any other unknown type still does. Empty
+      by default, i.e. every unknown type blocks when fail-closed is on.
     - ``secret_provider``: lets the caller keep its own
       ``_CachedSecretProvider`` instance to read back ``initData`` metadata
       (e.g. K1b's age bucket) after the run.
@@ -909,12 +942,20 @@ async def _collect_multi_symbol(
         unknown_event_types_count = (
             sum(1 for result in results if not result.known) if results is not None else 0
         )
+        tolerated_types, blocking_types = (
+            _split_unknown_event_types(results, tolerated_control_event_types)
+            if results is not None else ((), ())
+        )
         capture_path: str | None = None
         capture_packet_sha256: str | None = None
         if results is None or not any_sent:
             status = "failed:session_no_send" if not any_sent else "failed:connection_error"
-        elif fail_closed_on_unknown_events and unknown_event_types_count > 0:
-            print(f"{symbol}: unknown event type observed; fail-closed, no capture saved")
+        elif fail_closed_on_unknown_events and blocking_types:
+            print(
+                f"{symbol}: unknown event type observed ("
+                + ", ".join(name for name, _count in blocking_types)
+                + "); fail-closed, no capture saved"
+            )
             status = "failed:unknown_event_type"
         else:
             try:
@@ -952,7 +993,7 @@ async def _collect_multi_symbol(
         if results_sink is not None:
             results_sink.append(SymbolCollectionResult(
                 symbol, status, frames_used, capture_path, capture_packet_sha256,
-                diagnostics, unknown_event_types_count,
+                diagnostics, unknown_event_types_count, tolerated_types, blocking_types,
             ))
 
         rate_limited = stop_categories and any(

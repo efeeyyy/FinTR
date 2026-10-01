@@ -192,6 +192,25 @@ birleştirilmemeli; aynı event adını taşıyan repo fixture'ıyla eşdeğer s
   Repo fixture'ı sentetiktir; kullanıcı kaynağındaki finansal değerler veya
   tarihler kopyalanmamıştır. Legacy parser ve feature davranışı değiştirilmemiştir.
 
+### Kontrol frame'leri (gözlenen: yalnız event adları)
+
+Gözlem: 2026-10-01, Efe'nin tek sembollü `--show-unknown-event-types`
+probu (WS). Yalnız **adlar** kaydedilir; payload alanları gözlenmemiş/kaydedilmemiştir
+ve hiçbir parser tarafından kullanılmaz. Anlamlar **ad ve sıradan çıkarımdır**,
+sağlayıcı dokümanıyla doğrulanmamıştır.
+
+| Event adı | Gözlenen sıklık | Çıkarılan anlam (belirsiz) |
+|---|---|---|
+| `welcome` | İlk frame, bağlantı başına bir kez | Bağlantı karşılama mesajı |
+| `hb` | Tekrarlayan | Heartbeat (canlılık sinyali) |
+| `request_queued` | Her istekten sonra bir kez | İstek kuyruğa alındı bildirimi |
+
+Probda başka bilinmeyen event tipi gözlenmedi. Bu üç ad, günlük çalıştırmada
+fail-closed dışı tutulan kontrol frame'leri olarak
+`configs/collection/daily_miniapp_v1.json` içinde `tolerated_control_event_types`
+altında listelenir (ADR kararı K6); başka her bilinmeyen tip günlük çalıştırmada
+sembolün kaydını engellemeye devam eder.
+
 ## Public JS bulgusu (JS; WS gözlemi değil)
 
 `fetchBrokerages()` önce in-memory ve güncel localStorage cache'ini kontrol

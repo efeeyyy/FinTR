@@ -540,7 +540,23 @@ gündelik kullanım adımları için
   (`failed:unknown_event_type` / `failed:handoff_<neden>`); manuel
   çoklu-sembol akışı (bu sayfanın "Live smoke" bölümü) bu davranışı
   paylaşmaz, yalnız günlük çalıştırıcı `fail_closed_on_unknown_events=True`
-  ile açar.
+  ile açar. **Tolere edilen kontrol frame'leri (2026-10-01, ADR K6):**
+  config'teki `tolerated_control_event_types` (`hb`, `request_queued`,
+  `welcome`) `_collect_multi_symbol`'a yeni opsiyonel
+  `tolerated_control_event_types` parametresiyle geçer; bir sembol yalnız
+  listede **olmayan** bir bilinmeyen tip görülürse `failed:unknown_event_type`
+  olur (ilk canlı çalıştırmada bu üç tip yüzünden 20 sembolün tamamı
+  başarısız oldu). Üç adın anlamı ad ve sıradan çıkarımdır, doğrulanmamıştır
+  ([protokol envanteri](protocol_inventory.md#kontrol-frameleri-gözlenen-yalnız-event-adları)).
+  Liste CLI ile genişletilmez; adlar `^[a-z][a-z_]{0,39}$` kuralına uymalı ve
+  desteklenen veri event tiplerinden biri olmamalıdır (config yüklenirken
+  doğrulanır). Parametre verilmezse (varsayılan boş) davranış aynıdır.
+- **Telafi tabanı:** çalıştırma kaydı yokken ilk pencere `S = E - 14`
+  olduğundan, temel yıllık kayıtla (2026-09-25'te biten) günlük kayıt arasında
+  boşluk kalmaması için config `base_capture` (`root` + `filename`) ile adlandırılan
+  temel kayıt dosyası varsa o sembolün son başarı tarihi en az dosya adındaki
+  bitiş tarihi (2026-09-25) sayılır; dosya yoksa taban uygulanmaz
+  (`scan_base_capture_ends`; yalnız varlık kontrolü, dosya açılmaz).
 - **K1b (initData yaşı):** `_CachedSecretProvider`, initData'dan yalnız
   `auth_date`'i bellekte okur; çalıştırma kaydına yalnız yaş kovası
   (`<1h`, `1–24h`, `>24h`) ve kabul/ret yazılır — değer veya hash asla
@@ -550,7 +566,11 @@ gündelik kullanım adımları için
   `fintr_daily_collection_run_v1`); finansal değer, kurum kodu/adı,
   `initData` veya URL içermez (`validate_context_contains_no_secrets` ile
   yazımdan önce denetlenir). Sonraki çalıştırmanın telafi penceresi bu
-  kayıtlardan okunur (`scan_last_success`).
+  kayıtlardan okunur (`scan_last_success`). Eklenen alanlar (şema sürümü
+  değişmedi, yalnız ekleme): sembol başına `unknown_event_types`
+  (`tolerated` / `blocking`: temizlenmiş ad + sayı; kurala uymayan ad
+  `[UNKNOWN_EVENT_TYPE]`), çalıştırma düzeyinde `tolerated_control_event_types`
+  (`names` + `sha256`). `unknown_event_types_count` toplam olarak kalır.
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src"

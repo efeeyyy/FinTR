@@ -54,7 +54,9 @@ from fintr.collection.planner import (
     config_sha256,
     load_daily_collection_config,
     plan_daily_collection,
+    scan_base_capture_ends,
     scan_last_success,
+    tolerated_event_types_sha256,
 )
 from fintr.evaluation.live_capture import LivePilotCaptureError, validate_context_contains_no_secrets
 from fintr.evaluation.symbol_guard import ActiveGuards, SymbolGuardError, load_active_guards
@@ -406,8 +408,23 @@ def run_price_step(
     }
 
 
+def _tolerated_block(config: DailyCollectionConfig) -> dict[str, object]:
+    """Run-level record of the tolerated control-frame list (ADR K6)."""
+    names = list(config.tolerated_control_event_types)
+    return {"names": names, "sha256": tolerated_event_types_sha256(names)}
+
+
+def _unknown_event_types_block(tolerated, blocking) -> dict[str, object]:
+    """Per-symbol unknown event-type names (already sanitized) with counts."""
+    return {
+        "tolerated": [{"name": name, "count": count} for name, count in tolerated],
+        "blocking": [{"name": name, "count": count} for name, count in blocking],
+    }
+
+
 def build_run_record_skeleton(
     *, run_date: date, config_path: Path, config_hash: str, guards, plan, price_plan,
+    config: DailyCollectionConfig,
 ) -> dict[str, object]:
     """The ``fintr_daily_collection_run_v1`` skeleton ``--dry-run`` prints.
 
@@ -438,6 +455,7 @@ def build_run_record_skeleton(
             "frames_used": 0,
             "diagnostics": [],
             "unknown_event_types_count": 0,
+            "unknown_event_types": _unknown_event_types_block((), ()),
         })
     return {
         "schema": RUN_RECORD_SCHEMA,
@@ -459,6 +477,7 @@ def build_run_record_skeleton(
         # in its banned key-part list) regardless of this field's harmless
         # content, and the live run record below reuses that exact check.
         "init_data_status": {"prompted": False, "age_seconds_bucket": None},
+        "tolerated_control_event_types": _tolerated_block(config),
         "symbols": symbols,
         "rate_limit": {"http_429_count": 0, "stopped_on_429": False},
         "price_history": price_plan_block(price_plan),
@@ -570,6 +589,7 @@ async def _run_live(
     timeout_seconds = float(collector_raw.get("timeout_seconds", 5.0))
     max_message_mib = int(collector_raw.get("max_message_mib", 1))
     stop_on_http_status = frozenset(config.stop_on_http_status)
+    tolerated_control_event_types = frozenset(config.tolerated_control_event_types)
     daily_collection_metadata = _daily_collection_metadata(
         config=config, config_path=args.config, run_id=run_id, run_date=run_date,
     )
@@ -620,6 +640,7 @@ async def _run_live(
             daily_collection_metadata=daily_collection_metadata,
             stop_on_http_status=stop_on_http_status,
             fail_closed_on_unknown_events=True,
+            tolerated_control_event_types=tolerated_control_event_types,
             secret_provider=secret_provider,
             results_sink=results_sink,
         )
@@ -665,6 +686,7 @@ async def _run_live(
                 "symbol": entry.symbol, "role": entry.role, "window": window,
                 "status": entry.status, "capture_path": None, "capture_packet_sha256": None,
                 "frames_used": 0, "diagnostics": [], "unknown_event_types_count": 0,
+                "unknown_event_types": _unknown_event_types_block((), ()),
             })
         else:
             symbols_out.append({
@@ -674,6 +696,9 @@ async def _run_live(
                 "frames_used": result.frames_used,
                 "diagnostics": [dict(diagnostic) for diagnostic in result.diagnostics],
                 "unknown_event_types_count": result.unknown_event_types_count,
+                "unknown_event_types": _unknown_event_types_block(
+                    result.tolerated_event_types, result.blocking_event_types,
+                ),
             })
 
     rate_limit_categories = {f"handshake_rejected_http_{code}" for code in stop_on_http_status}
@@ -716,6 +741,7 @@ async def _run_live(
             ),
             "accepted": init_data_accepted if init_data_prompted else None,
         },
+        "tolerated_control_event_types": _tolerated_block(config),
         "symbols": symbols_out,
         "rate_limit": {"http_429_count": http_429_count, "stopped_on_429": stopped_on_429},
         "price_history": price_history,
@@ -772,8 +798,19 @@ def main(argv: list[str] | None = None) -> int:
     run_records_dir = PROJECT_ROOT / config.capture_root / RUN_RECORDS_SUBDIR
     last_success = scan_last_success(run_records_dir)
 
+    base_capture_ends: dict[str, date] = {}
+    if config.base_capture_root is not None:
+        base_capture_ends = scan_base_capture_ends(
+            PROJECT_ROOT / config.base_capture_root, config.base_capture_filename,
+            [
+                symbol for symbol in guards.split.development_symbols
+                if not guards.is_excluded(symbol)
+            ],
+        )
+
     plan = plan_daily_collection(
         run_date=run_date, guards=guards, last_success_by_symbol=last_success,
+        base_capture_end_by_symbol=base_capture_ends,
         end_offset_days=config.end_offset_days,
         lookback_calendar_days=config.lookback_calendar_days,
         max_span_days=config.max_span_days,
@@ -793,7 +830,7 @@ def main(argv: list[str] | None = None) -> int:
         run_record = build_run_record_skeleton(
             run_date=run_date, config_path=args.config,
             config_hash=config_sha256(args.config), guards=guards, plan=plan,
-            price_plan=price_plan,
+            price_plan=price_plan, config=config,
         )
         if args.format == "json":
             print(json.dumps(run_record, ensure_ascii=False, indent=2))

@@ -526,6 +526,21 @@ Okurken bakılacak alanlar:
   `failed:handoff_<neden>`). `saved` olan her satırda `capture_path`
   (`data/interim/daily_capture/<SYM>/<S>_<E>.json`) ve
   `capture_packet_sha256` doludur.
+- `symbols[].unknown_event_types` ve çalıştırma düzeyindeki
+  `tolerated_control_event_types` (2026-10-01, ADR K6): `hb`, `request_queued`
+  ve `welcome` kontrol frame'leri günlük çalıştırmada tolere edilir (anlamları
+  ad ve sıradan çıkarımdır, doğrulanmamıştır) ve sembolü başarısız yapmaz;
+  `tolerated` altında ad + sayı olarak görünür. `blocking` altındaki her ad
+  (kurala uymayan ad `[UNKNOWN_EVENT_TYPE]`) sembolü `failed:unknown_event_type`
+  yapar ve konsolda da (`AKFIS: unknown event type observed (<ad>); fail-closed`)
+  yazılır. `tolerated_control_event_types.sha256` config listesinin hash'idir.
+  Liste komut satırıyla genişletilemez; yeni bir ad için config değişikliği ve
+  karar kaydı gerekir.
+- `symbols[].window`: kayıt yokken bile temel yıllık kayıt
+  (`data/interim/period_analysis/<SYM>/2025-09-26_2026-09-25.json`) varsa
+  pencere başı en geç 2026-09-11'dir (`catch_up: true`; 09-25 − 14 gün), böylece
+  temel kayıtla günlük kayıt arasında boşluk kalmaz; dosyası olmayan sembol
+  eski `E-14g` penceresini alır. `--dry-run` bunu önceden gösterir.
 - `rate_limit.stopped_on_429` / `http_429_count`: `true` ise ilk 429
   görüldüğünde kalan semboller denenmeden atlandı (ADR §6); aynı gün elle
   yeniden deneme yapılmaz, ertesi günün telafi penceresi eksikleri kapatır.

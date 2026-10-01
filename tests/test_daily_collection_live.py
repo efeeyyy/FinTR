@@ -12,6 +12,7 @@ helper (no captured market data; every field is synthetic).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import io
 import json
@@ -38,6 +39,10 @@ ROOT = Path(__file__).resolve().parents[1]
 WINDOW_START = date(2026, 9, 14)
 WINDOW_END = date(2026, 9, 23)
 RUN_DATE = WINDOW_END + timedelta(days=1)  # E = R - 1
+
+
+# The three control frames Efe's 2026-10-01 probe observed (ADR K6).
+CONTROL_FRAMES = ["hb", "request_queued", "welcome"]
 
 
 def _load_script(name: str):
@@ -333,6 +338,109 @@ class LiveRunCliTests(guard_fixtures.GuardEnvMixin, unittest.TestCase):
         self.assertEqual(by_symbol["AKFIS"]["status"], "failed:unknown_event_type")
         self.assertEqual(by_symbol["AKFIS"]["unknown_event_types_count"], 1)
 
+    # -- Tolerated control frames (ADR K6) ---------------------------------------
+
+    def _frames(self, *types):
+        from fintr.collector.client import replay_frames
+        return asyncio.run(replay_frames(tuple(json.dumps({"type": t}) for t in types)))
+
+    def _tolerance_run(self, extra_frames, *, tolerated=CONTROL_FRAMES):
+        root = self._env()
+        overrides = {} if tolerated is None else {"tolerated_control_event_types": tolerated}
+        config_path = _config(root, **overrides)
+        results, _requests = self._period_analysis_case()
+        code, out, err, _calls = self._run(
+            root,
+            [
+                "--allow-session-takeover", "--config", str(config_path),
+                "--run-date", RUN_DATE.isoformat(),
+            ],
+            [{
+                "sent": collect_daily.smoke.PERIOD_ANALYSIS_REQUEST_TYPES,
+                "results": (*self._frames(*extra_frames[:1]), *results,
+                            *self._frames(*extra_frames[1:])),
+            }],
+        )
+        record = self._run_record(root)
+        by_symbol = {entry["symbol"]: entry for entry in record["symbols"]}
+        capture_dir = root / "data" / "interim" / "daily_capture" / "AKFIS"
+        return code, out, err, record, by_symbol["AKFIS"], capture_dir
+
+    def test_tolerated_control_frames_only_are_saved_and_recorded(self):
+        code, _out, err, record, akfis, capture_dir = self._tolerance_run(
+            ("welcome", "hb", "request_queued", "hb"),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(akfis["status"], "saved")
+        self.assertTrue(capture_dir.is_dir())
+        self.assertEqual(akfis["unknown_event_types_count"], 4)
+        self.assertEqual(akfis["unknown_event_types"], {
+            "tolerated": [
+                {"name": "hb", "count": 2},
+                {"name": "request_queued", "count": 1},
+                {"name": "welcome", "count": 1},
+            ],
+            "blocking": [],
+        })
+        names = ["hb", "request_queued", "welcome"]
+        self.assertEqual(record["tolerated_control_event_types"], {
+            "names": names,
+            "sha256": hashlib.sha256(b'["hb","request_queued","welcome"]').hexdigest(),
+        })
+        from fintr.evaluation.live_capture import validate_context_contains_no_secrets
+        validate_context_contains_no_secrets(record)  # must not raise
+
+    def test_one_non_tolerated_unknown_type_fails_closed_and_names_it(self):
+        code, out, _err, _record, akfis, capture_dir = self._tolerance_run(
+            ("welcome", "depth_tick"),
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(akfis["status"], "failed:unknown_event_type")
+        self.assertFalse(capture_dir.exists())
+        self.assertEqual(akfis["unknown_event_types"], {
+            "tolerated": [{"name": "welcome", "count": 1}],
+            "blocking": [{"name": "depth_tick", "count": 1}],
+        })
+        self.assertIn("AKFIS: unknown event type observed (depth_tick); fail-closed", out)
+
+    def test_mixed_unknown_types_fail_closed_with_the_split_recorded(self):
+        code, out, _err, record, akfis, capture_dir = self._tolerance_run(
+            ("hb", "depth_tick", "hb", "request_queued", "authorization:abc123"),
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(akfis["status"], "failed:unknown_event_type")
+        self.assertFalse(capture_dir.exists())
+        self.assertEqual(akfis["unknown_event_types_count"], 5)
+        self.assertEqual(akfis["unknown_event_types"], {
+            "tolerated": [
+                {"name": "hb", "count": 2},
+                {"name": "request_queued", "count": 1},
+            ],
+            "blocking": [
+                {"name": "[UNKNOWN_EVENT_TYPE]", "count": 1},
+                {"name": "depth_tick", "count": 1},
+            ],
+        })
+        # The unsafe name is never echoed, in the record or on the console.
+        self.assertNotIn("authorization", json.dumps(record))
+        self.assertNotIn("authorization", out)
+        self.assertIn("[UNKNOWN_EVENT_TYPE], depth_tick); fail-closed", out)
+
+    def test_without_a_tolerated_list_every_unknown_type_still_blocks(self):
+        # A config with no tolerated_control_event_types key keeps the strict
+        # behavior: even welcome/hb block.
+        code, _out, _err, _record, akfis, capture_dir = self._tolerance_run(
+            ("welcome", "hb"), tolerated=None,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(akfis["status"], "failed:unknown_event_type")
+        self.assertFalse(capture_dir.exists())
+        self.assertEqual(akfis["unknown_event_types"]["tolerated"], [])
+        self.assertEqual(
+            akfis["unknown_event_types"]["blocking"],
+            [{"name": "hb", "count": 1}, {"name": "welcome", "count": 1}],
+        )
+
     # -- Catch-up is read from a prior run record --------------------------------
 
     def test_catch_up_window_is_read_from_a_prior_run_record(self):
@@ -384,6 +492,112 @@ class LiveRunCliTests(guard_fixtures.GuardEnvMixin, unittest.TestCase):
         provider.assert_not_called()
         self.assertIn("Dry run: no connection opened, no initData prompted.", out.getvalue())
         self.assertFalse((root / "data" / "interim" / "daily_capture").exists())
+
+
+class ToleratedControlFrameUnitTests(unittest.IsolatedAsyncioTestCase):
+    """Config validation and the non-daily ``_collect_multi_symbol`` path."""
+
+    def _load(self, **overrides):
+        from fintr.collection.planner import load_daily_collection_config
+        with tempfile.TemporaryDirectory() as directory:
+            return load_daily_collection_config(_config(Path(directory), **overrides))
+
+    def test_real_config_lists_exactly_the_three_control_frames(self):
+        from fintr.collection.planner import load_daily_collection_config
+        config = load_daily_collection_config(
+            ROOT / "configs" / "collection" / "daily_miniapp_v1.json",
+        )
+        self.assertEqual(config.tolerated_control_event_types, tuple(CONTROL_FRAMES))
+
+    def test_config_without_the_key_tolerates_nothing(self):
+        self.assertEqual(self._load().tolerated_control_event_types, ())
+
+    def test_config_rejects_bad_entries(self):
+        from fintr.collection.planner import CollectionPlannerError
+        bad_lists = (
+            "hb",                          # not a list
+            ["hb", 1],                     # not a string
+            ["Hb"],                        # fails the showable-name rule
+            ["authorization:abc"],         # fails the showable-name rule
+            ["[UNKNOWN_EVENT_TYPE]"],      # the sanitizer label itself
+            [""],
+            ["a" * 41],                    # longer than 40
+            ["akd_data"],                  # supported data event types
+            ["custody_analysis_data"],
+            ["depth_update"],
+            ["error"],                     # provider error/ban frames and the wrapper
+            ["banned"],
+            ["market_update"],
+            ["welcome", "hb"],             # unsorted
+            ["hb", "hb"],                  # duplicate
+        )
+        for bad in bad_lists:
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(CollectionPlannerError, "invalid_config_field"):
+                    self._load(tolerated_control_event_types=bad)
+
+    def test_every_supported_data_event_type_is_rejected(self):
+        from fintr.collection.planner import CollectionPlannerError
+        from fintr.collector.events import SUPPORTED_EVENT_TYPES
+        for name in SUPPORTED_EVENT_TYPES:
+            with self.subTest(name=name):
+                with self.assertRaises(CollectionPlannerError):
+                    self._load(tolerated_control_event_types=[name])
+
+    def test_planner_and_smoke_use_the_same_showable_name_rule(self):
+        from fintr.collection.planner import SHOWABLE_EVENT_TYPE_PATTERN
+        self.assertEqual(
+            SHOWABLE_EVENT_TYPE_PATTERN.pattern,
+            collect_daily.smoke._SHOWABLE_UNKNOWN_EVENT_TYPE.pattern,
+        )
+
+    async def test_split_unknown_event_types_sanitizes_and_sorts(self):
+        from fintr.collector.client import replay_frames
+        results = await (replay_frames((
+            '{"type":"hb"}', '{"type":"zeta_frame"}', '{"type":"hb"}',
+            '{"type":"authorization:abc123"}',
+        )))
+        tolerated, blocking = collect_daily.smoke._split_unknown_event_types(
+            results, frozenset({"hb"}),
+        )
+        self.assertEqual(tolerated, (("hb", 2),))
+        self.assertEqual(blocking, (("[UNKNOWN_EVENT_TYPE]", 1), ("zeta_frame", 1)))
+
+    async def test_non_daily_path_ignores_the_tolerated_set_and_still_saves(self):
+        # fail_closed_on_unknown_events=False (every manual-tool caller): unknown
+        # frames never block, tolerated list or not.
+        from fintr.collector.client import replay_frames
+        results, _requests = await smoke_fixtures.LiveSmokeTests.period_analysis_case(self)
+        control = await replay_frames(('{"type":"welcome"}', '{"type":"depth_tick"}'))
+        parser = collect_daily.smoke._parser()
+        args = parser.parse_args((
+            "--symbols", "AKFIS",
+            "--start-date", "2026-09-14", "--end-date", "2026-09-23",
+            "--save-period-analysis-context", "--allow-session-takeover",
+        ))
+        for tolerated in (frozenset(), frozenset(CONTROL_FRAMES)):
+            with self.subTest(tolerated=sorted(tolerated)):
+                factory, _calls = smoke_fixtures._multi_symbol_collector_factory([{
+                    "sent": collect_daily.smoke.PERIOD_ANALYSIS_REQUEST_TYPES,
+                    "results": (*control, *results),
+                }])
+                sink: list = []
+                with tempfile.TemporaryDirectory() as temporary:
+                    with (
+                        patch.object(collect_daily.smoke, "PROJECT_ROOT", Path(temporary)),
+                        patch.object(collect_daily.smoke, "WebSocketCollector") as collector,
+                        patch.object(collect_daily.smoke, "InteractiveSecretProvider"),
+                        redirect_stdout(io.StringIO()),
+                    ):
+                        collector.side_effect = factory
+                        code = await collect_daily.smoke._collect_multi_symbol(
+                            args, ("AKFIS",),
+                            date(2026, 9, 14), date(2026, 9, 23), date(2026, 9, 23),
+                            tolerated_control_event_types=tolerated, results_sink=sink,
+                        )
+                self.assertEqual(code, 0)
+                self.assertEqual(sink[0].status, "saved")
+                self.assertEqual(sink[0].unknown_event_types_count, 2)
 
 
 class IstanbulTodayTests(unittest.TestCase):

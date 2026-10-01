@@ -58,6 +58,14 @@ ve `src/fintr/data/period_capture.py` içinde.
 - Telafi: son başarılı pencere sonu `L` ise `S = min(S, L − 14)`; `E − S > 90` gün
   olursa planlayıcı durur ve elle `--allow-large-range` kararı ister (sessiz büyük
   istek yok).
+- Telafi tabanı (2026-10-01): çalıştırma kaydı yokken `S = E − 14` yüzünden ilk
+  başarı ~2026-10-09'dan sonra olursa temel kaydın bitişinden (2026-09-25) sonraki
+  günler hiç toplanmazdı. Bu yüzden temel yıllık kaydın dosyası varsa (config
+  `base_capture`: `root` + `filename`; bitiş tarihi dosya adından türetilir,
+  planlayıcıya sabit yazılmaz) o sembolün `L`'si en az bu bitiş tarihi sayılır:
+  `L = max(son başarılı pencere sonu, temel kayıt bitişi)`. Dosya yoksa taban
+  yoktur. Planlayıcı saf kalır (taban tarihleri dışarıdan verilir; dosya
+  içeriği açılmaz). 90 gün kuralı değişmedi.
 - İstek profili değişmez: `get_brokerages`, `get_akd(S,E)`,
   `custody_analysis(S,E)`, `get_custodian_diff(S,E)`; sembol başına ayrı bağlantı.
 - Boyut bütçesi (ölçüm değil): runbook'a göre 14 işlem günlük `custody_analysis`
@@ -137,8 +145,19 @@ dosyalarının temizliği ayrı karar (saklama politikası).
   yok; ertesi çalıştırmanın telafi penceresi eksikleri kapatır.
 - Semboller arası bekleme config'te (öneri 30 s, mevcut üst sınır); `--max-wall-seconds`
   korunur; `--allow-session-takeover` onayı korunur.
-- Fail-closed: beklenmeyen şema (parse hatası) veya bilinmeyen olay tipi artışı o
-  hisse için kaydı engeller; çalıştırma kaydında kategori olarak görünür.
+- Fail-closed: beklenmeyen şema (parse hatası) veya **tolere edilmeyen** bilinmeyen
+  olay tipi o hisse için kaydı engeller; çalıştırma kaydında kategori olarak
+  görünür. Tolere edilen tek küme config'teki `tolerated_control_event_types`
+  listesidir (K6: `hb`, `request_queued`, `welcome`); bu üç adın anlamı ad ve
+  sıradan çıkarımdır, sağlayıcı dokümanıyla doğrulanmadı, payload'ları hiçbir
+  parser tarafından kullanılmaz. Listedeki adlar `^[a-z][a-z_]{0,39}$` kuralına
+  uymalı, sıralı ve tekil olmalı, desteklenen veri event tiplerinden (veya
+  `error`/`banned`/`market_update`'ten) biri olmamalıdır; aksi hâlde config
+  yüklenmez. Listeyi genişletecek CLI bayrağı yoktur: yeni bir ad ancak config
+  değişikliği (ve karar kaydı) ile eklenir. Listede olmayan her bilinmeyen tip
+  (güvensiz adlar `[UNKNOWN_EVENT_TYPE]` olarak) hâlâ `failed:unknown_event_type`
+  verir. Çalıştırma kaydı tolere edilen ve engelleyen adları sayılarıyla ayrı
+  yazar (aşağıda, "Şemalar").
 
 ### 7. Kapsam ve veri bütünlüğü
 
@@ -213,9 +232,14 @@ yükleyici opsiyonel okur):
       "capture_packet_sha256": "...",
       "frames_used": 0,
       "diagnostics": [{"attempt": 1, "stage": "connect", "category": "handshake_rejected_http_429"}],
-      "unknown_event_types_count": 0
+      "unknown_event_types_count": 0,
+      "unknown_event_types": {
+        "tolerated": [{"name": "hb", "count": 3}],
+        "blocking": [{"name": "[UNKNOWN_EVENT_TYPE]", "count": 1}]
+      }
     }
   ],
+  "tolerated_control_event_types": {"names": ["hb", "request_queued", "welcome"], "sha256": "..."},
   "rate_limit": {"http_429_count": 0, "stopped_on_429": false},
   "price_history": {"status": "saved | skipped | failed", "files": ["..."]},
   "notes": "yalnız sabit kategoriler; finansal değer yok"
@@ -223,6 +247,20 @@ yükleyici opsiyonel okur):
 ```
 
 `init_data.age_seconds_bucket`: yalnız K1b onaylanırsa doldurulur (aşağıda).
+
+Kontrol frame alanları (2026-10-01, K6): `unknown_event_types` o sembolün
+bilinmeyen event tiplerinin adlarını ve sayılarını, tolere edilen / engelleyen
+olarak ayrı, ada göre sıralı yazar; `unknown_event_types_count` ikisinin
+toplamı olarak aynen kalır. Adlar `_event_status_label` ile aynı kuralla
+temizlenir (`^[a-z][a-z_]{0,39}$`'e uymayan ad `[UNKNOWN_EVENT_TYPE]` yazılır,
+ham metin kaydedilmez). Çalıştırma düzeyindeki `tolerated_control_event_types`
+config listesini ve sha256'sını taşır (sha256: sıralı adların kompakt JSON
+dizisinin, ör. `["hb","request_queued","welcome"]`, UTF-8 baytları). Alanlar
+yalnız ekleme olduğundan **şema sürümü artırılmadı** (`fintr_daily_collection_run_v1`):
+okuyucular (`scan_last_success`) yalnız `schema`, `symbols[].symbol/status/window`
+okur; eski kayıtlarda bu alanlar yoktur. Yeni config alanları da opsiyoneldir:
+`tolerated_control_event_types` yoksa hiçbir tip tolere edilmez, `base_capture`
+yoksa telafi tabanı uygulanmaz.
 
 ### Birleştirme soyu `fintr_period_composition_v1`
 
@@ -257,6 +295,8 @@ Bellek içinde üretilir; tarayıcı çıktısına gömülür. Diske ayrı dosya
   "collector": {"max_frames": 16, "timeout_seconds": 15, "max_message_mib": 4},
   "stop_on_http_status": [429],
   "capture_root": "data/interim/daily_capture",
+  "base_capture": {"root": "data/interim/period_analysis", "filename": "2025-09-26_2026-09-25.json"},
+  "tolerated_control_event_types": ["hb", "request_queued", "welcome"],
   "permission_status": "user_asserted_2026-09-28_not_independently_verified",
   "price_history": {"start_date": "2023-01-02", "pacing_seconds": 1.5}
 }
@@ -320,5 +360,6 @@ Canlı (Efe, kabul sonrası):
 | K3 | Depolama: kayan pencere + birleştirici (c) mi? | Evet | Evet. |
 | K4 | Holdout testi kaynağı Nisan 2027 tek seferlik kayıt olarak kalsın; test penceresi gözlemleri spec/kural değişikliğine girdi olmasın mı? | Evet | Evet. Ek süreç kuralı: 2027-03-31'e kadar H1–H4 için test penceresi verisiyle ara performans değerlendirmesi yapılmaz (gözlem sonrası getiri hesabı veya isabet sayımı dahil); kural ve eşik değişikliği yok. |
 | K5 | Çalıştırma penceresi ve makine (Efe'nin Windows makinesi, T+1 08:00–09:30)? | Efe belirler | Efe'nin Windows bilgisayarı, T+1 08:00–09:30 (Europe/Istanbul). Sağlayıcının yayın saati doğrulanmadı; son günün eksik gelmesi boşluk sayılır ve sonraki çalıştırmada tamamlanır, bu durum çalıştırma kaydında izlenir. |
+| K6 | İlk canlı günlük çalıştırmada (2026-10-01) 20 sembolün tamamı `failed:unknown_event_type` oldu; dört beklenen yanıt gelmişti. Tek sembollü probda yalnız `welcome` (ilk frame, bir kez), `hb` ve `request_queued` (her istekten sonra bir kez) bilinmeyen tip olarak görüldü. Bu üç tip günlük çalıştırmada tolere edilsin mi? | Evet, yalnız bu üç ad; başka her bilinmeyen tip fail-closed kalsın | **2026-10-01, Efe: "evet olsun".** Yalnız `hb`, `request_queued`, `welcome` tolere edilir (config `tolerated_control_event_types`; CLI ile genişletilemez). Üç adın anlamı (karşılama / heartbeat / istek kuyruğa alındı) ad ve sıradan çıkarımdır, sağlayıcı dokümanıyla doğrulanmadı; payload'ları hiçbir parser tarafından kullanılmaz. Tolere/engelleyen adlar çalıştırma kaydına yazılır (§6, "Şemalar"). |
 
 K4'ün ek süreç kuralı §7'ye de işlendi (aşağıda).

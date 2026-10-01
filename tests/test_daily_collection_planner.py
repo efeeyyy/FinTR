@@ -27,9 +27,11 @@ from fintr.collection.planner import (
     STATUS_PLANNED,
     STATUS_SKIPPED_EXCLUDED,
     STATUS_SKIPPED_HOLDOUT,
+    base_capture_end_date,
     config_sha256,
     load_daily_collection_config,
     plan_daily_collection,
+    scan_base_capture_ends,
     scan_last_success,
 )
 from fintr.evaluation.symbol_guard import load_active_guards
@@ -233,6 +235,181 @@ class RunRecordScanTests(unittest.TestCase):
                 "symbols": [{"symbol": "DEVA", "status": "saved", "window": {"end": "not-a-date"}}],
             })
             self.assertEqual(scan_last_success(root), {})
+
+
+class BaseCaptureFloorTests(GuardEnv):
+    """Base one-year capture end as a last-success floor (catch-up gap fix)."""
+
+    BASE_END = date(2026, 9, 25)
+    BASE_FILE = "2025-09-26_2026-09-25.json"
+
+    def _dev(self, plan):
+        return {entry.symbol: entry for entry in plan.symbols if entry.role == "development"}
+
+    def test_floor_reaches_back_to_the_base_end_on_the_first_run(self):
+        self.make_env()
+        guards = load_active_guards()
+        plan = plan_daily_collection(
+            run_date=date(2026, 10, 1), guards=guards,
+            base_capture_end_by_symbol={"DEVA": self.BASE_END},
+        )
+        window = self._dev(plan)["DEVA"].window
+        self.assertEqual(window.start, date(2026, 9, 11))  # base end - 14d
+        self.assertLessEqual(window.start, self.BASE_END)
+        self.assertTrue(window.catch_up)
+
+    def test_first_success_long_after_the_base_end_leaves_no_gap(self):
+        # Without the floor S = E - 14d = 2026-10-05 here, and 2026-09-26..
+        # 2026-10-04 would never be collected.
+        self.make_env()
+        guards = load_active_guards()
+        plan = plan_daily_collection(
+            run_date=date(2026, 10, 20), guards=guards,
+            base_capture_end_by_symbol={"DEVA": self.BASE_END},
+        )
+        dev = self._dev(plan)
+        self.assertEqual(dev["DEVA"].status, STATUS_PLANNED)
+        self.assertEqual(dev["DEVA"].window.start, date(2026, 9, 11))
+        self.assertLessEqual(dev["DEVA"].window.start, self.BASE_END)
+        self.assertEqual(dev["DEVB"].window.start, date(2026, 10, 5))  # no floor: unchanged
+
+    def test_floor_is_ignored_for_a_symbol_without_a_base_capture(self):
+        self.make_env()
+        guards = load_active_guards()
+        with_floor = plan_daily_collection(
+            run_date=date(2026, 10, 20), guards=guards,
+            base_capture_end_by_symbol={"DEVA": self.BASE_END},
+        )
+        without = plan_daily_collection(run_date=date(2026, 10, 20), guards=guards)
+        self.assertEqual(self._dev(with_floor)["DEVB"], self._dev(without)["DEVB"])
+        self.assertFalse(self._dev(without)["DEVB"].window.catch_up)
+
+    def test_later_of_run_record_success_and_base_end_wins(self):
+        self.make_env()
+        guards = load_active_guards()
+        later_success = plan_daily_collection(
+            run_date=date(2026, 10, 20), guards=guards,
+            last_success_by_symbol={"DEVA": date(2026, 10, 10)},
+            base_capture_end_by_symbol={"DEVA": self.BASE_END},
+        )
+        # last end 2026-10-10 -> catch-up start 2026-09-26 (earlier than 10-05).
+        self.assertEqual(self._dev(later_success)["DEVA"].window.start, date(2026, 9, 26))
+        earlier_success = plan_daily_collection(
+            run_date=date(2026, 10, 20), guards=guards,
+            last_success_by_symbol={"DEVA": date(2026, 9, 1)},
+            base_capture_end_by_symbol={"DEVA": self.BASE_END},
+        )
+        # A run-record success older than the base end is ignored in favor of it.
+        self.assertEqual(self._dev(earlier_success)["DEVA"].window.start, date(2026, 9, 11))
+
+    def test_ninety_day_human_decision_rule_is_unchanged(self):
+        self.make_env()
+        guards = load_active_guards()
+        plan = plan_daily_collection(
+            run_date=date(2027, 1, 10), guards=guards,
+            base_capture_end_by_symbol={"DEVA": self.BASE_END},
+        )
+        dev = self._dev(plan)
+        self.assertEqual(dev["DEVA"].status, STATUS_BLOCKED_MAX_SPAN_EXCEEDED)
+        self.assertEqual(dev["DEVB"].status, STATUS_PLANNED)
+
+    def test_scan_reports_only_symbols_whose_base_file_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "DEVA").mkdir()
+            (root / "DEVA" / self.BASE_FILE).write_text("{}", encoding="utf-8")
+            (root / "DEVC").mkdir()
+            (root / "DEVC" / "2025-09-26_2026-09-24.json").write_text("{}", encoding="utf-8")
+            floors = scan_base_capture_ends(
+                root, self.BASE_FILE, ["DEVA", "DEVB", "DEVC", "../DEVA", "DEVA/.."],
+            )
+        self.assertEqual(floors, {"DEVA": self.BASE_END})
+
+    def test_scan_rejects_a_filename_without_a_valid_date_range(self):
+        for bad in ("base.json", "2026-09-25_2025-09-26.json", "2025-13-01_2026-09-25.json",
+                    "2025-09-26_2026-09-25.json.bak", None):
+            with self.subTest(bad=bad):
+                with self.assertRaises(CollectionPlannerError):
+                    scan_base_capture_ends(Path("."), bad, ["DEVA"])
+
+    def test_real_config_names_the_base_capture_and_its_end_date(self):
+        config = load_daily_collection_config(
+            ROOT / "configs" / "collection" / "daily_miniapp_v1.json",
+        )
+        self.assertEqual(config.base_capture_root, "data/interim/period_analysis")
+        self.assertEqual(config.base_capture_filename, self.BASE_FILE)
+        self.assertEqual(base_capture_end_date(config.base_capture_filename), self.BASE_END)
+
+    def _config_document(self, **overrides):
+        document = {
+            "schema": "fintr_daily_collection_config_v1",
+            "source_id": "synthetic",
+            "symbol_scope": "split_development_only",
+            "split_config": "configs/splits/current.json",
+            "exclusions_config": "configs/exclusions/symbols.json",
+            "window": {"end_offset_days": 1, "lookback_calendar_days": 14, "max_span_days": 90},
+            "pacing": {"symbol_pause_seconds": 30, "max_wall_seconds": 3600},
+            "capture_root": "unused",
+            "permission_status": "user_asserted_2026-09-28_not_independently_verified",
+            "stop_on_http_status": [429],
+        }
+        document.update(overrides)
+        return document
+
+    def test_config_without_base_capture_loads_with_no_floor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(json.dumps(self._config_document()), encoding="utf-8")
+            config = load_daily_collection_config(path)
+        self.assertIsNone(config.base_capture_root)
+        self.assertIsNone(config.base_capture_filename)
+
+    def test_config_rejects_malformed_base_capture(self):
+        bad_values = (
+            "not-an-object",
+            {"root": "data", "filename": "base.json"},
+            {"root": "", "filename": self.BASE_FILE},
+            {"filename": self.BASE_FILE},
+        )
+        for bad in bad_values:
+            with self.subTest(bad=bad):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "config.json"
+                    path.write_text(
+                        json.dumps(self._config_document(base_capture=bad)), encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(CollectionPlannerError, "invalid_config_field"):
+                        load_daily_collection_config(path)
+
+    def test_dry_run_plans_from_the_base_end_only_where_the_file_exists(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            base_root = Path(directory) / "base"
+            (base_root / "DEVA").mkdir(parents=True)
+            (base_root / "DEVA" / self.BASE_FILE).write_text("{}", encoding="utf-8")
+            config_path = Path(directory) / "config.json"
+            config_path.write_text(json.dumps(self._config_document(
+                capture_root=str(Path(directory) / "daily_capture"),
+                base_capture={"root": str(base_root), "filename": self.BASE_FILE},
+            )), encoding="utf-8")
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                exit_code = collect_daily.main([
+                    "--dry-run", "--format", "json", "--config", str(config_path),
+                    "--run-date", "2026-10-20",
+                ])
+            self.assertEqual(exit_code, 0, err.getvalue())
+        record = json.loads(out.getvalue())
+        windows = {
+            entry["symbol"]: entry["window"] for entry in record["symbols"]
+            if entry["role"] == "development"
+        }
+        self.assertEqual(windows["DEVA"], {
+            "start": "2026-09-11", "end": "2026-10-19", "catch_up": True,
+        })
+        self.assertEqual(windows["DEVB"], {
+            "start": "2026-10-05", "end": "2026-10-19", "catch_up": False,
+        })
 
 
 class DryRunCliTests(GuardEnv):
