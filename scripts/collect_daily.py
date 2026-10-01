@@ -54,6 +54,7 @@ from fintr.collection.planner import (
     config_sha256,
     load_daily_collection_config,
     plan_daily_collection,
+    scan_base_capture_ends,
     scan_last_success,
 )
 from fintr.evaluation.live_capture import LivePilotCaptureError, validate_context_contains_no_secrets
@@ -772,8 +773,19 @@ def main(argv: list[str] | None = None) -> int:
     run_records_dir = PROJECT_ROOT / config.capture_root / RUN_RECORDS_SUBDIR
     last_success = scan_last_success(run_records_dir)
 
+    base_capture_ends: dict[str, date] = {}
+    if config.base_capture_root is not None:
+        base_capture_ends = scan_base_capture_ends(
+            PROJECT_ROOT / config.base_capture_root, config.base_capture_filename,
+            [
+                symbol for symbol in guards.split.development_symbols
+                if not guards.is_excluded(symbol)
+            ],
+        )
+
     plan = plan_daily_collection(
         run_date=run_date, guards=guards, last_success_by_symbol=last_success,
+        base_capture_end_by_symbol=base_capture_ends,
         end_offset_days=config.end_offset_days,
         lookback_calendar_days=config.lookback_calendar_days,
         max_span_days=config.max_span_days,

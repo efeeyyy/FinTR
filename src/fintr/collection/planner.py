@@ -8,7 +8,9 @@ randomness -- the same inputs always produce the same plan.
 Window rule:
     ``E = R - end_offset_days`` (default 1: the same-day data may be
     incomplete). ``S = E - lookback_calendar_days`` (default 14).
-    Catch-up: when a symbol's last successful window end ``L`` is known,
+    Catch-up: when a symbol's last successful window end ``L`` is known
+    (the latest saved run-record end, or the end date of its base one-year
+    capture when that file exists, whichever is later),
     ``S = min(S, L - lookback_calendar_days)`` -- the window only ever
     grows backwards to close a gap, never shrinks past the default
     lookback. When the resulting span ``E - S`` exceeds ``max_span_days``
@@ -37,7 +39,8 @@ from datetime import date, timedelta
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Mapping
+import re
+from typing import Any, Iterable, Mapping
 
 from fintr.evaluation.symbol_guard import ActiveGuards
 
@@ -58,6 +61,10 @@ STATUS_BLOCKED_MAX_SPAN_EXCEEDED = "blocked_max_span_exceeded"
 ROLE_DEVELOPMENT = "development"
 ROLE_HOLDOUT = "holdout"
 ROLE_EXCLUDED = "excluded"
+
+_BASE_CAPTURE_FILENAME = re.compile(
+    r"^(?P<start>\d{4}-\d{2}-\d{2})_(?P<end>\d{4}-\d{2}-\d{2})\.json$"
+)
 
 
 class CollectionPlannerError(ValueError):
@@ -115,6 +122,7 @@ def plan_daily_collection(
     run_date: date,
     guards: ActiveGuards,
     last_success_by_symbol: Mapping[str, date] | None = None,
+    base_capture_end_by_symbol: Mapping[str, date] | None = None,
     end_offset_days: int = DEFAULT_END_OFFSET_DAYS,
     lookback_calendar_days: int = DEFAULT_LOOKBACK_CALENDAR_DAYS,
     max_span_days: int = DEFAULT_MAX_SPAN_DAYS,
@@ -126,6 +134,12 @@ def plan_daily_collection(
     ``fintr.evaluation.symbol_guard.load_active_guards()`` returns, unlike
     most collection tools this one *does* consult the split, because §7 of
     the ADR restricts daily collection to development symbols only.
+
+    ``base_capture_end_by_symbol`` is a last-success *floor*: a symbol whose
+    base one-year capture exists counts as collected up to that capture's end
+    date, so the very first daily window reaches back to the base end instead
+    of leaving the days after it uncollected (see ``scan_base_capture_ends``).
+    The effective last end is ``max(run-record last success, base end)``.
     """
     if type(end_offset_days) is not int or end_offset_days < 0:
         raise CollectionPlannerError("invalid_end_offset_days")
@@ -135,6 +149,7 @@ def plan_daily_collection(
         raise CollectionPlannerError("invalid_max_span_days")
 
     last_success = last_success_by_symbol or {}
+    base_ends = base_capture_end_by_symbol or {}
     window_end = run_date - timedelta(days=end_offset_days)
     base_start = window_end - timedelta(days=lookback_calendar_days)
 
@@ -153,7 +168,11 @@ def plan_daily_collection(
 
         start = base_start
         catch_up = False
-        last_end = last_success.get(symbol)
+        known_ends = [
+            end for end in (last_success.get(symbol), base_ends.get(symbol))
+            if end is not None
+        ]
+        last_end = max(known_ends) if known_ends else None
         if last_end is not None:
             catch_up_start = last_end - timedelta(days=lookback_calendar_days)
             if catch_up_start < start:
@@ -194,6 +213,41 @@ class DailyCollectionConfig:
     permission_status: str
     stop_on_http_status: tuple[int, ...]
     raw: dict[str, Any]
+    # Base one-year capture floor (optional): ``<root>/<SYMBOL>/<filename>``.
+    base_capture_root: str | None = None
+    base_capture_filename: str | None = None
+
+
+def base_capture_end_date(filename: str) -> date:
+    """End date of a base capture file named ``<YYYY-MM-DD>_<YYYY-MM-DD>.json``.
+
+    The date comes from the configured filename, never from planner logic or
+    the file's contents (which the planner never opens).
+    """
+    match = _BASE_CAPTURE_FILENAME.fullmatch(filename) if isinstance(filename, str) else None
+    if match is None:
+        raise CollectionPlannerError("invalid_base_capture_filename")
+    try:
+        start = date.fromisoformat(match["start"])
+        end = date.fromisoformat(match["end"])
+    except ValueError:
+        raise CollectionPlannerError("invalid_base_capture_filename") from None
+    if start > end:
+        raise CollectionPlannerError("invalid_base_capture_filename")
+    return end
+
+
+def _parse_base_capture(document: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    raw = document.get("base_capture")
+    if raw is None:
+        return None, None
+    if not isinstance(raw, dict):
+        raise CollectionPlannerError("invalid_base_capture")
+    root, filename = raw.get("root"), raw.get("filename")
+    if not isinstance(root, str) or not root.strip():
+        raise CollectionPlannerError("invalid_base_capture_root")
+    base_capture_end_date(filename)
+    return root, filename
 
 
 def load_daily_collection_config(path: Path) -> DailyCollectionConfig:
@@ -208,6 +262,7 @@ def load_daily_collection_config(path: Path) -> DailyCollectionConfig:
     try:
         window = document["window"]
         pacing = document["pacing"]
+        base_capture_root, base_capture_filename = _parse_base_capture(document)
         return DailyCollectionConfig(
             schema=document["schema"],
             source_id=str(document["source_id"]),
@@ -223,6 +278,8 @@ def load_daily_collection_config(path: Path) -> DailyCollectionConfig:
             permission_status=str(document["permission_status"]),
             stop_on_http_status=tuple(int(code) for code in document["stop_on_http_status"]),
             raw=document,
+            base_capture_root=base_capture_root,
+            base_capture_filename=base_capture_filename,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise CollectionPlannerError(f"invalid_config_field: {exc}") from None
@@ -230,6 +287,28 @@ def load_daily_collection_config(path: Path) -> DailyCollectionConfig:
 
 def config_sha256(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+_SYMBOL_PATH_TOKEN = re.compile(r"^[A-Za-z0-9]{1,16}$")
+
+
+def scan_base_capture_ends(
+    base_root: Path, filename: str, symbols: Iterable[str],
+) -> dict[str, date]:
+    """Floor dates: ``{symbol: base capture end}`` for symbols whose file exists.
+
+    Only the existence of ``<base_root>/<SYMBOL>/<filename>`` is checked (the
+    file is never opened); the end date is ``base_capture_end_date(filename)``.
+    A missing file (or an unsafe symbol token) yields no floor for that
+    symbol, so it keeps today's behavior (``S = E - lookback``).
+    """
+    end = base_capture_end_date(filename)
+    root = Path(base_root)
+    floors: dict[str, date] = {}
+    for symbol in symbols:
+        if _SYMBOL_PATH_TOKEN.fullmatch(symbol) and (root / symbol / filename).is_file():
+            floors[symbol] = end
+    return floors
 
 
 def scan_last_success(run_records_dir: Path) -> dict[str, date]:
