@@ -609,5 +609,31 @@ Exit 1 = en az bir sembol `failed:<kategori>` (ör. `packet_hash_mismatch`,
 4. `notify_observations.py --as-of YYYY-MM-DD` (varsayılan dry-run; gerçek
    gönderim için `--send`, [notify.md](notify.md)).
 
+### 6h. Tek komut: `run_daily_pipeline.py`
+
+Yukarıdaki 1., 3. ve 4. adımı sırayla çalıştırır (her biri kendi alt
+sürecinde; kendi korumaları ve çıkış kodları korunur):
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\run_daily_pipeline.py --allow-session-takeover
+```
+
+- `collect_daily.py` initData'yı kendisi sorar (stdio devralınır). Çıkış kodu
+  0 değilse dur; tarama ve bildirim çalışmaz, hiçbir şey gönderilmez.
+- Tarama: `scan_observations.py --daily-root data\interim\daily_capture
+  --out-dir data\interim\scanner_daily --save --format json` (varsayılan
+  as_of); kullanılan as_of kaydedilen yoldan okunur, gözlem içeriği basılmaz.
+- Bildirim: `notify_observations.py --as-of <as_of> --scanner-dir
+  data\interim\scanner_daily` varsayılan **dry-run**; gerçek gönderim için
+  boru hattına `--send` ver. `--resend` hiç geçilmez: mevcut makbuz
+  engelliyorsa rapor edilir, aşılmaz.
+- `--skip-collect`: yalnız tarama+bildirimi yeniden çalıştırır (toplama
+  başarılıysa). `--skip-price`, `--run-date`, `--dry-run` collect'e iletilir;
+  `--dry-run`da 2-3. adımlar yeni veri olmadığı için atlanır.
+- Son özet: adım -> çıkış kodu, as_of, tarayıcı çıktı yolu, gönderildi mi.
+  `--save` üzerine yazmaz; aynı as_of için tarama ikinci kez çalışırsa
+  adım 2 hata verir (ör. `--skip-collect` tekrarı).
+
 Bu bölüm yalnız süreci anlatır; günlük toplamanın finansal sonuçları bu
 belgede veya yönetici sohbetinde tartışılmaz (`docs/STATUS.md`).
