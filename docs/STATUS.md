@@ -82,9 +82,14 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    (`collect_daily.py` fiyat adımı + `--skip-price`, Istanbul tarihi; `scripts/compare_daily_d0.py`,
    kesme sabit 2026-09-25, yalnız sayım), bildirim pencere sayımı (`composition.window`,
    `in_window_*`; şema v2 ekleme) ve PR6 (`docs/architecture.md` özeti, runbook 6g günlük sıra)
-   birleşti; 846 test. ADR uygulama sırası tamam. Sırada Efe: ilk canlı günlük çalıştırma
-   (runbook 6), ardından D0 (`compare_daily_d0.py`) ve pencere sayımının gerçek veride
-   kontrolü (şimdiye kadar yalnız sentetik test). `tzdata` venv'de yok (UTC+3 yedeği
+   birleşti; 846 test. ADR uygulama sırası tamam. İlk canlı günlük çalıştırma (2026-10-01
+   akşamı): 20/20 `failed:unknown_event_type` (bilinmeyen tipler yalnız `welcome`, `hb`,
+   `request_queued`), fiyat 20/20 kaydedildi. Efe kararı K6 (2026-10-01): bu üç kontrol
+   mesajı izinli (config `tolerated_control_event_types`), başka bilinmeyen tip yine engeller;
+   çalıştırma kaydı tip adlarını yazar; telafi tabanı temel kaydın sonu 2026-09-25 (ilk pencere
+   2026-09-11..E). Birleşti `b0c7d24`, 868 test. Sırada Efe: ikinci canlı günlük çalıştırma,
+   ardından D0 (`compare_daily_d0.py`) ve pencere sayımının gerçek veride kontrolü (şimdiye
+   kadar yalnız sentetik test). `tzdata` venv'de yok (UTC+3 yedeği
    çalışıyor). Açık kararlar: günlük dosya saklama/temizlik politikası, Aşama B (ayrı ADR).
    2027-03-31'e kadar H1–H4 için ara performans değerlendirmesi yok (K4).
 7. Telegram botu: Efe BotFather'dan açıp token/chat id'yi ortam değişkenine koyacak
