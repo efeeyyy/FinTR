@@ -1,6 +1,6 @@
 # Proje durumu (devir notu)
 
-Son güncelleme: 2026-09-28. Yeni bir yönetici oturumu uzun sohbet geçmişi yerine bu
+Son güncelleme: 2026-10-01. Yeni bir yönetici oturumu uzun sohbet geçmişi yerine bu
 dosyayı ve vault notunu (`Beynim/İkinci Beyin/notes/fintr-llm.md`) okuyarak devam eder.
 Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulur.
 
@@ -78,12 +78,15 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    birleşti 2026-09-28 (781 test; gerçek 1 yıllık kayıt tek başına birleştirilince seriler
    birebir). PR2 (canlı çalıştırıcı `collect_daily.py`, Europe/Istanbul, 429'da durma,
    çalıştırma kaydı `daily_capture/_runs/`) ve PR4 (`scan_observations.py --daily-root`,
-   gözlem şeması v2, bildirim v1+v2) birleşti 2026-09-28 (816 test). İlk canlı günlük
-   çalıştırma Efe'de (runbook bölüm 6). Sırada: PR5 (fiyat + D0), PR6 (architecture.md
-   özeti); ayrıca yalnız temel kayıtta görülen AKD günleri "kesinleşmemiş" sayılıyor
-   (tasarım gereği) — bildirimdeki sayım as_of penceresiyle sınırlanmalı. `tzdata` venv'de
-   yok (UTC+3 yedeği çalışıyor). 2027-03-31'e kadar H1–H4 için ara
-   performans değerlendirmesi yok (K4).
+   gözlem şeması v2, bildirim v1+v2) birleşti 2026-09-28 (816 test). 2026-10-01: PR5
+   (`collect_daily.py` fiyat adımı + `--skip-price`, Istanbul tarihi; `scripts/compare_daily_d0.py`,
+   kesme sabit 2026-09-25, yalnız sayım), bildirim pencere sayımı (`composition.window`,
+   `in_window_*`; şema v2 ekleme) ve PR6 (`docs/architecture.md` özeti, runbook 6g günlük sıra)
+   birleşti; 846 test. ADR uygulama sırası tamam. Sırada Efe: ilk canlı günlük çalıştırma
+   (runbook 6), ardından D0 (`compare_daily_d0.py`) ve pencere sayımının gerçek veride
+   kontrolü (şimdiye kadar yalnız sentetik test). `tzdata` venv'de yok (UTC+3 yedeği
+   çalışıyor). Açık kararlar: günlük dosya saklama/temizlik politikası, Aşama B (ayrı ADR).
+   2027-03-31'e kadar H1–H4 için ara performans değerlendirmesi yok (K4).
 7. Telegram botu: Efe BotFather'dan açıp token/chat id'yi ortam değişkenine koyacak
    (`docs/notify.md`); ilk gerçek `--send` denemesi Efe'de.
 5. KAP erişimi tarayıcıda engelli; KAP belgeleri Efe'den gelir (indirme Java serileştirme
