@@ -62,3 +62,39 @@ kullanılmaz" kuralına yalnız bu veri kalitesi kullanımı için açık bir is
 Gerekçe: rejim/düzeltme tespiti uzun seriye dayanır; kırpmak pencere başında başlayan
 bir ölçek değişikliğini kaçırma riski doğurur. Kural, AKD/takas analizine yönelik
 sızıntıyı önlemek için konmuştur ve bu kullanım sonuç değişkenine dokunmaz.
+
+## 2026-10-02 — Bildirimde beklenen yön etiketi (Efe kararı)
+
+Efe 2026-10-02'de sohbette açıkça ("evet ekle") karar verdi: deterministik Telegram
+bildirim botu (`fintr.notify`), her `condition_met: true` gözlemi, ilgili dondurulmuş
+kuralın varsayılan hipotez yönüyle etiketleyebilir.
+
+**İzin verilen.** Her gözlem satırına, ilgili dondurulmuş spec'in
+`preregistration.predicted_direction` alanından türetilen etiket eklenebilir:
+`positive` → "beklenen yön: yukarı (al yönlü)", `negative` → "beklenen yön: aşağı
+(sat yönlü)". Yön, tarayıcının mevcut hash doğrulamalı kural yükleyicisiyle
+(`fintr.scanner.rules.load_scanner_rules`) okunur; kural çözülemez, hash
+doğrulaması başarısız olur ya da alan tam olarak `positive`/`negative` değilse satır
+etiketsiz kalır ve "yön bilinmiyor" işareti taşır (tahmin edilmez). Etiket içeren her
+mesaj bir kez şu uyarıyı taşır: "Uyarı: yön etiketi doğrulanmamış ön kayıtlı hipotezdir
+(holdout testi 2027 Nisan); yatırım tavsiyesi değildir." Etiket yalnız Efe'nin kişisel
+kullanımı içindir; getiri, puan, sıralama, hedef fiyat, stop seviyesi veya pozisyon
+büyüklüğü eklenmez. LLM bileşenleri bu karara dahil değildir. `--no-direction-label`
+bayrağı önceki sözleşmeyi (etiketsiz metin) geri getirir; varsayılan etiketli.
+
+**Değişmeyen.** Spec hash'leri (`docs/prereg/FREEZE.md`), eşikler, tarayıcı kuralları
+ve çıktı şeması, holdout planı (`test_plan_v1.json`) ve K4 (2027-03-31'e kadar ara
+performans değerlendirmesi yok) aynen geçerlidir. Etiket gözlemin kendisine hiçbir bilgi
+eklemez: yön zaten dondurulmuş spec'te kayıtlıydı; bu karar yalnız ifadeyi (mesaj
+metnini) değiştirir.
+
+**Kanıt durumu.** Yönetici oturumu train sonuçlarını okumamıştır ve bir avantaj (edge)
+iddiasında bulunmaz. Efe, bunun kişisel kullanım olduğunu ve etiketin tam olarak
+güvenilir olmadığını bildiğini belirtti. Önceki plan, yön ifadesini "kanıt sonrası
+sinyal" olarak holdout sonucundan sonraya bırakmaktı; bu karar ifadeyi kanıt olmadan öne
+çeker. Bu nedenle etiket doğrulanmamış hipotez olarak sunulur ve holdout sonucu
+beklenen yönü doğrulamazsa etiket kaldırılmalıdır.
+
+**Kapsam dışı.** Bu karar tarayıcı çıktı şemasını veya LLM bileşenlerini
+kapsamaz; AGENTS.md "Güvenlik sınırları" bölümündeki istisna yalnız
+`fintr.notify` içindir.
