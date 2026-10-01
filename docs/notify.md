@@ -26,13 +26,18 @@ Gözlem dosyasının `symbols.<SYM>.composition` alanı varsa (tarayıcı
 satır eklenir:
 
 ```
-AKFIS veri durumu: boşluk=1, kesinleşmemiş gün=2, revize gün=1
+AKFIS veri durumu (2026-09-08..2026-09-25): boşluk=1, kesinleşmemiş gün=2, revize gün=1
 ```
 
-Üç sayı da `docs/scanner.md`'deki `composition` bloğundan gelir: `boşluk`
-= `composition.gaps.count`, `kesinleşmemiş gün` = `composition.unsettled
-.day_count` (tekil gün sayısı, aile bazlı değil), `revize gün` =
-`composition.revisions.day_count`. Bu satır yalnız sayı taşır; hiçbir
+Üç sayı da `docs/scanner.md`'deki `composition` bloğundan gelir ve
+`composition.window` aralığıyla (günlük girdilerin en erken sunucu tarihi..
+as_of, iki uç dahil) sınırlıdır: `boşluk` = `composition.gaps.in_window_count`,
+`kesinleşmemiş gün` = `composition.unsettled.in_window_day_count` (tekil gün
+sayısı, aile bazlı değil), `revize gün` = `composition.revisions
+.in_window_day_count`. Pencere alanları olmayan eski `_v2` dosyasında satır
+tüm dönem toplamlarına düşer ve `(tüm dönem)` diye etiketlenir; `window: null`
+(günlük girdi yok) ise satır `veri durumu: pencere yok (günlük kayıt yok)`
+olur. Bu satır yalnız sayı taşır; hiçbir
 değer, iddia ya da al/sat ifadesi eklemez -- mevcut yasak kelime testleri
 (`tests/test_notify.py`) bu satırı da kapsar. `composition` alanı yoksa
 (varsayılan, `--daily-root` verilmeden üretilmiş her dosya) bu satır hiç
