@@ -87,9 +87,15 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    `request_queued`), fiyat 20/20 kaydedildi. Efe kararı K6 (2026-10-01): bu üç kontrol
    mesajı izinli (config `tolerated_control_event_types`), başka bilinmeyen tip yine engeller;
    çalıştırma kaydı tip adlarını yazar; telafi tabanı temel kaydın sonu 2026-09-25 (ilk pencere
-   2026-09-11..E). Birleşti `b0c7d24`, 868 test. Sırada Efe: ikinci canlı günlük çalıştırma,
-   ardından D0 (`compare_daily_d0.py`) ve pencere sayımının gerçek veride kontrolü (şimdiye
-   kadar yalnız sentetik test). `tzdata` venv'de yok (UTC+3 yedeği
+   2026-09-11..E). Birleşti `b0c7d24`, 868 test. İkinci canlı çalıştırma (2026-10-01,
+   `_runs/2026-10-01T20-38-30...`): 20/20 saved, 429 yok, engelleyen tip yok. D0
+   (`_d0/2026-10-01T20-59-57Z.json`, 11 gün ≤09-25): akd/akd_market/custody 220/220 eşleşti;
+   metadata her hissede yalnız 2026-09-25'te farklı (temel kayıtta retail/institutional/
+   investor_count o gün henüz null'dı, günlükte dolu; zararsız, yeni kayıt kazanır).
+   `scan_observations.py --daily-root` → `data/interim/scanner_daily/2026-09-30/`: pencere
+   2026-09-11..09-30, boşluk 0, pencere içi kesinleşmemiş 3 (09-26..09-30 tek gözlem), revize 1
+   (yukarıdaki metadata); bildirim dry-run temiz. Sırada: Efe her işlem günü çalıştırır
+   (runbook 6g sırası); gözlem içerikleri finans sohbetinde. `tzdata` venv'de yok (UTC+3 yedeği
    çalışıyor). Açık kararlar: günlük dosya saklama/temizlik politikası, Aşama B (ayrı ADR).
    2027-03-31'e kadar H1–H4 için ara performans değerlendirmesi yok (K4).
 7. Telegram botu: Efe BotFather'dan açıp token/chat id'yi ortam değişkenine koyacak
