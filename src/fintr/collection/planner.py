@@ -42,6 +42,7 @@ from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping
 
+from fintr.collector.events import SUPPORTED_EVENT_TYPES
 from fintr.evaluation.symbol_guard import ActiveGuards
 
 
@@ -62,7 +63,16 @@ ROLE_DEVELOPMENT = "development"
 ROLE_HOLDOUT = "holdout"
 ROLE_EXCLUDED = "excluded"
 
-_BASE_CAPTURE_FILENAME = re.compile(
+# Same rule as ``scripts/live_collector_smoke.py``'s
+# ``_SHOWABLE_UNKNOWN_EVENT_TYPE`` (a test keeps the two identical): a name
+# that fails it is never recorded by name and can never be tolerated.
+SHOWABLE_EVENT_TYPE_PATTERN = re.compile(r"^[a-z][a-z_]{0,39}$")
+# Not control frames even though the dispatcher does not normalize them: a
+# provider error/ban report and the market_update wrapper must keep failing
+# the daily run closed, so config may never tolerate them.
+NON_TOLERABLE_EVENT_TYPES = frozenset({"error", "banned", "market_update"})
+
+_BASE_CAPTURE_FILENAME =re.compile(
     r"^(?P<start>\d{4}-\d{2}-\d{2})_(?P<end>\d{4}-\d{2}-\d{2})\.json$"
 )
 
@@ -216,6 +226,28 @@ class DailyCollectionConfig:
     # Base one-year capture floor (optional): ``<root>/<SYMBOL>/<filename>``.
     base_capture_root: str | None = None
     base_capture_filename: str | None = None
+    # Control-frame event types the daily run tolerates (sorted, unique).
+    tolerated_control_event_types: tuple[str, ...] = ()
+
+
+def tolerated_event_types_sha256(names: Iterable[str]) -> str:
+    """sha256 of the canonical JSON array (sorted, compact) of the names."""
+    payload = json.dumps(sorted(names), separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(payload.encode("ascii")).hexdigest()
+
+
+def _parse_tolerated_control_event_types(document: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = document.get("tolerated_control_event_types", [])
+    if not isinstance(raw, list):
+        raise CollectionPlannerError("invalid_tolerated_control_event_types")
+    for name in raw:
+        if not isinstance(name, str) or not SHOWABLE_EVENT_TYPE_PATTERN.fullmatch(name):
+            raise CollectionPlannerError("invalid_tolerated_control_event_type_name")
+        if name in SUPPORTED_EVENT_TYPES or name in NON_TOLERABLE_EVENT_TYPES:
+            raise CollectionPlannerError("tolerated_event_type_is_not_a_control_frame")
+    if raw != sorted(set(raw)):
+        raise CollectionPlannerError("tolerated_control_event_types_not_sorted_unique")
+    return tuple(raw)
 
 
 def base_capture_end_date(filename: str) -> date:
@@ -263,6 +295,7 @@ def load_daily_collection_config(path: Path) -> DailyCollectionConfig:
         window = document["window"]
         pacing = document["pacing"]
         base_capture_root, base_capture_filename = _parse_base_capture(document)
+        tolerated = _parse_tolerated_control_event_types(document)
         return DailyCollectionConfig(
             schema=document["schema"],
             source_id=str(document["source_id"]),
@@ -280,6 +313,7 @@ def load_daily_collection_config(path: Path) -> DailyCollectionConfig:
             raw=document,
             base_capture_root=base_capture_root,
             base_capture_filename=base_capture_filename,
+            tolerated_control_event_types=tolerated,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise CollectionPlannerError(f"invalid_config_field: {exc}") from None

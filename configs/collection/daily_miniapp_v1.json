@@ -19,6 +19,7 @@
     "max_message_mib": 4
   },
   "stop_on_http_status": [429],
+  "tolerated_control_event_types": ["hb", "request_queued", "welcome"],
   "capture_root": "data/interim/daily_capture",
   "base_capture": {
     "root": "data/interim/period_analysis",
