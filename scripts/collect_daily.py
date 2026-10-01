@@ -136,6 +136,11 @@ def _istanbul_today(*, now: datetime | None = None) -> date:
     return now.astimezone(tzinfo).date()
 
 
+def _price_today() -> date:
+    """"Today" for the price step's future-end check: Istanbul, not host-local."""
+    return _istanbul_today()
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -364,7 +369,7 @@ def run_price_step(
         status, reason = result["status"], result.get("reason")
         if status == "saved":
             entry["status"] = "saved"
-            entry["sha256"], _count = _price_file_facts(path)
+            entry["sha256"] = _price_file_facts(path)[0]
             entry["bar_count"] = result.get("bar_count")
         elif status == "skipped" and reason == "target_exists":
             entry["status"] = "skipped_exists"
@@ -778,7 +783,7 @@ def main(argv: list[str] | None = None) -> int:
         price_settings = _price_settings(config)
         price_plan = build_price_plan(
             plan, guards, price_settings, skip_price=args.skip_price,
-            today=price_batch.fetch._today(),
+            today=_price_today(),
         )
     except CollectionPlannerError as exc:
         print(f"Plan failed: {exc}", file=sys.stderr)

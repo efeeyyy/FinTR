@@ -737,3 +737,76 @@ gönderim, token/chat id yalnız `FINTR_TELEGRAM_BOT_TOKEN`/
 bir gözlem bildirimidir -- getiri, hedef, puan, sıralama veya al/sat
 üretmez; her mesajın sonunda tarayıcının sabit uyarı metni ve
 `validation_status` bulunur. Ayrıntılar `docs/notify.md`.
+
+### Günlük Mini App toplama ve birleştirme (aşama 2 adım 3)
+
+Problem: Tarayıcı ve bildirim botu her işlem günü güncel AKD, takas ve fiyat
+verisine ihtiyaç duyuyor; oysa veri yalnız elle başlatılan, uzun aralıklı
+dönem kayıtlarıyla geliyordu. Eksik olanlar: günlük plan ve eksik gün
+telafisi, takasın AKD'nin gerisinde kesinleşmesi (T+2) ve sağlayıcı
+revizyonları, kısa kayıtların uzun geçmişle birleştirilmesi (tarayıcının
+"en son biten tek dosya" seçimi kısa bir dosyayla yıllık dosyayı gölgelerdi),
+tek oturum/429 sınırı ve çalıştırma kaydı. Tam gerekçe ve şemalar:
+[`docs/research/daily_miniapp_collection_adr.md`](research/daily_miniapp_collection_adr.md).
+
+Alternatifler: (a) yeni günlük kayıt şeması ve ikinci bir yazıcı/yükleyici --
+doğrulanmış paket yolunu yeniden yazmayı gerektirir; reddedildi. (b) her gün
+tek büyük dönem kaydını yeniden çekmek -- günlük yük ve 429 riski en yüksek,
+90 gün üstü aralık onayı ister; reddedildi. (c) kayan pencereli dönem
+kayıtları + deterministik birleştirici -- seçildi.
+
+Karar: 2026-09-28, Efe kararları K1-K5 (ADR "Efe'nin kararları"). **Aşama A**:
+Efe her işlem günü (T+1 08:00-09:30, Europe/Istanbul, kendi Windows
+makinesi) `initData`'yı bir kez girer, tek komut tüm hisseleri insansız
+toplar; `initData` yalnız bellekte tutulur. Mevcut `fintr_period_analysis_
+capture_v1` şemasıyla `E = R-1`, `S = E-14` takvim günü kayan pencereler
+`data/interim/daily_capture/<SYM>/` altına yazılır (no-overwrite, telafi
+için `S` son başarılı pencereden geriye genişler; 90 gün üstü insan kararı
+ister). Saf `fintr.research.compose_period_capture.compose_period_capture`
+temel ve kayan kayıtları tarih x aile bazında birleştirir (en yeni
+`captured_at_utc` kazanır; boşluk asla doldurulmaz, revizyon ve
+kesinleşmemiş günler `CompositionLineage`'e yazılır; dönem toplamları
+birleştirilemez). Kapsam yalnız 20 geliştirme hissesi; holdout hisseleri
+günlük toplanmaz, DSTKF hiçbir zaman. Mini App kaynağının lisans/izin
+bilgisi Efe'nin beyanıdır (`user_asserted_2026-09-28_not_independently_
+verified`); bağımsız olarak doğrulanmamıştır.
+
+Bileşenler:
+
+- `scripts/collect_daily.py`: planlayıcı (`--dry-run`: ağ yok, `initData`
+  istemez) ve canlı çalıştırıcı (`--allow-session-takeover` ister). İlk
+  `handshake_rejected_http_429`'da kalan hisseleri denemeden durur;
+  her çalıştırma `daily_capture/_runs/<run_id>.json`
+  (`fintr_daily_collection_run_v1`; finansal değer, kurum kodu, `initData`,
+  URL yok) yazar. İkinci adım Yahoo fiyat geçmişidir (`--skip-price` ile
+  atlanır); "bugün" Europe/Istanbul tarihidir. Ayrıntı `docs/collector.md`.
+- `scripts/compare_daily_d0.py`: günlük kayıtların yıllık temel kayıtlarla
+  revizyon karşılaştırması; kesme tarihi sabit 2026-09-25, yalnız sayı
+  raporlar (değer ve kurum kodu yok).
+- `scripts/scan_observations.py --daily-root`: varsayılan kapalı; verilirse
+  sembol verisi birleştiriciden gelir, çıktı şeması
+  `fintr_scanner_observations_v2` olur ve pencereyle sınırlı
+  `composition`/`data_status` sayımlarını taşır (`docs/scanner.md`).
+- `scripts/notify_observations.py`: `_v2` dosyalarında sembol başına tek
+  satırlık veri durumu (boşluk / kesinleşmemiş / revize gün sayısı) ekler
+  (`docs/notify.md`).
+
+Veri bütünlüğü kuralları: Efe K4 -- 2027-03-31'e kadar H1-H4 için test
+penceresi verisiyle ara performans değerlendirmesi yapılmaz (gözlem sonrası
+getiri hesabı veya isabet sayımı dahil); kural ve eşikler dondurulmuş
+hâliyle kalır. Günlük kayıtlar `run_holdout_test.py` girdisi değildir;
+holdout testi kaynağı 2027-03-31 sonrası tek seferlik dönem kaydıdır. D0
+karşılaştırması yalnız 2026-09-25 ve öncesi tarihlerde yapılır. Gözlem
+çıktısı revize/kesinleşmemiş günleri yalnız işaretler, bastırmaz.
+
+Sonuç ve riskler: Günlük toplama hâlâ bir insan adımı (`initData`) içerir;
+tam insansız çalışma (Aşama B, `initData`'nın anahtar deposunda saklanması)
+ayrı bir ADR ister. Kaynak tek (Mini App); protokol kırılırsa günlük veri
+durur. Yahoo kullanım koşulları otomatik çekimi yasaklıyor olabilir
+(doğrulanmadı); Efe'nin Mini App beyanı Yahoo'yu kapsamaz, fiyat için
+ayrı ve önceki beyanla sınırlıdır. Kayan kayıtlar için yaklaşık 3 MB/gün
+bütçe tahmini ölçüm değildir; disk saklama/temizlik politikası kararlaştırılmadı.
+Günlük sıra: `collect_daily` -> (ilk canlı çalıştırmadan sonra)
+`compare_daily_d0` -> `scan_observations --daily-root` ->
+`notify_observations` (varsayılan dry-run, `--send`);
+bkz. `docs/live_check_runbook.md` bölüm 6g.

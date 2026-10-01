@@ -15,7 +15,7 @@ import json
 import unittest
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -67,7 +67,7 @@ class PriceStepTests(guard_fixtures.GuardEnvMixin, unittest.TestCase):
     def _price_dir(self, root: Path, symbol: str) -> Path:
         return root / "data" / "interim" / "price_history" / symbol
 
-    def _run(self, root, argv, *, fetch_side_effect=None, mini_app_plan=(), today=None):
+    def _run(self, root, argv, *, fetch_side_effect=None, mini_app_plan=(), today=None, patch_today=True):
         fetch_mock = MagicMock(side_effect=fetch_side_effect or (lambda url, timeout: FIXTURE.read_bytes()))
         factory, calls = live._collector_factory(mini_app_plan)
         out, err = io.StringIO(), io.StringIO()
@@ -75,7 +75,11 @@ class PriceStepTests(guard_fixtures.GuardEnvMixin, unittest.TestCase):
             patch.object(collect_daily, "PROJECT_ROOT", root),
             patch.object(collect_daily.smoke, "PROJECT_ROOT", root),
             patch.object(price_batch.fetch, "PROJECT_ROOT", root),
-            patch.object(price_batch.fetch, "_today", return_value=today or RUN_DATE),
+            patch.object(price_batch.fetch, "_today", return_value=date(2000, 1, 1)),
+            patch.object(
+                collect_daily, "_price_today",
+                **({"return_value": today or RUN_DATE} if patch_today else {"wraps": collect_daily._price_today}),
+            ),
             patch.object(price_batch.fetch, "_fetch_raw", fetch_mock),
             patch.object(price_batch, "time") as time_mock,
             patch.object(collect_daily.smoke, "WebSocketCollector") as collector,
@@ -268,6 +272,27 @@ class PriceStepTests(guard_fixtures.GuardEnvMixin, unittest.TestCase):
         self.assertEqual(code, 0)
         fetch_mock.assert_not_called()
         self.assertEqual(self._record(root)["price_history"]["reason"], "window_end_in_future")
+
+    def test_price_step_uses_istanbul_date_not_host_local_date(self):
+        # 2026-01-08 22:00 UTC is 2026-01-09 01:00 in Istanbul, so the window
+        # end 2026-01-09 is not in the future there. A host-local date of
+        # 2026-01-08 would skip; fetch._today is patched to 2000-01-01 by _run
+        # and must be ignored.
+        class FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 1, 8, 22, 0, tzinfo=timezone.utc).astimezone(tz)
+
+        root = self._env()
+        self._precreate_mini_app(root, ("AKFIS", "ZZZZZ"))
+        with patch.object(collect_daily, "datetime", FixedDatetime):
+            self.assertEqual(collect_daily._price_today(), date(2026, 1, 9))
+            code, _out, _err, fetch_mock, _t, _c = self._run(
+                root, self._live_argv(root), patch_today=False,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(fetch_mock.call_count, 2)
+        self.assertEqual(self._record(root)["price_history"]["status"], "completed")
 
     # -- dry-run --------------------------------------------------------------------
 
