@@ -537,8 +537,10 @@ Okurken bakılacak alanlar:
 - `git_commit`/`git_tree_clean`/`config_sha256`: tekrar üretilebilirlik için;
   `git_tree_clean=false` ise çalıştırma sırasında commit edilmemiş yerel
   değişiklik vardı.
-- `price_history`: bu sürümde her zaman `{"status": "skipped"}` — günlük
-  fiyat adımı henüz uygulanmadı (ADR "Uygulama sırası" madde 5, açık iş).
+- `price_history`: fiyat adımı (bölüm 6e). `status` = `completed` /
+  `partial` / `stopped_on_429` / `skipped` (`--skip-price` ya da planlanan
+  sembol yok); `symbols[]` altında sembol başına kategori durum, `file_path`,
+  `sha256`, `bar_count`. Fiyat/hacim değeri yazılmaz.
 
 ### 6d. Hata durumları (özet; ayrıntı bölüm 5)
 
@@ -548,6 +550,40 @@ Okurken bakılacak alanlar:
 | Exit 1, `rate_limit.stopped_on_429=true` | İlk 429'da çalıştırma durdu, kalan semboller `skipped_rate_limited`. | Aynı gün yeniden denemeyin; ertesi günün telafi penceresi kapatır. Sık tekrarlanıyorsa `symbol_pause_seconds`'ı artırmayı düşünün. |
 | Exit 1, bir veya daha fazla `failed:*` | Fail-closed: parse hatası veya bilinmeyen event tipi o sembolün kaydını engelledi. | `diagnostics` alanına bakın (yalnız sabit kategori/aşama, ham metin yok); yeni bir şema varyantıysa bölüm 4'teki gibi kaydedin. |
 | `skipped_session_failure_stop` | İki ardışık sembolde bağlantı hiç istek göndermeden kapandı (bölüm 5'teki aynı desen). | Mini App'in gerçekten kapalı olduğunu ve `initData`'nın taze olduğunu doğrulayın. |
+
+### 6e. Fiyat adımı ve `--skip-price`
+
+Tek komut Mini App adımından sonra otomatik olarak Yahoo fiyat geçmişini de
+çeker (`2023-01-02..E`, aynı 20 geliştirme hissesi; ayrıntı
+[collector.md](collector.md#günlük-fiyat-adımı)). Yahoo ayrı bir kaynaktır:
+Mini App 429 ile durmuş olsa da fiyat adımı çalışır. Yalnız Mini App verisi
+istiyorsanız `--skip-price` ekleyin. `--dry-run` fiyat için de yalnız plan
+gösterir (hangi dosya yazılacak / zaten var). Fiyat adımında `partial` veya
+`stopped_on_429` görürseniz exit code 1'dir; aynı gün yeniden denemeyin —
+hedef dosya varsa üzerine yazılmaz, eksik semboller ertesi günün
+çalıştırmasında (yeni `E`) ayrı dosya olarak gelir. Yahoo için izin beyanı
+Mini App'ten ayrıdır (`user_asserted_2026-09-26_not_independently_verified`).
+
+### 6f. D0 karşılaştırması (ilk canlı günlük çalıştırmadan sonra)
+
+**Ne zaman:** ilk canlı günlük çalıştırma başarıyla bittikten sonra, kayan
+pencere hâlâ 2026-09-25 ve öncesine düşen günleri kapsıyorken (pencere sonu
+E ≥ 2026-09-26 olan ilk çalıştırmalarda `S = E-14g` bu günleri içerir; pencere
+tamamen 09-25'in ötesine kayınca karşılaştırılacak gün kalmaz). Bir kez, temel
+yıllık kayıtlar yerinde iken:
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\compare_daily_d0.py --dry-run   # hangi dosyalar
+.\.venv\Scripts\python.exe scripts\compare_daily_d0.py
+```
+
+Kesme tarihi (2026-09-25) sabittir; sonraki günler karşılaştırılmaz ve
+yalnız kesmeden önce başlayan pencere dosyaları açılır. Çıktı yalnız sayımdır
+(`<daily-root>/_d0/<UTC zaman damgası>.json` + stdout tablosu): eşleşen/farklı
+gün, farklı kod sayısı, `only_base`/`only_daily`; değer ve kurum kodu yoktur.
+Exit 1 = en az bir sembol `failed:<kategori>` (ör. `packet_hash_mismatch`,
+`base_missing`). Sonuç yorumu finans sohbetinde yapılır.
 
 Bu bölüm yalnız süreci anlatır; günlük toplamanın finansal sonuçları bu
 belgede veya yönetici sohbetinde tartışılmaz (`docs/STATUS.md`).

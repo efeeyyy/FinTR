@@ -125,7 +125,8 @@ def _captured_at(capture: PeriodCapture) -> datetime:
     return parsed
 
 
-def _family_days(capture: PeriodCapture, family: str) -> dict[date, object]:
+def family_days(capture: PeriodCapture, family: str) -> dict[date, object]:
+    """Public: one family's dated rows keyed by date (also used by the D0 comparison)."""
     return {row.date: row for row in getattr(capture, _FAMILY_ATTR[family])}
 
 
@@ -151,7 +152,8 @@ def _metadata_payload(day) -> dict:
     }
 
 
-def _family_row_hash(row, family: str) -> str:
+def family_row_hash(row, family: str) -> str:
+    """Public: canonical row-set hash of one (date, family) row, code-order independent."""
     if family in _CODE_KEYED_FAMILIES:
         payload = _codevalue_payload(row)
     elif family == "akd_market":
@@ -169,7 +171,8 @@ def _row_value_repr(row, family: str) -> str:
     return canonical_json({"value": row.value})  # CodeValue: akd | custody
 
 
-def _differing_code_count(loser_row, winner_row, family: str) -> int:
+def differing_code_count(loser_row, winner_row, family: str) -> int:
+    """Public: count of codes whose value differs (metadata: 1 if the day records differ)."""
     if family == "metadata":
         return 0 if _metadata_payload(loser_row) == _metadata_payload(winner_row) else 1
     loser_map = {row.code: _row_value_repr(row, family) for row in loser_row.rows}
@@ -180,25 +183,25 @@ def _differing_code_count(loser_row, winner_row, family: str) -> int:
 
 def _akd_settled(ordered: Sequence["CaptureInput"], day: date, family: str) -> bool:
     holders = sorted(
-        (item for item in ordered if day in _family_days(item.capture, family)),
+        (item for item in ordered if day in family_days(item.capture, family)),
         key=lambda item: (_captured_at(item.capture), item.capture.packet_sha256),
     )
     if len(holders) < 2:
         return False
     latest_two = holders[-2:]
     hashes = {
-        _family_row_hash(_family_days(item.capture, family)[day], family) for item in latest_two
+        family_row_hash(family_days(item.capture, family)[day], family) for item in latest_two
     }
     return len(hashes) == 1
 
 
 def _custody_settled(ordered: Sequence["CaptureInput"], day: date, winning_hash: str) -> bool:
     for item in ordered:
-        days = _family_days(item.capture, "custody")
+        days = family_days(item.capture, "custody")
         if day not in days:
             continue
         later_server_dates = sum(1 for d in item.capture.server_dates if d > day)
-        if later_server_dates >= 2 and _family_row_hash(days[day], "custody") == winning_hash:
+        if later_server_dates >= 2 and family_row_hash(days[day], "custody") == winning_hash:
             return True
     return False
 
@@ -218,7 +221,7 @@ def _unsettled_days(
             unsettled.append(CompositionUnsettledDay(day, "akd"))
 
     for day, winning_row in sorted(composed_series["custody"].items()):
-        winning_hash = _family_row_hash(winning_row, "custody")
+        winning_hash = family_row_hash(winning_row, "custody")
         if not _custody_settled(ordered, day, winning_hash):
             unsettled.append(CompositionUnsettledDay(day, "custody"))
 
@@ -257,7 +260,7 @@ def compose_period_capture(
     for family in COMPOSITION_FAMILIES:
         holders: dict[date, list[tuple[CaptureInput, object]]] = {}
         for item in ordered:
-            for day, row in _family_days(item.capture, family).items():
+            for day, row in family_days(item.capture, family).items():
                 holders.setdefault(day, []).append((item, row))
 
         for day in sorted(holders):
@@ -270,15 +273,15 @@ def compose_period_capture(
             selection_entries.append(
                 CompositionSelectionEntry(day, family, winner_item.capture.packet_sha256)
             )
-            winner_hash = _family_row_hash(winner_row, family)
+            winner_hash = family_row_hash(winner_row, family)
             for loser_item, loser_row in entries[:-1]:
-                loser_hash = _family_row_hash(loser_row, family)
+                loser_hash = family_row_hash(loser_row, family)
                 if loser_hash != winner_hash:
                     revision_entries.append(CompositionRevisionEntry(
                         date=day, family=family,
                         superseded_packet_sha256=loser_item.capture.packet_sha256,
                         winning_packet_sha256=winner_item.capture.packet_sha256,
-                        differing_code_count=_differing_code_count(loser_row, winner_row, family),
+                        differing_code_count=differing_code_count(loser_row, winner_row, family),
                     ))
 
     # Rule 2: server_dates = union of every input's own server_dates.
