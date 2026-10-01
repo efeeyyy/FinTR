@@ -585,5 +585,14 @@ gün, farklı kod sayısı, `only_base`/`only_daily`; değer ve kurum kodu yoktu
 Exit 1 = en az bir sembol `failed:<kategori>` (ör. `packet_hash_mismatch`,
 `base_missing`). Sonuç yorumu finans sohbetinde yapılır.
 
+### 6g. Günlük sıra (özet)
+
+1. `collect_daily.py --allow-session-takeover` (Mini App + fiyat adımı; 6a-6e).
+2. İlk canlı çalıştırmadan sonra, bir kez: `compare_daily_d0.py` (6f).
+3. `scan_observations.py --as-of YYYY-MM-DD --daily-root data\interim\daily_capture --format json --save`
+   ([scanner.md](scanner.md#günlük-birleştirme---daily-root)).
+4. `notify_observations.py --as-of YYYY-MM-DD` (varsayılan dry-run; gerçek
+   gönderim için `--send`, [notify.md](notify.md)).
+
 Bu bölüm yalnız süreci anlatır; günlük toplamanın finansal sonuçları bu
 belgede veya yönetici sohbetinde tartışılmaz (`docs/STATUS.md`).
