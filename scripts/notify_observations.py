@@ -34,6 +34,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
+from fintr.llm_note import render as llm_render
 from fintr.notify import format as fmt
 from fintr.notify.direction import load_rule_directions
 from fintr.notify.telegram import TelegramSendError, send_message
@@ -78,6 +79,12 @@ def _parser() -> argparse.ArgumentParser:
         "--no-direction-label", action="store_true",
         help="do not label observations with the frozen rule's hypothesised direction; "
              "restores the wording used before Efe's 2026-10-02 decision",
+    )
+    parser.add_argument(
+        "--llm-note-dir", type=Path, default=None,
+        help="default: off. Root of the analysis notes written by scripts/llm_note.py "
+             "(<dir>/<as-of>/attempt-NNN/); a verified note is added as separate message(s) "
+             "after the deterministic notice, otherwise one status line (docs/notify.md)",
     )
     parser.add_argument(
         "--skip-empty", action="store_true",
@@ -207,6 +214,13 @@ def main(argv: list[str] | None = None) -> int:
             directions = {}
 
     messages = fmt.render_notification(document, rule_texts, directions)
+    note_messages: list[str] = []
+    if args.llm_note_dir is not None:
+        note_messages = llm_render.note_messages(
+            args.llm_note_dir, args.as_of.isoformat(), directions=directions,
+            has_observations=positive,
+        )
+        messages = messages + note_messages
 
     if not args.send:
         for index, message in enumerate(messages, start=1):
@@ -254,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
         "telegram_message_ids": sent_ids,
         "resend": bool(args.resend),
     }
+    if args.llm_note_dir is not None:
+        receipt["llm_note_messages"] = len(note_messages)
     receipt_payload = (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     try:
         _write_receipt(receipt_target, receipt_payload)

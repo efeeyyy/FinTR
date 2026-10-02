@@ -8,7 +8,15 @@ every script keeps its own guards and exit codes:
 3. ``notify_observations.py --as-of <as_of>`` (only if 2 == 0; dry-run unless
    this script got ``--send``; ``--resend`` is never passed)
 
-Any non-zero exit stops the pipeline with that exit code; nothing is sent.
+Optional step 2b, only with ``--llm-note`` (default off; Efe's decision of
+2026-10-02): ``llm_note.py --as-of <as_of>`` between scan and notify, and
+``--llm-note-dir`` passed to notify. Its failure NEVER stops the pipeline
+(the deterministic notice still goes out); the summary shows
+``llm_note: <status>`` (the script's ``LLM_NOTE_STATUS`` line). An accepted
+note for the same as_of is not regenerated on a same-day re-run. Without
+``--llm-note`` the behaviour is exactly as before.
+
+Any other non-zero exit stops the pipeline with that exit code; nothing is sent.
 The scanner's stdout (the observation document) is captured and discarded;
 only its stderr (saved path or error line) is read. This script prints no
 financial value.
@@ -26,6 +34,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 DAILY_ROOT = os.path.join("data", "interim", "daily_capture")
 SCANNER_DIR = os.path.join("data", "interim", "scanner_daily")
+LLM_NOTES_DIR = os.path.join("data", "interim", "llm_notes")
+LLM_STATUS_PREFIX = "LLM_NOTE_STATUS: "
 SAVED_PREFIX = "Observations saved:"
 EXISTS_PREFIX = "Scan failed: output file already exists (no overwrite):"
 RECEIPT_EXISTS_MARK = "receipt zaten var"
@@ -46,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="start at the scan step (re-run scan+notify after a successful collect)")
     parser.add_argument("--send", action="store_true",
                         help="notify step actually sends to Telegram (default: notify dry-run)")
+    parser.add_argument("--llm-note", action="store_true",
+                        help="add the Opus 5.5 analysis note step (llm_note.py) between scan and "
+                             "notify; default off; its failure does not stop the pipeline")
     return parser
 
 
@@ -71,12 +84,35 @@ def scan_command() -> list[str]:
             "--out-dir", SCANNER_DIR, "--save", "--format", "json"]
 
 
-def notify_command(as_of: str, send: bool) -> list[str]:
+def llm_note_command(as_of: str) -> list[str]:
+    return [sys.executable, _script("llm_note.py"), "--as-of", as_of,
+            "--scanner-dir", SCANNER_DIR, "--daily-root", DAILY_ROOT, "--out-dir", LLM_NOTES_DIR]
+
+
+def notify_command(as_of: str, send: bool, llm_note: bool = False) -> list[str]:
     cmd = [sys.executable, _script("notify_observations.py"), "--as-of", as_of,
            "--scanner-dir", SCANNER_DIR]
     if send:
         cmd.append("--send")
+    if llm_note:
+        cmd += ["--llm-note-dir", LLM_NOTES_DIR]
     return cmd
+
+
+def run_llm_note(as_of: str) -> str:
+    """Run the note step; return its status string. Never raises and never
+    decides the pipeline's exit code."""
+    try:
+        proc = subprocess.run(llm_note_command(as_of), cwd=ROOT, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, encoding="utf-8")
+    except Exception as exc:  # the note must never stop the deterministic notice
+        return f"error:{type(exc).__name__}"
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    for line in reversed((proc.stdout or "").splitlines()):
+        if line.startswith(LLM_STATUS_PREFIX):
+            return line[len(LLM_STATUS_PREFIX):].strip() or f"error:exit_{proc.returncode}"
+    return f"error:exit_{proc.returncode}"
 
 
 def extract_as_of(stderr_text: str, prefix: str = SAVED_PREFIX) -> tuple[str, str] | None:
@@ -151,7 +187,10 @@ def main(argv: list[str] | None = None) -> int:
         as_of, saved = found
         results.append(("scan", "0"))
 
-    proc = subprocess.run(notify_command(as_of, args.send), cwd=ROOT,
+    if args.llm_note:
+        results.append(("llm_note", run_llm_note(as_of)))
+
+    proc = subprocess.run(notify_command(as_of, args.send, args.llm_note), cwd=ROOT,
                           stderr=subprocess.PIPE, text=True, encoding="utf-8")
     notify_err = proc.stderr or ""
     if notify_err:
