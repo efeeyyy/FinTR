@@ -499,8 +499,8 @@ def main(argv: list[str] | None = None) -> int:
         label = all_as_of[-1] if all_as_of else "unknown"
         try:
             saved = _save(args.out_dir, label, payload)
-        except FileExistsError:
-            print("Scan failed: output file already exists (no overwrite)", file=sys.stderr)
+        except FileExistsError as exc:
+            print(f"Scan failed: output file already exists (no overwrite): {exc.args[0]}", file=sys.stderr)
             return 1
         print(f"Observations saved: {saved}", file=sys.stderr)
 

@@ -577,6 +577,15 @@ $env:PYTHONPATH = "$PWD\src"
 .\.venv\Scripts\python.exe scripts\collect_daily.py --allow-session-takeover
 ```
 
+Tek komutla günlük rutin (collect -> scan -> notify dry-run; ilk sıfır
+olmayan çıkışta durur, `--send` verilmedikçe gönderim yok):
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_daily_pipeline.py --allow-session-takeover
+```
+
+Ayrıntı: [live_check_runbook.md](live_check_runbook.md) bölüm 6h.
+
 `--dry-run` (varsayılan davranış değişmedi: initData istemez, bağlanmaz,
 diske yazmaz) planı (fiyat adımı planı dahil) ve boş bir çalıştırma kaydı iskeletini yazdırır; canlı
 mod aynı `--allow-session-takeover` onayını ister (bölüm "Live smoke"'daki
