@@ -75,6 +75,53 @@ değer, iddia ya da al/sat ifadesi eklemez -- mevcut yasak kelime testleri
 (varsayılan, `--daily-root` verilmeden üretilmiş her dosya) bu satır hiç
 eklenmez.
 
+### Analiz notu (`--llm-note-dir`, Efe kararı 2026-10-02; varsayılan kapalı)
+
+`--llm-note-dir data/interim/llm_notes` verilirse, deterministik mesaj(lar)ın
+ardından **ayrı bir mesaj** olarak Opus 5.5 analiz notu eklenir
+(`scripts/llm_note.py`, `src/fintr/llm_note/`; tasarım:
+`docs/architecture.md`, karar: `docs/prereg/DECISIONS.md`). Bayrak verilmezse
+bildirim metni ve alıcıya giden mesajlar bayt düzeyinde öncekiyle aynıdır.
+
+```
+Opus 5.5 analiz notu — doğrulanmamış hipotez değerlendirmesi, yatırım tavsiyesi değildir
+as_of: 2026-09-30
+Uyarı: yön etiketi doğrulanmamış ön kayıtlı hipotezdir (holdout testi 2027 Nisan); yatırım tavsiyesi değildir.
+
+AKFIS H2 (beklenen yön: yukarı (al yönlü)) — değerlendirme: destekliyor
+• <doğrulanmış gerekçe metni>
+...
+Veri notları:
+• <veri sınırlamaları>
+
+Rakamlar ve kanıt yolları girdi paketiyle kodla denetlendi; model çıktısı deterministik değildir; ...
+Kayıt: data/interim/llm_notes/2026-09-30/attempt-001
+Durum: preregistered_hypothesis_holdout_test_pending
+```
+
+- **Ne içerir:** her `condition_met` gözlem için dondurulmuş kuralın yönünü veri
+  `destekliyor` / `zayıflatıyor` / `belirsiz` ve kısa, kanıt yollu gerekçeler.
+  Değerlendirme dışında yeni finansal ifade eklemez; al/sat emri, hedef, stop,
+  pozisyon, getiri tahmini veya puan üretmez. Yön etiketi, deterministik
+  mesajdaki aynı iki sabit ifadedir ve `--no-direction-label` ile notta da
+  kalkar (uyarı satırı ve etiket birlikte).
+- **Doğrulama:** not yalnız kodla doğrulandıysa gösterilir (şema, izinli değer,
+  kapsam, kanıt yolları, yasak ifade, metindeki her rakam/tarih girdi paketinde).
+  Gösterim sırasında kayıt bütünlüğü yeniden denetlenir (paket sha256 + yeniden
+  doğrulama); değişmiş bir not gösterilmez.
+- **Not yoksa tek satır durum** (ayrı mesaj): `Opus 5.5 analiz notu: analiz notu
+  alınamadı (<kategori>).` (model reddi, abonelik limiti, zaman aşımı, CLI
+  hatası, paket çok büyük), `... doğrulamadan geçemedi (<kategori>).` (reddedilen
+  not; içeriği gönderilmez), `... bu as_of için not yok (adım çalıştırılmadı).`
+  veya `... bu taramada gözlem yok; not üretilmedi.` Reddedilen/eksik not
+  deterministik mesajı hiçbir zaman engellemez.
+- **Receipt:** notla birlikte gönderilen mesajlar aynı makbuzdadır
+  (`message_sha256` hepsini kapsar; yalnız bu bayrakla `llm_note_messages`
+  alanı eklenir). Mevcut tekrar gönderim engeli aynen geçerlidir: makbuz varsa
+  not sonradan üretilse de yeniden gönderilmez (`--resend` bilinçli karar ister).
+- **Veri Anthropic'e gider:** ham AKD/takas verisinin üçüncü tarafa gönderimi
+  Efe'nin kararıdır; Mini App lisans beyanının bunu kapsadığı doğrulanmadı.
+
 ## 1. BotFather ile bot açma
 
 1. Telegram'da `@BotFather` ile sohbet başlat.
