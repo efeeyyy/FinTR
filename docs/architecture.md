@@ -817,3 +817,44 @@ Günlük sıra: `collect_daily` -> (ilk canlı çalıştırmadan sonra)
 `compare_daily_d0` -> `scan_observations --daily-root` ->
 `notify_observations` (varsayılan dry-run, `--send`);
 bkz. `docs/live_check_runbook.md` bölüm 6g.
+
+### Günlük analiz notu: Claude Opus 5.5, Claude Code CLI (`fintr.llm_note`, aşama 2 adım 4)
+
+Problem: Deterministik bildirim (`fintr.notify`) hangi kuralın koşulunun sağlandığını
+söylüyor; Efe'nin her gözlem için ham kurum bazlı AKD/takas verisine bakıp "veri bu
+hipotezin yönünü destekliyor mu?" sorusunu elle cevaplaması gerekiyordu. Bu bir
+kanıt değerlendirmesidir; işlem kararı değildir.
+
+Alternatifler: (a) modelin doğrudan "al/sat" kararı vermesi -- AGENTS.md sınırlarına
+aykırı ve doğrulanamaz; reddedildi (yönetici önerisi, Efe kabul etti). (b) özetlenmiş
+özellik paketi göndermek -- model yalnız tarayıcının hesabını tekrar ederdi, kurum
+bazlı kanıta bakamazdı; Efe ham veriyi seçti. (c) Anthropic API anahtarı -- ayrı
+faturalama/secret yönetimi; Efe aboneliğiyle Claude Code CLI başsız modu
+(`claude -p`) kullanılacak. (d) Modelin serbest metin üretmesi ve çıktıya güvenmek --
+rakam uydurma/yasak ifade riski; reddedildi: çıktı JSON şemalıdır ve kodla
+fail-closed doğrulanır.
+
+Karar: 2026-10-02 (Efe) -- `scripts/llm_note.py` (`src/fintr/llm_note/`),
+`run_daily_pipeline.py --llm-note` ile açılan (varsayılan kapalı) adım: tarama ile
+bildirim arasında çalışır, bildirim dosyasındaki `condition_met` hisseleri için
+`as_of` sonrası veri ve fiyat serisi içermeyen ham paket (`packet.py`;
+birleştirici ile aynı hash/bütünlük kontrollü yükleyiciler, holdout/DSTKF koruması,
+paket boyut sınırı aşılırsa bütün hisseler halinde ve açıkça raporlanarak dışarıda
+bırakma) kurar, Opus 5.5'e `--tools ""` ile verir ve cevabı doğrular (`validate.py`:
+şema, izinli değer, kapsam, kanıt yolu çözümü, yasak ifade, metindeki her rakam ve
+tarihin paketteki sayılarla eşleşmesi -- ayırıcı/işaret/% normalizasyonu, yuvarlama
+toleransı yok). Reddedilen not gösterilmez. Kayıtlar `data/interim/llm_notes/<as_of>/
+attempt-NNN/` altında no-overwrite saklanır. `notify_observations.py --llm-note-dir`
+doğrulanmış notu ayrı mesaj olarak ekler (kayıt bütünlüğü yeniden doğrulanır),
+yoksa tek satır durum yazar.
+
+Sonuç: Bu adım AGENTS.md'de açıkça belirtilmiş bir istisnadır (yalnız kanıt
+değerlendirmesi; emir, hedef, stop, pozisyon, getiri tahmini veya puan yok). Riskler:
+(1) ham verinin Anthropic'e gönderimi için lisans kapsamı doğrulanmadı (Efe kararı);
+(2) LLM çıktısı deterministik değildir -- tekrar üretilebilirlik kaydı attempt
+dizinidir; (3) rakam denetimi modelin uydurduğu sayıyı yakalar ama yorumun doğruluğunu
+kanıtlamaz; (4) "destekliyor/zayıflatıyor" doğrulanmamış hipotez yönüne göredir ve
+holdout sonucu bunu desteklemezse adım kapatılmalıdır; (5) CLI bayrakları sürüme
+bağlıdır (`runner.build_command` tek yerdedir) ve abonelik limitine takılırsa not
+"alınamadı" olur, deterministik bildirim etkilenmez. Ayrıntı `docs/notify.md`,
+`docs/live_check_runbook.md` 6i ve `docs/prereg/DECISIONS.md`.
