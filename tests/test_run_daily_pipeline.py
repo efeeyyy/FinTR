@@ -20,13 +20,17 @@ SAVED = os.path.join("data", "interim", "scanner_daily", "2026-10-01", "observat
 STEP_INDEX = {"collect_daily.py": 0, "scan_observations.py": 1, "notify_observations.py": 2}
 
 
-def _go(argv, codes=(0, 0, 0), saved=True):
+def _go(argv, codes=(0, 0, 0), saved=True, scan_err=None, notify_err=""):
     calls = []
 
     def run(cmd, **kwargs):
         calls.append((cmd, kwargs))
         idx = STEP_INDEX[Path(cmd[1]).name]
-        err = f"Observations saved: {SAVED}\n" if (idx == 1 and saved) else ""
+        err = ""
+        if idx == 1:
+            err = scan_err if scan_err is not None else (f"Observations saved: {SAVED}\n" if saved else "")
+        elif idx == 2:
+            err = notify_err
         return subprocess.CompletedProcess(cmd, codes[idx], stdout="SECRET-OBSERVATION", stderr=err)
 
     out, err = io.StringIO(), io.StringIO()
@@ -91,6 +95,35 @@ class PipelineTests(unittest.TestCase):
         rc, calls, _, _ = _go([], saved=False)
         self.assertEqual(rc, 1)
         self.assertEqual(_names(calls), ["collect_daily.py", "scan_observations.py"])
+
+    def test_same_day_rerun_is_idempotent(self):
+        exists = f"Scan failed: output file already exists (no overwrite): {SAVED}\n"
+        receipt = "Notify failed: bu as_of için receipt zaten var (x); --resend ile yeniden gönder\n"
+        rc, calls, out, _ = _go(["--allow-session-takeover", "--send"], codes=(0, 1, 1),
+                                scan_err=exists, notify_err=receipt)
+        self.assertEqual(rc, 0)
+        self.assertEqual(_names(calls), ["collect_daily.py", "scan_observations.py", "notify_observations.py"])
+        self.assertEqual(calls[2][0][2:4], ["--as-of", "2026-10-01"])
+        self.assertNotIn("--resend", calls[2][0])
+        self.assertIn("already_scanned", out)
+        self.assertIn("already_sent", out)
+        self.assertIn("no resend", out)
+
+    def test_exists_scan_then_dry_run_notify_continues(self):
+        exists = f"Scan failed: output file already exists (no overwrite): {SAVED}\n"
+        rc, calls, out, _ = _go([], codes=(0, 1, 0), scan_err=exists)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(calls), 3)
+
+    def test_real_scan_error_stops(self):
+        rc, calls, out, _ = _go(["--send"], codes=(0, 1, 0), scan_err="Scan failed: no period capture found for X\n")
+        self.assertEqual(rc, 1)
+        self.assertEqual(_names(calls), ["collect_daily.py", "scan_observations.py"])
+        self.assertIn("failed with exit code", out)
+
+    def test_other_notify_failure_with_send_still_fails(self):
+        rc, calls, out, _ = _go(["--send"], codes=(0, 0, 1), notify_err="Notify failed: token\n")
+        self.assertEqual(rc, 1)
 
     def test_extract_as_of(self):
         self.assertEqual(rdp.extract_as_of(f"x\nObservations saved: {SAVED}\n"), ("2026-10-01", SAVED))

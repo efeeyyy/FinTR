@@ -27,6 +27,8 @@ SCRIPTS = ROOT / "scripts"
 DAILY_ROOT = os.path.join("data", "interim", "daily_capture")
 SCANNER_DIR = os.path.join("data", "interim", "scanner_daily")
 SAVED_PREFIX = "Observations saved:"
+EXISTS_PREFIX = "Scan failed: output file already exists (no overwrite):"
+RECEIPT_EXISTS_MARK = "receipt zaten var"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -77,11 +79,12 @@ def notify_command(as_of: str, send: bool) -> list[str]:
     return cmd
 
 
-def extract_as_of(stderr_text: str) -> tuple[str, str] | None:
-    """Return (as_of, saved_path) from the scanner's 'Observations saved:' line."""
+def extract_as_of(stderr_text: str, prefix: str = SAVED_PREFIX) -> tuple[str, str] | None:
+    """Return (as_of, path) from the scanner's 'Observations saved:' line (or,
+    with ``EXISTS_PREFIX``, from its no-overwrite refusal naming the existing file)."""
     for line in stderr_text.splitlines():
-        if line.startswith(SAVED_PREFIX):
-            saved = line[len(SAVED_PREFIX):].strip()
+        if line.startswith(prefix):
+            saved = line[len(prefix):].strip()
             as_of = Path(saved.replace("\\", "/")).parent.name
             if as_of:
                 return as_of, saved
@@ -133,18 +136,34 @@ def main(argv: list[str] | None = None) -> int:
     stderr_text = proc.stderr or ""
     if stderr_text:
         sys.stderr.write(stderr_text)
-    if proc.returncode != 0:
+    if proc.returncode == 1 and (existing := extract_as_of(stderr_text, EXISTS_PREFIX)):
+        as_of, saved = existing
+        print(f"Scan output for as_of {as_of} already exists (not overwritten); "
+              "treating step 'scan' as already scanned.")
+        results.append(("scan", "already_scanned"))
+    elif proc.returncode != 0:
         return _fail(results, "scan", proc.returncode)
-    found = extract_as_of(stderr_text)
-    if found is None:
-        print("Scan exited 0 but its saved path (as_of) could not be determined.")
-        return _fail(results, "scan", 1)
-    as_of, saved = found
-    results.append(("scan", "0"))
+    else:
+        found = extract_as_of(stderr_text)
+        if found is None:
+            print("Scan exited 0 but its saved path (as_of) could not be determined.")
+            return _fail(results, "scan", 1)
+        as_of, saved = found
+        results.append(("scan", "0"))
 
-    code = subprocess.run(notify_command(as_of, args.send), cwd=ROOT).returncode
-    if code != 0:
-        return _fail(results, "notify", code)
+    proc = subprocess.run(notify_command(as_of, args.send), cwd=ROOT,
+                          stderr=subprocess.PIPE, text=True, encoding="utf-8")
+    notify_err = proc.stderr or ""
+    if notify_err:
+        sys.stderr.write(notify_err)
+    if proc.returncode == 1 and args.send and RECEIPT_EXISTS_MARK in notify_err:
+        print(f"Notice for as_of {as_of} was already sent (receipt exists); nothing resent.")
+        results.append(("notify", "already_sent"))
+        _summary(results, as_of=as_of, saved=saved)
+        print("  sent: no (already sent earlier; no resend)")
+        return 0
+    if proc.returncode != 0:
+        return _fail(results, "notify", proc.returncode)
     results.append(("notify", "0"))
     _summary(results, as_of=as_of, saved=saved, sent=args.send)
     return 0

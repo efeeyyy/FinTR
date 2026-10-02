@@ -632,8 +632,10 @@ $env:PYTHONPATH = "$PWD\src"
   başarılıysa). `--skip-price`, `--run-date`, `--dry-run` collect'e iletilir;
   `--dry-run`da 2-3. adımlar yeni veri olmadığı için atlanır.
 - Son özet: adım -> çıkış kodu, as_of, tarayıcı çıktı yolu, gönderildi mi.
-  `--save` üzerine yazmaz; aynı as_of için tarama ikinci kez çalışırsa
-  adım 2 hata verir (ör. `--skip-collect` tekrarı).
+  `--save` üzerine yazmaz; aynı as_of çıktısı zaten varsa adım 2
+  "already_scanned" sayılır (yeniden taranmaz) ve bildirime geçilir; `--send`
+  ile makbuz zaten varsa adım 3 "already_sent" olur (yeniden gönderilmez,
+  çıkış 0). Başka her tarama/bildirim hatası boru hattını durdurur.
 
 Bu bölüm yalnız süreci anlatır; günlük toplamanın finansal sonuçları bu
 belgede veya yönetici sohbetinde tartışılmaz (`docs/STATUS.md`).
