@@ -8,7 +8,11 @@ gözlem tarayıcısı. Seçilen bir gün (`as_of`) için geliştirme hisselerind
 
 - **Getiri, hedef, puan, sıralama veya "al/sat" üretmez.** Çıktı şemasında
   `score`/`rank`/`return`/`target` alanı yoktur (`tests/test_scanner.py`
-  `ForbiddenFieldsTests` bunu doğrular).
+  `ForbiddenFieldsTests` bunu doğrular). Tarayıcı çıktısı ve şeması 2026-10-02
+  kararından sonra da aynıdır; yalnız Telegram bildirimi (`fintr.notify`) Efe'nin
+  kişisel kullanımı için, spec'teki `predicted_direction`'ı doğrulanmamış hipotez
+  uyarısıyla "beklenen yön: yukarı (al yönlü)" / "aşağı (sat yönlü)" diye gösterebilir
+  (bkz. `docs/notify.md`, `docs/prereg/DECISIONS.md`).
 - **Ağ, Telegram ya da model çağrısı yok.** Yalnız `data/interim/period_analysis/`
   ve `data/interim/price_history/` altındaki kaydedilmiş dosyaları okur.
   `data/interim/studies/` klasörünü hiç okumaz.

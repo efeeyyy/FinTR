@@ -734,9 +734,16 @@ Sonuç: `src/fintr/notify/format.py` (saf biçimlendirme) ve
 `scripts/notify_observations.py` (varsayılan dry-run, `--send` ile gerçek
 gönderim, token/chat id yalnız `FINTR_TELEGRAM_BOT_TOKEN`/
 `FINTR_TELEGRAM_CHAT_ID` ortam değişkenlerinden). Bildirim de tarayıcı gibi
-bir gözlem bildirimidir -- getiri, hedef, puan, sıralama veya al/sat
-üretmez; her mesajın sonunda tarayıcının sabit uyarı metni ve
-`validation_status` bulunur. Ayrıntılar `docs/notify.md`.
+bir gözlem bildirimidir -- getiri, hedef, puan, sıralama, stop veya serbest
+metin al/sat önerisi üretmez; her mesajın sonunda sabit uyarı metni ve
+`validation_status` bulunur. Tek istisna (Efe kararı, 2026-10-02, yalnız kişisel
+kullanım; AGENTS.md "Güvenlik sınırları", `docs/prereg/DECISIONS.md`): her
+`condition_met` satırı, dondurulmuş spec'in hash doğrulamalı `predicted_direction`
+alanından türetilen "beklenen yön: yukarı (al yönlü)" / "aşağı (sat yönlü)" etiketini
+doğrulanmamış hipotez uyarısıyla taşır; kural/eşik/spec ve tarayıcı şeması değişmez,
+çözülemeyen yön "yön bilinmiyor" olur, `--no-direction-label` önceki metni geri getirir.
+Alternatif (etiketi holdout sonucuna kadar bekletmek, önceki plan) Efe tarafından
+reddedildi. Ayrıntılar `docs/notify.md`.
 
 ### Günlük Mini App toplama ve birleştirme (aşama 2 adım 3)
 
