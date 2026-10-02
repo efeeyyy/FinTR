@@ -5,8 +5,20 @@ No I/O, no network, no new financial claim -- every line here only
 restates a field already present in the scanner's saved observation
 document (``docs/scanner.md``) or the fixed short rule descriptions passed
 in by the caller (``configs/notify/rule_texts_v1.json``). This is an
-observation notice, not a signal: nothing in this module computes or
-emits a score, rank, return, target or buy/sell recommendation.
+observation notice: nothing in this module computes or emits a score,
+rank, return, target, stop level, position size or a free-form buy/sell
+recommendation.
+
+Single, narrow exception (Efe's decision of 2026-10-02, AGENTS.md
+"Guvenlik sinirlari", ``docs/prereg/DECISIONS.md``; personal use only):
+when the caller passes ``directions`` (rule_id -> the frozen spec's
+``predicted_direction``), each ``condition_met`` line may carry exactly
+one of the two fixed phrases ``DIRECTION_LABELS_TR`` -- the frozen rule's
+*hypothesised* direction, not a forecast. A line whose rule_id has no
+exact ``positive``/``negative`` entry gets ``DIRECTION_UNKNOWN_TR``
+instead (never a guess). Every message that contains a label also
+contains ``DIRECTION_WARNING_TR`` exactly once. ``directions=None``
+reproduces the pre-exception text byte for byte.
 """
 
 from __future__ import annotations
@@ -24,6 +36,25 @@ OBSERVATIONS_SCHEMA_V2 = "fintr_scanner_observations_v2"
 OBSERVATIONS_SCHEMA = OBSERVATIONS_SCHEMA_V1  # kept for existing callers of the default schema
 SUPPORTED_OBSERVATIONS_SCHEMAS = (OBSERVATIONS_SCHEMA_V1, OBSERVATIONS_SCHEMA_V2)
 TELEGRAM_MESSAGE_LIMIT = 4096
+
+# Efe decision 2026-10-02 (see module docstring). These are the ONLY buy/sell
+# wording this module may emit; tests/test_notify.py allows exactly these.
+DIRECTION_LABELS_TR = {
+    "positive": "beklenen yön: yukarı (al yönlü)",
+    "negative": "beklenen yön: aşağı (sat yönlü)",
+}
+DIRECTION_UNKNOWN_TR = "yön bilinmiyor"
+DIRECTION_WARNING_TR = (
+    "Uyarı: yön etiketi doğrulanmamış ön kayıtlı hipotezdir "
+    "(holdout testi 2027 Nisan); yatırım tavsiyesi değildir."
+)
+# Replaces the scanner's fixed notice (which says "al/sat sinyali değildir")
+# only in a message that actually carries a direction label.
+NOTICE_TEXT_DIRECTION_TR = (
+    "Gözlem bildirimidir; kişisel kullanım; doğrulanmamış hipotez yönü; yatırım tavsiyesi, "
+    "niyet veya manipülasyon iddiası değildir. Kurallar ön kayıtlı hipotezdir, "
+    "holdout testi bekleniyor."
+)
 
 _SUPPRESSED_REASONS = ("ratio_regime", "custody_scale_jump")
 _SUPPRESSED_LABELS_TR = {
@@ -83,7 +114,21 @@ def _feature_text(feature: dict) -> str:
     return text
 
 
-def _observation_line(symbol: str, rule_texts: dict, obs: dict) -> str | None:
+def _direction_text(rule_id: str, directions: dict) -> str:
+    """The fixed label for ``rule_id``, or the unknown marker. Only the exact
+    strings ``positive``/``negative`` resolve; anything else (missing rule,
+    ``None``, other value, non-string) is unknown -- never guessed."""
+    direction = directions.get(rule_id)
+    if isinstance(direction, str):
+        label = DIRECTION_LABELS_TR.get(direction)
+        if label is not None:
+            return label
+    return DIRECTION_UNKNOWN_TR
+
+
+def _observation_line(
+    symbol: str, rule_texts: dict, obs: dict, directions: dict | None = None,
+) -> str | None:
     if obs.get("condition_met") is not True:
         return None
     rule_id = obs.get("rule_id", "?")
@@ -92,6 +137,8 @@ def _observation_line(symbol: str, rule_texts: dict, obs: dict) -> str | None:
     line = f"{symbol} {rule_id}: {description}"
     if features_text:
         line += f" — {features_text}"
+    if directions is not None:
+        line += f" — {_direction_text(rule_id, directions)}"
     return line
 
 
@@ -162,14 +209,27 @@ def _suppressed_line(document: dict) -> str:
     return "Bastırılan gözlemler: " + ", ".join(parts)
 
 
-def _footer_lines(document: dict) -> list[str]:
-    warning = document.get("warning") or NOTICE_TEXT_TR
+def _footer_lines(document: dict, *, labelled: bool = False) -> list[str]:
+    if labelled:
+        warning = NOTICE_TEXT_DIRECTION_TR
+    else:
+        warning = document.get("warning") or NOTICE_TEXT_TR
     return [warning, f"Durum: {VALIDATION_STATUS}"]
 
 
-def render_notification_text(document: dict, rule_texts: dict) -> str:
+def _has_label(text: str) -> bool:
+    return any(label in text for label in DIRECTION_LABELS_TR.values())
+
+
+def render_notification_text(
+    document: dict, rule_texts: dict, directions: dict | None = None,
+) -> str:
     """Pure: render the full, unsplit Turkish notification text for one
-    ``fintr_scanner_observations_v1`` document."""
+    ``fintr_scanner_observations_v1`` document.
+
+    ``directions`` is ``None`` (no direction wording at all -- the original
+    text) or a rule_id -> ``predicted_direction`` mapping (see module
+    docstring); an empty mapping marks every observation "yön bilinmiyor"."""
     lines = list(_header_lines(document))
     lines.append("")
 
@@ -180,12 +240,16 @@ def render_notification_text(document: dict, rule_texts: dict) -> str:
         for scan in block.get("scans", []):
             as_of = scan.get("as_of", "")
             for obs in scan.get("observations", []):
-                line = _observation_line(symbol, rule_texts, obs)
+                line = _observation_line(symbol, rule_texts, obs, directions)
                 if line is not None:
                     observation_lines.append(line)
             freshness_lines.extend(_freshness_lines(symbol, as_of, scan.get("freshness", {})))
 
+    labelled = any(_has_label(line) for line in observation_lines)
     if observation_lines:
+        if labelled:
+            lines.append(DIRECTION_WARNING_TR)
+            lines.append("")
         lines.extend(observation_lines)
     else:
         lines.append("Bu taramada condition_met=true gözlem yok.")
@@ -202,7 +266,7 @@ def render_notification_text(document: dict, rule_texts: dict) -> str:
 
     lines.append(_suppressed_line(document))
     lines.append("")
-    lines.extend(_footer_lines(document))
+    lines.extend(_footer_lines(document, labelled=labelled))
     return "\n".join(lines) + "\n"
 
 
@@ -231,7 +295,23 @@ def split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
     return chunks
 
 
-def render_notification(document: dict, rule_texts: dict) -> list[str]:
+def render_notification(
+    document: dict, rule_texts: dict, directions: dict | None = None,
+) -> list[str]:
     """Pure: ``document`` -> one or more plain-text messages, each at most
-    ``TELEGRAM_MESSAGE_LIMIT`` characters, split on line boundaries."""
-    return split_message(render_notification_text(document, rule_texts))
+    ``TELEGRAM_MESSAGE_LIMIT`` characters, split on line boundaries.
+
+    Every message that contains a direction label carries
+    ``DIRECTION_WARNING_TR`` exactly once: the full text has it once near
+    the top (first message); a later chunk with a label gets it prepended,
+    so the split limit is reduced by that line's length when labels exist."""
+    text = render_notification_text(document, rule_texts, directions)
+    if not _has_label(text):
+        return split_message(text)
+    reserve = len(DIRECTION_WARNING_TR) + 1
+    chunks = split_message(text, TELEGRAM_MESSAGE_LIMIT - reserve)
+    return [
+        chunk if DIRECTION_WARNING_TR in chunk or not _has_label(chunk)
+        else DIRECTION_WARNING_TR + "\n" + chunk
+        for chunk in chunks
+    ]

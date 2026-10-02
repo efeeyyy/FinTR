@@ -6,9 +6,15 @@ Reads ``<scanner-dir>/<as-of>/observations.json`` (schema
 ``--daily-root``) and sends a plain-text, Turkish observation notice to
 Efe's own Telegram chat via the Bot API (``fintr.notify.telegram``, stdlib
 ``urllib`` only).
-This is an observation notice, not a signal: no score, rank, return,
-target or buy/sell recommendation. See ``docs/notify.md`` and
-``docs/scanner.md``.
+This is an observation notice: no score, rank, return, target, stop,
+position size or free-form buy/sell recommendation. One narrow exception
+(Efe's decision of 2026-10-02, personal use; AGENTS.md "Guvenlik
+sinirlari"): each condition_met line carries the frozen rule's
+hypothesised direction label ("beklenen yön: yukarı (al yönlü)" / "aşağı
+(sat yönlü)", read from the hash-checked frozen spec's
+``predicted_direction``), with an unverified-hypothesis warning;
+``--no-direction-label`` restores the previous wording. See
+``docs/notify.md`` and ``docs/scanner.md``.
 
 Safe defaults: dry-run unless ``--send`` is passed (no network call, the
 message(s) are only printed to stdout); the token and chat id are read
@@ -29,13 +35,16 @@ from pathlib import Path
 
 from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
 from fintr.notify import format as fmt
+from fintr.notify.direction import load_rule_directions
 from fintr.notify.telegram import TelegramSendError, send_message
+from fintr.scanner.rules import ScannerRulesError
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCANNER_DIR = Path("data/interim/scanner")
 DEFAULT_OUT_DIR = Path("data/interim/notify")
 DEFAULT_RULE_TEXTS_FILE = Path("configs/notify/rule_texts_v1.json")
+DEFAULT_RULES_FILE = Path("configs/scanner/rules_v1.json")
 
 RULE_TEXTS_SCHEMA = "fintr_notify_rule_texts_v1"
 RECEIPT_SCHEMA = "fintr_notify_receipt_v1"
@@ -62,6 +71,14 @@ def _parser() -> argparse.ArgumentParser:
                          help=f"default: {DEFAULT_OUT_DIR}")
     parser.add_argument("--rule-texts", type=Path, default=DEFAULT_RULE_TEXTS_FILE,
                          help=f"default: {DEFAULT_RULE_TEXTS_FILE}")
+    parser.add_argument("--rules-file", type=Path, default=DEFAULT_RULES_FILE,
+                         help="frozen scanner rule file the direction label is read from "
+                              f"(resolved against the repo root); default: {DEFAULT_RULES_FILE}")
+    parser.add_argument(
+        "--no-direction-label", action="store_true",
+        help="do not label observations with the frozen rule's hypothesised direction; "
+             "restores the wording used before Efe's 2026-10-02 decision",
+    )
     parser.add_argument(
         "--skip-empty", action="store_true",
         help="send nothing (not even the short 'no observation' notice) when there is no "
@@ -176,7 +193,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    messages = fmt.render_notification(document, rule_texts)
+    directions: dict[str, str] | None = None
+    if not args.no_direction_label:
+        try:
+            directions = load_rule_directions(args.rules_file, project_root=PROJECT_ROOT)
+        except ScannerRulesError as exc:
+            # Fail-safe: never guess a direction; every line says "yön bilinmiyor".
+            print(
+                f"Notify: yön etiketi kaynağı doğrulanamadı ({exc}); satırlar 'yön bilinmiyor' "
+                "ile gösterilecek",
+                file=sys.stderr,
+            )
+            directions = {}
+
+    messages = fmt.render_notification(document, rule_texts, directions)
 
     if not args.send:
         for index, message in enumerate(messages, start=1):

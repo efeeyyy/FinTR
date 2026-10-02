@@ -41,7 +41,12 @@ RULE_TEXTS = {
     "H4": "sentetik H4 açıklaması",
 }
 
-_FORBIDDEN_WORDS = ("score", "rank", "return", "target", "al", "sat", "öneri")
+_FORBIDDEN_WORDS = (
+    "score", "rank", "return", "target", "al", "sat", "öneri", "kesin", "hedef", "stop", "kâr",
+)
+# Efe decision 2026-10-02: the ONLY buy/sell wording allowed outside the fixed
+# disclaimer. Everything else in _FORBIDDEN_WORDS stays forbidden.
+_ALLOWED_LABEL_PHRASES = tuple(fmt.DIRECTION_LABELS_TR.values())
 
 
 def _load_script(name: str):
@@ -56,6 +61,8 @@ notify = _load_script("notify_observations")
 
 def _assert_no_forbidden_words(testcase: unittest.TestCase, text: str) -> None:
     lowered = text.lower()
+    for phrase in _ALLOWED_LABEL_PHRASES:
+        lowered = lowered.replace(phrase.lower(), "")
     for word in _FORBIDDEN_WORDS:
         pattern = r"(?<!\w)" + re.escape(word) + r"(?!\w)"
         matches = re.findall(pattern, lowered)
@@ -376,6 +383,154 @@ class FormatTests(unittest.TestCase):
         suffix = "\n".join([NOTICE_TEXT_TR, f"Durum: {VALIDATION_STATUS}"]) + "\n"
         self.assertTrue(text.endswith(suffix))
         _assert_no_forbidden_words(self, text[: -len(suffix)])
+
+
+# --- direction label (Efe decision 2026-10-02) ---------------------------------
+
+DIRECTIONS = {"H1": "negative", "H2": "positive", "H3": "negative", "H4": "positive"}
+UP_LABEL = "beklenen yön: yukarı (al yönlü)"
+DOWN_LABEL = "beklenen yön: aşağı (sat yönlü)"
+
+
+def _doc_with(*observations) -> dict:
+    return _document({
+        "AKFIS": _symbol_block(scans=[{
+            "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+            "observations": list(observations),
+        }]),
+    })
+
+
+def _line_for(text: str, rule_id: str) -> str:
+    matches = [line for line in text.split("\n") if line.startswith(f"AKFIS {rule_id}:")]
+    assert len(matches) == 1, matches
+    return matches[0]
+
+
+class DirectionLabelTests(unittest.TestCase):
+    def test_positive_maps_to_up_and_negative_to_down(self):
+        document = _doc_with(
+            _obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "0.02")]),
+            _obs("H2", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.02")]),
+        )
+        text = fmt.render_notification_text(document, RULE_TEXTS, DIRECTIONS)
+        self.assertTrue(_line_for(text, "H1").endswith(f" — {DOWN_LABEL}"))
+        self.assertTrue(_line_for(text, "H2").endswith(f" — {UP_LABEL}"))
+
+    def test_label_only_on_condition_met_lines(self):
+        document = _doc_with(
+            _obs("H1", condition_met=False),
+            _obs("H2", condition_met=None),
+            _obs("H3", condition_met=None, suppressed="ratio_regime"),
+        )
+        text = fmt.render_notification_text(document, RULE_TEXTS, DIRECTIONS)
+        self.assertNotIn("yönlü", text)
+        self.assertNotIn(fmt.DIRECTION_UNKNOWN_TR, text)
+        self.assertNotIn(fmt.DIRECTION_WARNING_TR, text)
+
+    def test_unresolvable_rule_or_bad_direction_gets_marker_not_label(self):
+        bad_values = {"H2": "up", "H3": None, "H4": "Positive"}  # H1 missing entirely
+        document = _doc_with(*[_obs(rid, condition_met=True) for rid in ("H1", "H2", "H3", "H4")])
+        text = fmt.render_notification_text(document, RULE_TEXTS, bad_values)
+        for rid in ("H1", "H2", "H3", "H4"):
+            line = _line_for(text, rid)
+            self.assertTrue(line.endswith(f" — {fmt.DIRECTION_UNKNOWN_TR}"), line)
+        for phrase in _ALLOWED_LABEL_PHRASES:
+            self.assertNotIn(phrase, text)
+
+    def test_no_label_means_no_warning_and_original_footer(self):
+        document = _doc_with(_obs("H1", condition_met=True))
+        text = fmt.render_notification_text(document, RULE_TEXTS, {})
+        self.assertIn(fmt.DIRECTION_UNKNOWN_TR, text)
+        self.assertNotIn(fmt.DIRECTION_WARNING_TR, text)
+        self.assertTrue(text.endswith("\n".join([NOTICE_TEXT_TR, f"Durum: {VALIDATION_STATUS}"]) + "\n"))
+
+    def test_warning_present_exactly_once_when_labelled(self):
+        document = _doc_with(
+            _obs("H1", condition_met=True), _obs("H2", condition_met=True),
+            _obs("H3", condition_met=True), _obs("H4", condition_met=True),
+        )
+        text = fmt.render_notification_text(document, RULE_TEXTS, DIRECTIONS)
+        self.assertEqual(text.count(fmt.DIRECTION_WARNING_TR), 1)
+        messages = fmt.render_notification(document, RULE_TEXTS, DIRECTIONS)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].count(fmt.DIRECTION_WARNING_TR), 1)
+
+    def test_footer_is_not_contradictory_when_labelled(self):
+        document = _doc_with(_obs("H1", condition_met=True))
+        text = fmt.render_notification_text(document, RULE_TEXTS, DIRECTIONS)
+        self.assertNotIn("al/sat sinyali", text)
+        self.assertTrue(text.endswith(
+            "\n".join([fmt.NOTICE_TEXT_DIRECTION_TR, f"Durum: {VALIDATION_STATUS}"]) + "\n"
+        ))
+        for must in ("kişisel kullanım", "doğrulanmamış hipotez yönü", "niyet veya manipülasyon iddiası"):
+            self.assertIn(must, fmt.NOTICE_TEXT_DIRECTION_TR)
+
+    def test_directions_none_is_the_original_text(self):
+        document = _doc_with(
+            _obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "0.02")]),
+        )
+        text = fmt.render_notification_text(document, RULE_TEXTS)
+        self.assertEqual(text, fmt.render_notification_text(document, RULE_TEXTS, None))
+        self.assertNotIn("yönlü", text)
+        self.assertNotIn(fmt.DIRECTION_UNKNOWN_TR, text)
+        self.assertNotIn(fmt.DIRECTION_WARNING_TR, text)
+        self.assertTrue(text.endswith("\n".join([NOTICE_TEXT_TR, f"Durum: {VALIDATION_STATUS}"]) + "\n"))
+
+    def test_every_split_chunk_with_a_label_carries_warning_once_within_limit(self):
+        observations = [_obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "0.02")])] * 1
+        symbols = {
+            f"SYM{i:03d}": _symbol_block(scans=[{
+                "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+                "observations": list(observations),
+            }])
+            for i in range(120)
+        }
+        messages = fmt.render_notification(_document(symbols), RULE_TEXTS, DIRECTIONS)
+        self.assertGreater(len(messages), 1)
+        for message in messages:
+            self.assertLessEqual(len(message), fmt.TELEGRAM_MESSAGE_LIMIT)
+            if DOWN_LABEL in message:
+                self.assertEqual(message.count(fmt.DIRECTION_WARNING_TR), 1)
+
+    def test_guard_allows_exactly_the_two_labels_and_nothing_else(self):
+        document = _doc_with(
+            _obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "0.02")]),
+            _obs("H2", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.02")]),
+        )
+        text = fmt.render_notification_text(document, RULE_TEXTS, DIRECTIONS)
+        suffix = "\n".join([fmt.NOTICE_TEXT_DIRECTION_TR, f"Durum: {VALIDATION_STATUS}"]) + "\n"
+        self.assertTrue(text.endswith(suffix))
+        _assert_no_forbidden_words(self, text[: -len(suffix)])
+
+    def test_guard_still_catches_other_buy_sell_or_target_wording(self):
+        for bad in (
+            "AKFIS H1: al yönlü", "sat yönlü", "al!", "sat!", "kesin yükselir", "hedef 12",
+            "stop 10", "kâr bekleniyor", "score 3", "rank 1", "return 2", "target 5", "öneri",
+            "beklenen yön: yukarı (al yönlü) ve al",
+        ):
+            with self.subTest(bad=bad), self.assertRaises(AssertionError):
+                _assert_no_forbidden_words(self, bad)
+        for ok in _ALLOWED_LABEL_PHRASES:
+            _assert_no_forbidden_words(self, ok)
+
+    def test_directions_loaded_from_frozen_specs_match_expected(self):
+        from fintr.notify.direction import load_rule_directions
+        directions = load_rule_directions(
+            ROOT / "configs" / "scanner" / "rules_v1.json", project_root=ROOT,
+        )
+        self.assertEqual(directions, DIRECTIONS)
+
+    def test_loader_fails_closed_on_hash_mismatch(self):
+        from fintr.notify.direction import load_rule_directions
+        from fintr.scanner.rules import ScannerRulesError
+        document = json.loads((ROOT / "configs" / "scanner" / "rules_v1.json").read_text(encoding="utf-8"))
+        document["rules"][0]["raw_sha256"] = "0" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rules.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(ScannerRulesError):
+                load_rule_directions(path, project_root=ROOT)
 
 
 class RealRuleTextsFileTests(unittest.TestCase):
@@ -787,6 +942,89 @@ class ScriptTests(GuardEnvMixin, unittest.TestCase):
             self.assertNotIn(FAKE_TOKEN, stdout.getvalue())
             self.assertNotIn(FAKE_TOKEN, stderr.getvalue())
             self.assertFalse((root / "out").exists())
+
+    def _run_dry(self, root: Path, extra: list[str]) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        argv = self._base_argv(root / "scanner", root / "out", "2026-09-25") + extra
+        with patch("fintr.notify.telegram.urllib.request.urlopen",
+                   side_effect=AssertionError("dry-run must never touch the network")):
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = notify.main(argv)
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def _two_rule_document(self) -> dict:
+        return _document({DEVELOPMENT[0]: _symbol_block(scans=[{
+            "as_of": "2026-09-25", "freshness": _freshness(custody_flagged_stale_t_plus_2=False),
+            "observations": [
+                _obs("H1", condition_met=True, features=[_feature("vwap_proxy_vs_close", "0.02")]),
+                _obs("H2", condition_met=True, features=[_feature("vwap_proxy_vs_close", "-0.02")]),
+            ],
+        }])})
+
+    def test_default_labels_from_real_frozen_specs_with_one_warning(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_observations(root / "scanner", "2026-09-25", self._two_rule_document())
+            code, out, _ = self._run_dry(root, [])
+            self.assertEqual(code, 0)
+            self.assertEqual(out.count(DOWN_LABEL), 1)  # H1 negative
+            self.assertEqual(out.count(UP_LABEL), 1)  # H2 positive
+            self.assertEqual(out.count(fmt.DIRECTION_WARNING_TR), 1)
+
+    def test_no_direction_label_flag_restores_previous_output(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = self._two_rule_document()
+            self._write_observations(root / "scanner", "2026-09-25", document)
+            code, out, _ = self._run_dry(root, ["--no-direction-label"])
+            self.assertEqual(code, 0)
+            expected = "".join(
+                f"--- mesaj {i}/{len(msgs)} (dry-run; ağ kullanılmadı) ---\n{m}\n"
+                for msgs in [fmt.render_notification(document, notify.load_rule_texts(REAL_RULE_TEXTS_FILE))]
+                for i, m in enumerate(msgs, start=1)
+            )
+            self.assertEqual(out, expected)
+            self.assertNotIn("yönlü", out)
+            self.assertNotIn(fmt.DIRECTION_WARNING_TR, out)
+            self.assertIn(NOTICE_TEXT_TR, out)
+
+    def test_unverifiable_rules_file_marks_unknown_and_never_labels(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_observations(root / "scanner", "2026-09-25", self._two_rule_document())
+            bad = json.loads((ROOT / "configs" / "scanner" / "rules_v1.json").read_text(encoding="utf-8"))
+            bad["rules"][0]["raw_sha256"] = "0" * 64
+            bad_path = root / "rules.json"
+            bad_path.write_text(json.dumps(bad), encoding="utf-8")
+            code, out, err = self._run_dry(root, ["--rules-file", str(bad_path)])
+            self.assertEqual(code, 0)
+            self.assertEqual(out.count(fmt.DIRECTION_UNKNOWN_TR), 2)
+            self.assertNotIn("yönlü", out)
+            self.assertNotIn(fmt.DIRECTION_WARNING_TR, out)
+            self.assertIn("yön etiketi kaynağı doğrulanamadı", err)
+
+    def test_send_receipt_hashes_the_labelled_messages_and_resend_unchanged(self):
+        self.make_env()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_observations(root / "scanner", "2026-09-25", self._two_rule_document())
+            argv = self._base_argv(root / "scanner", root / "out", "2026-09-25") + ["--send"]
+            env = {"FINTR_TELEGRAM_BOT_TOKEN": FAKE_TOKEN, "FINTR_TELEGRAM_CHAT_ID": FAKE_CHAT_ID}
+            with patch.dict(os.environ, env), \
+                 patch.object(notify, "send_message", return_value=SendResult(message_id=5)) as send:
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    self.assertEqual(notify.main(argv), 0)
+                    self.assertEqual(notify.main(argv), 1)  # existing receipt: still rejected
+                    self.assertEqual(notify.main(argv + ["--resend"]), 0)
+            sent = send.call_args_list[0].args[2]
+            self.assertIn(UP_LABEL, sent)
+            receipt = json.loads((root / "out" / "2026-09-25" / "receipt.json").read_text(encoding="utf-8"))
+            self.assertEqual(receipt["message_sha256"],
+                             [__import__("hashlib").sha256(sent.encode("utf-8")).hexdigest()])
+            self.assertEqual(send.call_count, 2)
 
 
 if __name__ == "__main__":
