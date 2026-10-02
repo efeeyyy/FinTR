@@ -1,6 +1,6 @@
 # Proje durumu (devir notu)
 
-Son güncelleme: 2026-10-01. Yeni bir yönetici oturumu uzun sohbet geçmişi yerine bu
+Son güncelleme: 2026-10-02. Yeni bir yönetici oturumu uzun sohbet geçmişi yerine bu
 dosyayı ve vault notunu (`Beynim/İkinci Beyin/notes/fintr-llm.md`) okuyarak devam eder.
 Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulur.
 
@@ -10,10 +10,13 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
   deterministik formüller, provenance ve sızıntıya karşı korumalı değerlendirme.
 - Uzun vadeli hedef (Efe, 2026-09-26): tam zamanlı sinyal botu. Önce kanıt: ön kayıtlı
   çalışmalar → tarama/uyarı botu (gözlem bildirir, "al" demez) → yalnız kanıt ve Efe'nin
-  AGENTS.md değişikliği kararıyla alım sinyali. Sürekli toplama için Telegram Mini App
-  (tek oturum, 429 hız sınırı) uygun değil; başka veri kaynağı gerekecek.
-- AGENTS.md bağlayıcı: yatırım tavsiyesi yok, kanıtsız manipülasyon/niyet iddiası yok,
-  eval verisi geliştirmede kullanılmaz.
+  AGENTS.md değişikliği kararıyla alım sinyali. 2026-10-02 Efe kararı: kanıttan önce,
+  kişisel kullanım için bildirimde dondurulmuş kuralın hipotez yönü ("al/sat yönlü")
+  etiketi gösterilir (doğrulanmamış; kurallar değişmez). Mini App günlük bir kez toplama
+  için uygun, sürekli/gün içi toplama için değil (tek oturum, 429).
+- AGENTS.md bağlayıcı: yatırım tavsiyesi yok (yalnız yukarıdaki bildirim etiketi istisnası;
+  LLM bileşenleri hariç), kanıtsız manipülasyon/niyet iddiası yok, eval verisi geliştirmede
+  kullanılmaz. Claude kişisel yatırım tavsiyesi vermez.
 
 ## Veri (Git dışında, `data/interim/`)
 
@@ -94,8 +97,13 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    investor_count o gün henüz null'dı, günlükte dolu; zararsız, yeni kayıt kazanır).
    `scan_observations.py --daily-root` → `data/interim/scanner_daily/2026-09-30/`: pencere
    2026-09-11..09-30, boşluk 0, pencere içi kesinleşmemiş 3 (09-26..09-30 tek gözlem), revize 1
-   (yukarıdaki metadata); bildirim dry-run temiz. Sırada: Efe her işlem günü çalıştırır
-   (runbook 6g sırası); gözlem içerikleri finans sohbetinde. `tzdata` venv'de yok (UTC+3 yedeği
+   (yukarıdaki metadata); bildirim dry-run temiz. 2026-10-02: tek komut
+   `scripts/run_daily_pipeline.py` (collect → scan → notify; hata olursa durur, `--send` olmadan
+   göndermez; aynı gün tekrar çalıştırma yeniden tarama/gönderim yapmaz; runbook 6h) ve Efe
+   kararı ile bildirimde dondurulmuş kuralın `predicted_direction` etiketi ("beklenen yön:
+   yukarı (al yönlü)/aşağı (sat yönlü)", doğrulanmamış hipotez uyarısı, `--no-direction-label`;
+   AGENTS.md istisnası, DECISIONS.md 2026-10-02) birleşti; 895 test. Sırada: Efe her işlem günü
+   gece yarısından sonra/sabah tek komutu çalıştırır; gözlem içerikleri finans sohbetinde. `tzdata` venv'de yok (UTC+3 yedeği
    çalışıyor). Açık kararlar: günlük dosya saklama/temizlik politikası, Aşama B (ayrı ADR).
    2027-03-31'e kadar H1–H4 için ara performans değerlendirmesi yok (K4).
 7. Telegram botu: Efe BotFather'dan açıp token/chat id'yi ortam değişkenine koyacak
