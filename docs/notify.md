@@ -9,15 +9,47 @@ gönderir. `fintr.notify.format.SUPPORTED_OBSERVATIONS_SCHEMAS` her iki
 şemayı da kabul eder; eski (`_v1`, `--daily-root` öncesi ya da onsuz
 üretilmiş) dosyalar aynen okunmaya devam eder.
 
-## Bu bir sinyal değildir
+## Bu bir yatırım tavsiyesi değildir
 
 Bildirim, tarayıcının ürettiği gözlemin aynen özetidir. `docs/scanner.md`'deki
-sınırlar burada da geçerlidir: **getiri, hedef, puan, sıralama veya al/sat
-üretmez**; her mesajın sonunda tarayıcının sabit Türkçe uyarı metni ve
-`validation_status` yer alır. Mesaj yalnız `condition_met: true` olan
+sınırlar burada da geçerlidir: **getiri, hedef, puan, sıralama, stop seviyesi,
+pozisyon büyüklüğü veya serbest metin al/sat önerisi üretmez**; tek istisna
+aşağıdaki "Beklenen yön etiketi" bölümüdür. Her mesajın sonunda sabit Türkçe
+uyarı metni ve `validation_status` yer alır. Mesaj yalnız `condition_met: true` olan
 gözlemleri, tazelik uyarılarını (T+2, eksik veri), bastırılan gözlem
 sayılarını (nedenlerine göre) ve -- yalnız `--daily-root` ile üretilmiş
 dosyalarda -- sembol başına tek satırlık bir veri durumu satırı listeler.
+
+### Beklenen yön etiketi (Efe kararı, 2026-10-02; yalnız kişisel kullanım)
+
+Varsayılan olarak her `condition_met: true` satırı, ilgili dondurulmuş kuralın
+hipotez yönüyle etiketlenir:
+
+```
+AKFIS H2: <kural açıklaması> — vwap_proxy_vs_close=... — beklenen yön: yukarı (al yönlü)
+AKFIS H1: <kural açıklaması> — vwap_proxy_vs_close=... — beklenen yön: aşağı (sat yönlü)
+```
+
+- **Kaynak:** dondurulmuş spec'in `preregistration.predicted_direction` alanı
+  (`positive` → "yukarı (al yönlü)", `negative` → "aşağı (sat yönlü)"). Alan,
+  tarayıcının hash doğrulamalı yükleyicisiyle (`fintr.scanner.rules.load_scanner_rules`,
+  `fintr.notify.direction.load_rule_directions`) `configs/scanner/rules_v1.json`
+  üzerinden okunur (`--rules-file` ile değiştirilebilir). Kural çözülemezse, spec
+  hash'i uymazsa ya da alan tam olarak `positive`/`negative` değilse satır etiketsiz
+  kalır ve `— yön bilinmiyor` işareti taşır; yön asla tahmin edilmez.
+- **Uyarı:** etiket içeren her mesaj bir kez
+  "Uyarı: yön etiketi doğrulanmamış ön kayıtlı hipotezdir (holdout testi 2027 Nisan);
+  yatırım tavsiyesi değildir." satırını taşır (mesaj bölünürse etiketli her parça).
+- **Alt bilgi:** etiketli mesajda sabit metin "…kişisel kullanım; doğrulanmamış hipotez
+  yönü; yatırım tavsiyesi, niyet veya manipülasyon iddiası değildir…" olur (tarayıcının
+  "al/sat sinyali değildir" metni etiketle çeliştiği için yerine geçer); etiketsiz
+  mesajda önceki metin aynen kalır. `Durum:` satırı değişmez.
+- **Değişmeyenler:** kural, eşik ve spec değişmez; tarayıcı çıktı şeması değişmez;
+  etiket gözleme yeni bilgi eklemez, yalnız spec'te kayıtlı yönü ifade eder. Getiri,
+  puan, sıralama, hedef fiyat, stop seviyesi, pozisyon büyüklüğü eklenmez. Holdout
+  testi ve K4 geçerlidir; etiket bir avantaj iddiası değildir.
+- **Kapatma:** `--no-direction-label` önceki metni birebir geri getirir (etiket, işaret
+  ve ek uyarı yok). Karar kaydı: `docs/prereg/DECISIONS.md` 2026-10-02.
 
 ### Veri durumu satırı (yalnız `--daily-root` çıktısında)
 
@@ -39,7 +71,7 @@ tüm dönem toplamlarına düşer ve `(tüm dönem)` diye etiketlenir; `window: 
 (günlük girdi yok) ise satır `veri durumu: pencere yok (günlük kayıt yok)`
 olur. Bu satır yalnız sayı taşır; hiçbir
 değer, iddia ya da al/sat ifadesi eklemez -- mevcut yasak kelime testleri
-(`tests/test_notify.py`) bu satırı da kapsar. `composition` alanı yoksa
+(`tests/test_notify.py`; yalnız iki etiket ifadesine izin verir) bu satırı da kapsar. `composition` alanı yoksa
 (varsayılan, `--daily-root` verilmeden üretilmiş her dosya) bu satır hiç
 eklenmez.
 
