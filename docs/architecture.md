@@ -745,6 +745,35 @@ doğrulanmamış hipotez uyarısıyla taşır; kural/eşik/spec ve tarayıcı ş
 Alternatif (etiketi holdout sonucuna kadar bekletmek, önceki plan) Efe tarafından
 reddedildi. Ayrıntılar `docs/notify.md`.
 
+### Bildirim düzeni v2: özet + hisse başına mesaj (`fintr.notify.layout`)
+
+Problem: Efe'nin ilk gerçek Telegram mesajı (2026-10-03) tek uzun metindi: 30
+basamaklı ham değerler, birbirinin aynısı 20 satırlık "veri durumu" listesi,
+teknik kural cümleleri ve uzun dipnotlar; okunmuyordu.
+
+Alternatifler: (a) v1 metnini yalnız kısaltmak -- hisse başına bilgi yine tek
+blokta kalır; (b) Telegram HTML biçimi -- kalın/başlık sağlar ama tüm dinamik
+metnin escape'i ve ek hata yüzeyi gerekir, düzen sorununu çözmez; (c) özet
+mesajı + koşulu sağlayan her hisse için ayrı mesaj, düz metin (seçilen).
+
+Karar (Efe onayı, 2026-10-03 görev notu): varsayılan düzen v2; `--layout v1`
+önceki tek düz metni birebir korur. Ham değer mesajda gösterilmez, yüzdeye
+çevrilir (formül `docs/notify.md`); "Kural"/"Ne demek" metinleri çalışma
+anında üretilmez, Git'teki `configs/notify/rule_explanations_v1.json` dosyasından
+gelir ve dosyanın SHA-256'sı receipt'e yazılır. Çok mesajlı gönderim sırayla,
+mesajlar arası bekleyerek (`configs/notify/delivery_v1.json`) yapılır;
+kısmi gönderim receipt'te mesaj bazında kaydedilir ve aynı `as_of` yeniden
+çalıştırılınca yalnız gönderilmemiş mesajlar gönderilir (receipt'ler
+`O_EXCL` ile yalnız oluşturulur, hiçbir zaman yeniden yazılmaz).
+
+Sonuç: `layout.py` (saf render, I/O yok), `explanations.py` (sabit metin
+yükleyici + yasak ifade koruması `guard.py`), `delivery.py` (plan/gönderim/
+receipt), `scripts/notify_observations.py` yalnız bayrak ve bağlantı
+ekler. Tarayıcı çıktı şeması, kurallar, eşikler, `--resend` ve token/chat id
+redaksiyonu değişmez. Bilinen risk: Telegram'a yanıt alınamadan kabul edilmiş
+bir mesaj (zaman aşımı) kayıtsız kalır ve devam çalıştırmasında bir kez daha
+gidebilir. Ayrıntılar `docs/notify.md`.
+
 ### Günlük Mini App toplama ve birleştirme (aşama 2 adım 3)
 
 Problem: Tarayıcı ve bildirim botu her işlem günü güncel AKD, takas ve fiyat
