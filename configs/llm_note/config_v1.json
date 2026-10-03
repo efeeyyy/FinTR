@@ -10,7 +10,9 @@
   },
   "timeout_seconds": 900,
   "version_timeout_seconds": 30,
-  "max_packet_bytes": 400000,
+  "max_symbol_packet_bytes": 200000,
+  "max_symbols_per_run": 30,
+  "max_run_seconds": 5400,
   "fallback_window_days": 15,
   "strip_env": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]
 }

@@ -27,7 +27,9 @@ class NoteConfig:
     cli_path: dict
     timeout_seconds: float
     version_timeout_seconds: float
-    max_packet_bytes: int
+    max_symbol_packet_bytes: int
+    max_symbols_per_run: int
+    max_run_seconds: float
     fallback_window_days: int
     strip_env: list
     prompt_path: Path
@@ -78,7 +80,9 @@ def load_config(path: Path, *, project_root: Path) -> NoteConfig:
         model=document["model"], effort=document["effort"], cli_path=cli_path,
         timeout_seconds=float(_positive(document, "timeout_seconds", float)),
         version_timeout_seconds=float(_positive(document, "version_timeout_seconds", float)),
-        max_packet_bytes=int(_positive(document, "max_packet_bytes", int)),
+        max_symbol_packet_bytes=int(_positive(document, "max_symbol_packet_bytes", int)),
+        max_symbols_per_run=int(_positive(document, "max_symbols_per_run", int)),
+        max_run_seconds=float(_positive(document, "max_run_seconds", float)),
         fallback_window_days=int(_positive(document, "fallback_window_days", int)),
         strip_env=list(strip_env), prompt_path=prompt_path,
         prompt_sha256=hashlib.sha256(prompt_bytes).hexdigest(), schema_path=schema_path,

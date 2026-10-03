@@ -67,22 +67,44 @@ def discover_price_history(root: Path, symbol: str, start: date, end: date) -> P
     return candidates[0][2] if candidates else None
 
 
+def find_daily_captures_until(root: Path, symbol: str, as_of: date) -> list[Path]:
+    """Rolling captures that can hold data up to ``as_of``: those whose file
+    name start date is on or before it (a later capture is not even opened)."""
+    return [
+        path for _, name, path in _captures(root / symbol)
+        if date.fromisoformat(_NAME_RE.match(name).group(1)) <= as_of
+    ]
+
+
 def load_composed_capture(
-    symbol: str, *, base_root: Path, daily_root: Path, price_dir: Path,
+    symbol: str, *, base_root: Path, daily_root: Path, price_dir: Path, as_of: date | None = None,
 ) -> PeriodCapture:
     """Base + rolling captures composed (never truncated here; the caller
-    truncates at its own ``as_of``)."""
+    truncates at its own ``as_of``).
+
+    With ``as_of`` (the note step always passes it): rolling captures that
+    start after ``as_of`` are not loaded, and the price-history file only has
+    to cover the days up to ``as_of`` (it is read for the trading-day
+    calendar only). So newer daily captures -- a live run that has already
+    written the next day's capture before its price file, or a re-run of an
+    older ``as_of`` -- never make an older ``as_of`` fail. A capture that
+    straddles ``as_of`` is still composed whole; its rows after ``as_of`` are
+    cut by the caller's truncation."""
     base_path = find_period_capture(base_root, symbol)
     if base_path is None:
         raise LoadError(f"no_period_capture:{symbol}")
+    daily_paths = (find_daily_captures(daily_root, symbol) if as_of is None
+                   else find_daily_captures_until(daily_root, symbol, as_of))
     try:
         inputs = [CaptureInput(load_period_capture(base_path), kind="base", label=str(base_path))]
-        for path in find_daily_captures(daily_root, symbol):
+        for path in daily_paths:
             inputs.append(CaptureInput(load_period_capture(path), kind="rolling", label=str(path)))
     except (OSError, PeriodCaptureError) as exc:
         raise LoadError(f"capture_unreadable:{symbol}:{exc}") from None
     start = min(item.capture.start for item in inputs)
     end = max(item.capture.end for item in inputs)
+    if as_of is not None:
+        end = min(end, as_of)
     price_path = discover_price_history(price_dir, symbol, start, end)
     if price_path is None:
         raise LoadError(f"no_price_history:{symbol}")

@@ -838,15 +838,33 @@ Karar: 2026-10-02 (Efe) -- `scripts/llm_note.py` (`src/fintr/llm_note/`),
 `run_daily_pipeline.py --llm-note` ile açılan (varsayılan kapalı) adım: tarama ile
 bildirim arasında çalışır, bildirim dosyasındaki `condition_met` hisseleri için
 `as_of` sonrası veri ve fiyat serisi içermeyen ham paket (`packet.py`;
-birleştirici ile aynı hash/bütünlük kontrollü yükleyiciler, holdout/DSTKF koruması,
-paket boyut sınırı aşılırsa bütün hisseler halinde ve açıkça raporlanarak dışarıda
-bırakma) kurar, Opus 5.5'e `--tools ""` ile verir ve cevabı doğrular (`validate.py`:
-şema, izinli değer, kapsam, kanıt yolu çözümü, yasak ifade, metindeki her rakam ve
-tarihin paketteki sayılarla eşleşmesi -- ayırıcı/işaret/% normalizasyonu, yuvarlama
-toleransı yok). Reddedilen not gösterilmez. Kayıtlar `data/interim/llm_notes/<as_of>/
-attempt-NNN/` altında no-overwrite saklanır. `notify_observations.py --llm-note-dir`
-doğrulanmış notu ayrı mesaj olarak ekler (kayıt bütünlüğü yeniden doğrulanır),
-yoksa tek satır durum yazar.
+birleştirici ile aynı hash/bütünlük kontrollü yükleyiciler, holdout/DSTKF koruması)
+kurar. **Hisse başına bir paket ve bir model çağrısı**: ilk tasarımdaki tek paket
+(400 000 bayt sınırı, alfabetik sondan hisse atma) gerçek veride 13 hissenin 5'ini
+sessizce dışarıda bırakıyordu; reddedildi. Şimdi her hissenin paketi paylaşılan
+kural/sütun bağlamı + o hissenin verisidir; tek paket `max_symbol_packet_bytes`'ı
+aşarsa o hisse kırpılmadan "alınamadı (packet_too_large)" olur, `max_symbols_per_run`'ı
+aşan hisseler "alınamadı (symbol_limit)" olur, `usage_limit`/`cli_not_found` sonrası
+kalanlar çağrılmadan aynı kategoriyle, `max_run_seconds` sonrası `run_time_budget`
+ile kaydedilir (hiçbir hisse sessizce düşmez). Her çağrı Opus 5.5'e `--tools ""` ile
+verilir ve cevap doğrulanır (`validate.py`: şema, izinli değer, kapsam, kanıt yolu
+çözümü ve genişlik sınırı, yasak ifade, yazıyla sayı, rakam/tarih denetimi). Rakam
+denetimi gerekçe bazlıdır: gerekçedeki her rakam/tarih, o gerekçenin kendi
+`evidence_paths` altındaki değerlerden biri olmalıdır; işaret eşleşir; `%` için `p%`
+paketteki `p` ile aynen veya `p/100` yalnız `|v| <= 1` değerlerle eşleşir; yuvarlama
+toleransı yok (alternatif: yalnız büyüklük eşleşmesi + bütün paket -- işaret çevirme
+ve tesadüfi eşleşme riski nedeniyle reddedildi). Kalan sınırlar: küçük tam sayılar
+yol altındaki başka değerle tesadüfen eşleşebilir; "bir"/"yarım" gibi sözcükler ve
+türetilmiş anlatımlar denetlenemez. Reddedilen not gösterilmez. Kayıtlar
+`data/interim/llm_notes/<as_of>/<SYM>/attempt-NNN/` altında no-overwrite saklanır
+(hisse başına paket, ham yanıt, doğrulama, çağrı süresi ve CLI'nin bildirdiği
+kullanım). Aynı gün yeniden çalıştırma yalnız doğrulanmış notu olmayan hisseleri
+tekrar dener. Yükleyici `as_of`'a duyarlıdır: `as_of`'tan sonra başlayan günlük
+kayıtlar açılmaz ve fiyat dosyasının yalnız `as_of`'a kadar kapsaması yeter (canlı
+çalışma ertesi günün kaydını fiyat dosyasından önce yazabilir; eski `as_of`'un yeniden
+çalıştırılması da bu yüzden başarısız olmamalı). `notify_observations.py
+--llm-note-dir` doğrulanmış notları ayrı mesaj olarak ekler (kayıt bütünlüğü yeniden
+doğrulanır), notu olmayan her hisse için kendi durum satırını ve sayı özetini yazar.
 
 Sonuç: Bu adım AGENTS.md'de açıkça belirtilmiş bir istisnadır (yalnız kanıt
 değerlendirmesi; emir, hedef, stop, pozisyon, getiri tahmini veya puan yok). Riskler:

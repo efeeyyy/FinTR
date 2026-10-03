@@ -78,6 +78,7 @@ class RunOutcome:
     duration_seconds: float = 0.0
     note: object = None            # decoded model JSON, or None
     model_reported: list[str] = field(default_factory=list)
+    usage: dict = field(default_factory=dict)  # numeric usage/duration fields of the CLI envelope
 
 
 def cli_version(cli: str, timeout: float, env: dict[str, str]) -> str:
@@ -97,6 +98,21 @@ def _categorise(text: str) -> str:
     if _REFUSAL.search(text):
         return "refusal"
     return "cli_error"
+
+
+def _numeric(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _usage(envelope: dict) -> dict:
+    """Numeric usage/duration fields of the CLI's JSON envelope (token counts,
+    durations, turns, cost as reported); nothing else is copied."""
+    out: dict = {key: envelope[key] for key in ("duration_ms", "duration_api_ms", "num_turns", "total_cost_usd")
+                 if _numeric(envelope.get(key))}
+    usage = envelope.get("usage")
+    if isinstance(usage, dict):
+        out["usage"] = {key: value for key, value in usage.items() if _numeric(value)}
+    return out
 
 
 def _decode_note(envelope: dict) -> object:
@@ -147,5 +163,6 @@ def run_claude(command: list[str], *, stdin_text: str, timeout: float, env: dict
     if envelope.get("is_error") or envelope.get("stop_reason") == "refusal":
         category = "refusal" if envelope.get("stop_reason") == "refusal" else _categorise(
             str(envelope.get("result", "")) + "\n" + stderr)
-        return RunOutcome(False, category, model_reported=reported, **base)
-    return RunOutcome(True, note=_decode_note(envelope), model_reported=reported, **base)
+        return RunOutcome(False, category, model_reported=reported, usage=_usage(envelope), **base)
+    return RunOutcome(True, note=_decode_note(envelope), model_reported=reported,
+                      usage=_usage(envelope), **base)

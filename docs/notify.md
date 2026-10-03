@@ -91,14 +91,25 @@ Uyarı: yön etiketi doğrulanmamış ön kayıtlı hipotezdir (holdout testi 20
 AKFIS H2 (beklenen yön: yukarı (al yönlü)) — değerlendirme: destekliyor
 • <doğrulanmış gerekçe metni>
 ...
-Veri notları:
+Veri notları (AKFIS):
 • <veri sınırlamaları>
 
+GARAN: analiz notu doğrulamadan geçemedi (number_not_in_input).
+THYAO: analiz notu alınamadı (usage_limit).
+Özet: doğrulanan 1, doğrulamadan geçemeyen 1, alınamayan 1.
+
 Rakamlar ve kanıt yolları girdi paketiyle kodla denetlendi; model çıktısı deterministik değildir; ...
-Kayıt: data/interim/llm_notes/2026-09-30/attempt-001
+Kayıt: data/interim/llm_notes/2026-09-30
 Durum: preregistered_hypothesis_holdout_test_pending
 ```
 
+- **Hisse başına bir model çağrısı:** her hissenin kendi paketi, kendi doğrulaması ve
+  kendi durumu vardır; bir hissenin reddi/hatası diğerlerini etkilemez. Paket hiçbir
+  zaman kısaltılmaz: tek hissenin paketi `max_symbol_packet_bytes` (varsayılan 200 000
+  bayt) sınırını aşarsa o hisse "alınamadı (packet_too_large)" olur; `max_symbols_per_run`
+  (varsayılan 30) aşan hisseler "alınamadı (symbol_limit)" olur; sessizce dışarıda
+  bırakılan hisse yoktur. Özet satırı sayıları verir (doğrulanan / doğrulamadan geçemeyen
+  / alınamayan).
 - **Ne içerir:** her `condition_met` gözlem için dondurulmuş kuralın yönünü veri
   `destekliyor` / `zayıflatıyor` / `belirsiz` ve kısa, kanıt yollu gerekçeler.
   Değerlendirme dışında yeni finansal ifade eklemez; al/sat emri, hedef, stop,
@@ -106,15 +117,27 @@ Durum: preregistered_hypothesis_holdout_test_pending
   mesajdaki aynı iki sabit ifadedir ve `--no-direction-label` ile notta da
   kalkar (uyarı satırı ve etiket birlikte).
 - **Doğrulama:** not yalnız kodla doğrulandıysa gösterilir (şema, izinli değer,
-  kapsam, kanıt yolları, yasak ifade, metindeki her rakam/tarih girdi paketinde).
-  Gösterim sırasında kayıt bütünlüğü yeniden denetlenir (paket sha256 + yeniden
-  doğrulama); değişmiş bir not gösterilmez.
-- **Not yoksa tek satır durum** (ayrı mesaj): `Opus 5.5 analiz notu: analiz notu
-  alınamadı (<kategori>).` (model reddi, abonelik limiti, zaman aşımı, CLI
-  hatası, paket çok büyük), `... doğrulamadan geçemedi (<kategori>).` (reddedilen
-  not; içeriği gönderilmez), `... bu as_of için not yok (adım çalıştırılmadı).`
-  veya `... bu taramada gözlem yok; not üretilmedi.` Reddedilen/eksik not
-  deterministik mesajı hiçbir zaman engellemez.
+  kapsam, kanıt yolları, yasak ifade, yazıyla sayı, rakam/tarih denetimi). Rakam
+  denetimi: bir gerekçedeki her rakam/tarih, o gerekçenin kendi `evidence_paths`
+  yollarının altındaki değerlerden biri olmalıdır (yol çözülmezse veya 600'den çok
+  değeri kapsıyorsa ret); işaret eşleşir (negatif değer yalnız `-x`/`−x` ile; "net
+  satış 5" yazıp paketteki `-5`'i kastetmek reddedilir — katı kural, anlam
+  okunmaz); `%` için `p%` paketteki `p` ile aynen, `p/100` yalnız `|değer| <= 1` olan
+  paket değerleriyle eşleşir; yuvarlama toleransı yoktur. `data_caveats` yol
+  göstermez: oradaki rakamlar paketteki herhangi bir değer olmalıdır. **Bilinen
+  sınır:** küçük tam sayılar paketteki başka bir değerle tesadüfen eşleşebilir;
+  "bir", "yarım/çeyrek" benzeri sözcükler ve türetilmiş anlatımlar (ör. "artış")
+  kodla denetlenemez. Gösterim sırasında kayıt bütünlüğü yeniden denetlenir (paket
+  sha256 + yeniden doğrulama); değişmiş bir not gösterilmez.
+- **Notu olmayan hisse için kendi satırı:** `<SYM>: analiz notu alınamadı
+  (<kategori>).` (model reddi, abonelik limiti, zaman aşımı, CLI hatası, paket çok
+  büyük, hisse sınırı), `<SYM>: analiz notu doğrulamadan geçemedi (<kategori>).`
+  (reddedilen not; içeriği gönderilmez), `<SYM>: bu as_of için not yok (adım
+  çalıştırılmadı).` Hiçbir hisse için not yoksa mesaj `Opus 5.5 analiz notu:
+  doğrulanan 0, ...` özetiyle başlar ve hisse satırlarını sıralar; kayıt hiç yoksa
+  tek satır `... bu as_of için not yok (adım çalıştırılmadı).`, gözlem yoksa `...
+  bu taramada gözlem yok; not üretilmedi.` Reddedilen/eksik not deterministik
+  mesajı hiçbir zaman engellemez.
 - **Receipt:** notla birlikte gönderilen mesajlar aynı makbuzdadır
   (`message_sha256` hepsini kapsar; yalnız bu bayrakla `llm_note_messages`
   alanı eklenir). Mevcut tekrar gönderim engeli aynen geçerlidir: makbuz varsa

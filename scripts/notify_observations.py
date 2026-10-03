@@ -34,7 +34,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
-from fintr.llm_note import render as llm_render
+from fintr.llm_note import packet as llm_packet, render as llm_render
 from fintr.notify import format as fmt
 from fintr.notify.direction import load_rule_directions
 from fintr.notify.telegram import TelegramSendError, send_message
@@ -218,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.llm_note_dir is not None:
         note_messages = llm_render.note_messages(
             args.llm_note_dir, args.as_of.isoformat(), directions=directions,
-            has_observations=positive,
+            has_observations=positive, expected_symbols=llm_packet.positive_symbols(document),
         )
         messages = messages + note_messages
 

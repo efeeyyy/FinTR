@@ -8,9 +8,14 @@ rejects the whole note. Categories (stable slugs, shown to Efe as
 ``assessment_value``    ``assessment`` not in ``ASSESSMENT_VALUES``
 ``coverage``            the (symbol, rule_id, as_of) set differs from the
                         packet's ``required_assessments`` (missing/extra/dup)
-``evidence_path``       an ``evidence_paths`` entry does not resolve in the packet
+``evidence_path``       an ``evidence_paths`` entry does not resolve in the packet,
+                        or covers more than ``MAX_EVIDENCE_LEAVES`` values
 ``forbidden_phrase``    wording forbidden by AGENTS.md (``forbidden.py``)
-``number_not_in_input`` a number or ISO date in the text is absent from the packet
+``number_word``         a spelled-out number or "yüzde <word>" (cannot be audited)
+``number_not_in_input`` a number or ISO date in a reason is not under that
+                        reason's own ``evidence_paths`` (sign-aware, see
+                        ``numbers.py``), or one in ``data_caveats`` is absent
+                        from the packet
 ``sensitive_content``   ``validate_context_contains_no_secrets`` rejected the note
 """
 
@@ -30,6 +35,7 @@ MAX_PATHS_PER_REASON = 6
 MAX_CAVEATS = 8
 MAX_TEXT_CHARS = 400
 MAX_PATH_CHARS = 300
+MAX_EVIDENCE_LEAVES = 600  # an evidence path may not point at "the whole packet"
 
 _TOP_KEYS = {"assessments", "data_caveats"}
 _ASSESSMENT_KEYS = {"symbol", "rule_id", "as_of", "assessment", "reasons"}
@@ -47,24 +53,43 @@ def _fail(category: str, *details: str) -> Validation:
     return Validation(False, category, tuple(details[:10]))
 
 
-def resolve_pointer(document: object, pointer: str) -> bool:
-    """True if the JSON Pointer ``pointer`` resolves inside ``document``."""
+def resolve_node(document: object, pointer: str) -> tuple[bool, object]:
+    """(found, node) for the JSON Pointer ``pointer`` inside ``document``."""
     if not isinstance(pointer, str) or not pointer.startswith("/") or pointer == "/":
-        return False
+        return False, None
     node = document
     for raw in pointer[1:].split("/"):
         key = raw.replace("~1", "/").replace("~0", "~")
         if isinstance(node, dict):
             if key not in node:
-                return False
+                return False, None
             node = node[key]
         elif isinstance(node, list):
             if not key.isdigit() or (len(key) > 1 and key[0] == "0") or int(key) >= len(node):
-                return False
+                return False, None
             node = node[int(key)]
         else:
-            return False
-    return True
+            return False, None
+    return True, node
+
+
+def resolve_pointer(document: object, pointer: str) -> bool:
+    """True if the JSON Pointer ``pointer`` resolves inside ``document``."""
+    return resolve_node(document, pointer)[0]
+
+
+def _leaf_count(node: object, cap: int) -> int:
+    """Number of scalar leaves under ``node``, counting stops above ``cap``."""
+    stack, count = [node], 0
+    while stack and count <= cap:
+        item = stack.pop()
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+        else:
+            count += 1
+    return count
 
 
 def _structure(note: object) -> Validation | None:
@@ -154,8 +179,11 @@ def validate_note(note: object, packet: dict) -> Validation:
     for item in note["assessments"]:
         for reason in item["reasons"]:
             for path in reason["evidence_paths"]:
-                if not resolve_pointer(packet, path):
+                found, node = resolve_node(packet, path)
+                if not found:
                     return _fail("evidence_path", path)
+                if _leaf_count(node, MAX_EVIDENCE_LEAVES) > MAX_EVIDENCE_LEAVES:
+                    return _fail("evidence_path", f"too_broad:{path}")
 
     names, titles = _packet_names(packet)
     texts = _free_texts(note)
@@ -164,15 +192,48 @@ def validate_note(note: object, packet: dict) -> Validation:
         if found:
             return _fail("forbidden_phrase", *found)
 
-    allowed_numbers, allowed_dates = numbers.packet_number_set(packet, mask=names)
     for text in texts:
+        words = numbers.find_number_words(numbers.mask_names(text, names))
+        if words:
+            return _fail("number_word", *words)
+
+    # Reasons: every number/date must be under that reason's own evidence
+    # paths. Data caveats cite no path: whole-packet check.
+    path_sets: dict[str, tuple[set, set]] = {}
+
+    def under_path(path: str) -> tuple[set, set]:
+        if path not in path_sets:
+            _, node = resolve_node(packet, path)
+            values, dates = numbers.packet_number_set(node, mask=names)
+            path_sets[path] = (values, dates | set(numbers.ISO_DATE.findall(path)))
+        return path_sets[path]
+
+    def audit(text: str, allowed_numbers: set, allowed_dates: set, where: str) -> Validation | None:
         dates, rest = numbers.extract_dates(text)
         for date_text in dates:
             if date_text not in allowed_dates:
-                return _fail("number_not_in_input", f"date {date_text}")
+                return _fail("number_not_in_input", f"date {date_text} ({where})")
         for token in numbers.extract_numbers(numbers.mask_names(rest, names)):
             if not token.candidates or not numbers.number_in_packet(token, allowed_numbers):
-                return _fail("number_not_in_input", token.raw)
+                return _fail("number_not_in_input", f"{token.raw} ({where})")
+        return None
+
+    for item in note["assessments"]:
+        for reason in item["reasons"]:
+            values: set = set()
+            dates: set = set()
+            for path in reason["evidence_paths"]:
+                path_values, path_dates = under_path(path)
+                values |= path_values
+                dates |= path_dates
+            failure = audit(reason["text"], values, dates, "not under the reason's evidence_paths")
+            if failure is not None:
+                return failure
+    all_numbers, all_dates = numbers.packet_number_set(packet, mask=names)
+    for caveat in note["data_caveats"]:
+        failure = audit(caveat, all_numbers, all_dates, "data_caveats: not in the packet")
+        if failure is not None:
+            return failure
 
     try:
         validate_context_contains_no_secrets(note)

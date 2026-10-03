@@ -48,10 +48,21 @@ def envelope(note) -> str:
     return json.dumps({
         "type": "result", "is_error": False, "result": "ok",
         "structured_output": note, "modelUsage": {"claude-opus-5-5": {"inputTokens": 1}},
+        "usage": {"input_tokens": 11, "output_tokens": 22, "service_tier": "standard"},
+        "duration_ms": 1234, "num_turns": 1, "total_cost_usd": 0.5,
     }, ensure_ascii=False)
 
 
 note = valid_note()
+# FAKE_CLAUDE_ONLY_SYMBOL: the mode applies to that symbol's call only; every
+# other symbol gets a valid answer. FAKE_CLAUDE_LOG: one line per call.
+only = os.environ.get("FAKE_CLAUDE_ONLY_SYMBOL")
+if only and packet["required_assessments"][0]["symbol"] != only:
+    mode = "ok"
+log = os.environ.get("FAKE_CLAUDE_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write(packet["required_assessments"][0]["symbol"] + " " + mode + "\n")
 if mode == "timeout":
     time.sleep(30)
 elif mode == "refusal":

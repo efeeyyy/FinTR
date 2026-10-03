@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import itertools
 import json
 import os
 import re
@@ -26,14 +27,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fintr.data.period_capture import canonical_json
-from fintr.llm_note import numbers, packet as packet_mod, render, runner
+from fintr.llm_note import numbers, packet as packet_mod, render, runner, validate as validate_mod
 from fintr.llm_note.config import ConfigError, load_config
 from fintr.llm_note.forbidden import find_forbidden
 from fintr.llm_note.loader import (
-    discover_price_history, find_daily_captures, find_period_capture, load_composed_capture,
+    LoadError, discover_price_history, find_daily_captures, find_daily_captures_until, find_period_capture,
+    load_composed_capture,
 )
-from fintr.llm_note.packet import GuardRefusal, PacketError, build_packet
-from fintr.llm_note.record import latest_accepted, latest_attempt
+from fintr.llm_note.packet import GuardRefusal, PacketError, build_symbol_packets
+from fintr.llm_note.record import latest_accepted, latest_attempt, symbol_dir
 from fintr.llm_note.validate import resolve_pointer, validate_note
 from fintr.evaluation.symbol_guard import load_active_guards
 from fintr.notify import format as fmt
@@ -185,11 +187,18 @@ class Env(GuardEnvMixin):
             "--out-dir", str(self.out_dir), *extra,
         ]
 
-    def run_note(self, mode: str = "ok", *extra: str, probe: Path | None = None):
-        """llm_note.main with the fake CLI; returns (code, stdout, stderr)."""
+    def run_note(self, mode: str = "ok", *extra: str, probe: Path | None = None, only: str | None = None,
+                 log: Path | None = None):
+        """llm_note.main with the fake CLI; returns (code, stdout, stderr).
+        ``only``: the mode applies to that symbol's call only; ``log``: one
+        line per model call."""
         env = {"FAKE_CLAUDE_MODE": mode}
         if probe is not None:
             env["FAKE_CLAUDE_PROBE"] = str(probe)
+        if only is not None:
+            env["FAKE_CLAUDE_ONLY_SYMBOL"] = only
+        if log is not None:
+            env["FAKE_CLAUDE_LOG"] = str(log)
         real_build = runner.build_command
 
         def fake_build(cli, **kwargs):
@@ -207,7 +216,7 @@ class Env(GuardEnvMixin):
         line = [l for l in stdout.splitlines() if l.startswith("LLM_NOTE_STATUS: ")][-1]
         return line.split(": ", 1)[1]
 
-    def build(self, **overrides):
+    def outcomes(self, **overrides):
         document = json.loads(self.obs_path.read_bytes())
         kwargs = dict(
             as_of=date.fromisoformat(AS_OF), document=document,
@@ -216,11 +225,24 @@ class Env(GuardEnvMixin):
             rule_texts=json.loads(REAL_RULE_TEXTS.read_text(encoding="utf-8"))["rules"],
             project_root=ROOT, guards=load_active_guards(),
             load_capture=lambda s: load_composed_capture(
-                s, base_root=self.period, daily_root=self.daily, price_dir=self.price),
-            max_packet_bytes=400_000, fallback_window_days=15,
+                s, base_root=self.period, daily_root=self.daily, price_dir=self.price,
+                as_of=date.fromisoformat(AS_OF)),
+            max_symbol_packet_bytes=400_000, max_symbols=30, fallback_window_days=15,
         )
         kwargs.update(overrides)
-        return build_packet(**kwargs)
+        return build_symbol_packets(**kwargs)
+
+    def build(self, symbol: str = SYM_A, **overrides):
+        """The ``PacketBuild`` of one symbol."""
+        outcome = next(o for o in self.outcomes(**overrides) if o.symbol == symbol)
+        assert outcome.build is not None, outcome.error
+        return outcome.build
+
+    def sym_dir(self, symbol: str, out: Path | None = None) -> Path:
+        return (out or self.out_dir) / AS_OF / symbol
+
+    def record_of(self, symbol: str, attempt: str = "attempt-001", out: Path | None = None) -> dict:
+        return json.loads((self.sym_dir(symbol, out) / attempt / "record.json").read_text(encoding="utf-8"))
 
 
 # --- packet -------------------------------------------------------------------
@@ -235,13 +257,13 @@ class PacketTests(Env, unittest.TestCase):
             self.assertEqual(met, ["H2"])
 
     def test_nothing_after_as_of_enters_the_packet(self):
-        build = self.build()
-        text = build.packet_bytes.decode("utf-8")
-        self.assertNotIn(POST_AS_OF_MARKER, text)
-        dates = set(re.findall(r"\d{4}-\d{2}-\d{2}", text))
-        self.assertTrue(dates)
-        self.assertEqual(sorted(d for d in dates if d > AS_OF), [])
         for symbol in self.symbols:
+            build = self.build(symbol)
+            text = build.packet_bytes.decode("utf-8")
+            self.assertNotIn(POST_AS_OF_MARKER, text)
+            dates = set(re.findall(r"\d{4}-\d{2}-\d{2}", text))
+            self.assertTrue(dates)
+            self.assertEqual(sorted(d for d in dates if d > AS_OF), [])
             days = build.packet["symbols"][symbol]["days"]
             self.assertEqual(sorted(days), ["2026-01-07", "2026-01-08", "2026-01-09"])
             self.assertEqual(build.packet["symbols"][symbol]["cutoff"], AS_OF)
@@ -251,6 +273,19 @@ class PacketTests(Env, unittest.TestCase):
         for needle in ("generated_at_utc", "adjusted_close", "price_history", "daily_capture",
                        "period_analysis", "\"close\"", "return"):
             self.assertNotIn(needle, text)
+
+    def test_each_symbol_has_its_own_packet(self):
+        outcomes = self.outcomes()
+        self.assertEqual([o.symbol for o in outcomes], sorted(self.symbols))
+        for outcome in outcomes:
+            packet = outcome.build.packet
+            self.assertEqual(list(packet["symbols"]), [outcome.symbol])
+            self.assertEqual(packet["required_assessments"],
+                             [{"symbol": outcome.symbol, "rule_id": "H2", "as_of": AS_OF}])
+            self.assertEqual(list(packet["rules"]), ["H2"])
+            other = next(s for s in self.symbols if s != outcome.symbol)
+            self.assertNotIn(other, outcome.build.packet_bytes.decode("utf-8"))
+            self.assertEqual(outcome.size, len(outcome.build.packet_bytes))
 
     def test_contents_institutions_and_exact_decimal_strings(self):
         build = self.build()
@@ -262,10 +297,6 @@ class PacketTests(Env, unittest.TestCase):
         self.assertEqual(block["metadata_by_day"][AS_OF]["retail_pct"], "40.5")
         self.assertEqual(block["metadata_by_day"][AS_OF]["investor_count"], 1234)
         self.assertEqual(block["composition"]["unsettled_in_window"] is not None, True)
-        self.assertEqual(
-            build.packet["required_assessments"],
-            [{"symbol": s, "rule_id": "H2", "as_of": AS_OF} for s in sorted(self.symbols)],
-        )
         rule = build.packet["rules"]["H2"]
         self.assertEqual(rule["predicted_direction"], "positive")
         self.assertIn("VWAP", rule["description"])
@@ -283,48 +314,115 @@ class PacketTests(Env, unittest.TestCase):
         self.assertEqual(sorted(build.packet["symbols"][SYM_A]["days"]), ["2026-01-08", "2026-01-09"])
         self.assertIsNone(build.packet["symbols"][SYM_A]["composition"])
 
-    def test_size_limit_omits_whole_symbols_and_reports_them(self):
-        full = self.build()
-        build = self.build(max_packet_bytes=len(full.packet_bytes) - 1)
-        self.assertEqual(build.included_symbols, [SYM_A])
-        self.assertEqual(list(build.omitted), [{"symbol": SYM_B, "reason": "packet_size_limit"}])
-        self.assertEqual([r["symbol"] for r in build.packet["required_assessments"]], [SYM_A])
-        self.assertLessEqual(len(build.packet_bytes), len(full.packet_bytes) - 1)
+    def test_oversize_symbol_is_an_error_never_truncated(self):
+        outcomes = self.outcomes(max_symbol_packet_bytes=100)
+        self.assertEqual([o.symbol for o in outcomes], sorted(self.symbols))
+        for outcome in outcomes:
+            self.assertIsNone(outcome.build)
+            self.assertEqual(outcome.error.category, "packet_too_large")
+            self.assertGreater(outcome.size, 100)
+        # exactly at the cap is fine
+        size = len(self.build().packet_bytes)
+        self.assertIsNotNone(self.outcomes(max_symbol_packet_bytes=size)[0].build)
+        self.assertIsNone(self.outcomes(max_symbol_packet_bytes=size - 1)[0].build)
 
-    def test_single_symbol_over_limit_is_packet_too_large(self):
-        with self.assertRaises(PacketError) as ctx:
-            self.build(max_packet_bytes=100)
-        self.assertEqual(ctx.exception.category, "packet_too_large")
+    def test_symbol_limit_is_reported_per_symbol(self):
+        outcomes = self.outcomes(max_symbols=1)
+        self.assertIsNotNone(outcomes[0].build)
+        self.assertEqual(outcomes[1].symbol, sorted(self.symbols)[1])
+        self.assertEqual(outcomes[1].error.category, "symbol_limit")
+
+    def test_only_symbols_restricts_the_set(self):
+        outcomes = self.outcomes(only_symbols={SYM_B})
+        self.assertEqual([o.symbol for o in outcomes], [SYM_B])
 
     def test_holdout_and_excluded_symbols_are_refused(self):
         for bad in (HOLDOUT[0], EXCLUDED):
             document = json.loads(self.obs_path.read_bytes())
             document["symbols"][bad] = document["symbols"][SYM_A]
             with self.assertRaises(GuardRefusal):
-                self.build(document=document)
+                self.outcomes(document=document)
 
     def test_scan_after_as_of_is_rejected(self):
         document = json.loads(self.obs_path.read_bytes())
         document["symbols"][SYM_A]["scans"][0]["as_of"] = "2026-01-12"
         with self.assertRaises(PacketError) as ctx:
-            self.build(document=document)
+            self.outcomes(document=document)
         self.assertEqual(ctx.exception.category, "scan_after_as_of")
+
+    def test_bad_symbol_name_is_rejected(self):
+        document = json.loads(self.obs_path.read_bytes())
+        document["symbols"]["../X"] = document["symbols"][SYM_A]
+        with self.assertRaises(PacketError) as ctx:
+            self.outcomes(document=document)
+        self.assertEqual(ctx.exception.category, "bad_symbol")
 
     def test_wrong_schema_and_no_observations(self):
         with self.assertRaises(PacketError):
-            self.build(document={"schema": "x", "symbols": {}})
+            self.outcomes(document={"schema": "x", "symbols": {}})
         document = json.loads(self.obs_path.read_bytes())
         for block in document["symbols"].values():
             for obs in block["scans"][0]["observations"]:
                 obs["condition_met"] = False
         with self.assertRaises(PacketError) as ctx:
-            self.build(document=document)
+            self.outcomes(document=document)
         self.assertEqual(ctx.exception.category, "no_observations")
 
-    def test_missing_capture_is_a_data_load_error(self):
-        with self.assertRaises(PacketError) as ctx:
-            self.build(load_capture=lambda s: (_ for _ in ()).throw(ValueError("no_period_capture:" + s)))
-        self.assertEqual(ctx.exception.category, "data_load_failed")
+    def test_missing_capture_is_a_per_symbol_data_load_error(self):
+        outcomes = self.outcomes(load_capture=lambda s: (_ for _ in ()).throw(ValueError("no_period_capture:" + s)))
+        for outcome in outcomes:
+            self.assertIsNone(outcome.build)
+            self.assertEqual(outcome.error.category, "data_load_failed")
+
+    def test_positive_symbols(self):
+        document = json.loads(self.obs_path.read_bytes())
+        self.assertEqual(packet_mod.positive_symbols(document), sorted(self.symbols))
+        for obs in document["symbols"][SYM_A]["scans"][0]["observations"]:
+            obs["condition_met"] = False
+        self.assertEqual(packet_mod.positive_symbols(document), [SYM_B])
+
+
+class LoaderAsOfTests(Env, unittest.TestCase):
+    """A newer daily capture must not break an older ``as_of`` (the live run
+    writes the next day's capture before its price file; re-runs of older
+    dates)."""
+
+    def short_price_root(self) -> Path:
+        root = self.tmp / "price_short"
+        for symbol in self.symbols:
+            bars = [period_fixtures._price_bar(d, o="10", h="10", l="10", c="10", adj="10", v=100)
+                    for d in ("2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09")]
+            period_fixtures._write_price_capture(root, symbol, "2026-01-05", "2026-01-09", bars)
+        return root
+
+    def test_price_file_only_has_to_cover_as_of(self):
+        short = self.short_price_root()
+        with self.assertRaises(LoadError):  # the rolling capture ends 01-13, past the price file
+            load_composed_capture(SYM_A, base_root=self.period, daily_root=self.daily, price_dir=short)
+        capture = load_composed_capture(SYM_A, base_root=self.period, daily_root=self.daily, price_dir=short,
+                                        as_of=date.fromisoformat(AS_OF))
+        self.assertEqual(capture.symbol, SYM_A)
+
+    def test_capture_starting_after_as_of_is_not_opened(self):
+        late = self.daily / SYM_A / "2026-01-12_2026-01-13.json"
+        late.write_text("not json at all", encoding="utf-8")
+        as_of = date.fromisoformat(AS_OF)
+        self.assertIn(late, find_daily_captures(self.daily, SYM_A))
+        self.assertNotIn(late, find_daily_captures_until(self.daily, SYM_A, as_of))
+        self.assertEqual(len(find_daily_captures_until(self.daily, SYM_A, as_of)), 1)
+        load_composed_capture(SYM_A, base_root=self.period, daily_root=self.daily, price_dir=self.price,
+                              as_of=as_of)
+        with self.assertRaises(LoadError):
+            load_composed_capture(SYM_A, base_root=self.period, daily_root=self.daily, price_dir=self.price)
+
+    def test_packet_with_newer_captures_has_nothing_after_as_of(self):
+        short = self.short_price_root()
+        outcomes = self.outcomes(load_capture=lambda s: load_composed_capture(
+            s, base_root=self.period, daily_root=self.daily, price_dir=short, as_of=date.fromisoformat(AS_OF)))
+        for outcome in outcomes:
+            text = outcome.build.packet_bytes.decode("utf-8")
+            self.assertNotIn(POST_AS_OF_MARKER, text)
+            self.assertEqual(sorted(d for d in set(re.findall(r"\d{4}-\d{2}-\d{2}", text)) if d > AS_OF), [])
 
 
 class DiscoveryParityTests(unittest.TestCase):
@@ -372,18 +470,34 @@ class NumberTests(unittest.TestCase):
         self.assertTrue(self.ok("1.234", "1234"))    # read as thousand grouping
         self.assertTrue(self.ok("1,50", "1.5"))      # trailing zeros do not matter
 
-    def test_sign_is_ignored_but_magnitude_must_exist(self):
-        self.assertTrue(self.ok("-40", "40"))
+    def test_sign_is_matched(self):
+        self.assertTrue(self.ok("-40", "-40"))
         self.assertTrue(self.ok("−40", "-40"))
+        self.assertTrue(self.ok("net -40 lot", "-40"))
+        self.assertTrue(self.ok("(-40)", "-40"))
+        self.assertTrue(self.ok("40", "40"))
+        self.assertFalse(self.ok("40", "-40"))    # a positive token never matches a negative value
+        self.assertFalse(self.ok("-40", "40"))    # nor the reverse
+        self.assertFalse(self.ok("net satış 40", "-40"))  # strict: wording is not read
         self.assertFalse(self.ok("41", "40"))
 
-    def test_percent_matches_value_or_fraction_exactly(self):
+    def test_hyphen_between_digits_or_after_a_letter_is_not_a_sign(self):
+        self.assertTrue(self.ok("10-15 arası", "10", "15"))
+        self.assertTrue(self.ok("ABC-5", "5"))
+        self.assertEqual([t.negative for t in _tokens("a -5 b 6-7 c−8 −9")], [True, False, False, False, True])
+
+    def test_percent_matches_value_or_small_fraction_exactly(self):
         self.assertTrue(self.ok("%5", "0.05"))
         self.assertTrue(self.ok("5%", "0.05"))
         self.assertTrue(self.ok("5 %", "5"))
+        self.assertTrue(self.ok("%50", "50"))      # p matches the packet value p exactly
         self.assertTrue(self.ok("%-1,23", "-0.0123"))
-        self.assertFalse(self.ok("%5", "0.051"))  # no rounding tolerance
-        self.assertFalse(self.ok("0,05", "5"))    # plain 0.05 is not 5
+        self.assertTrue(self.ok("100%", "1"))
+        self.assertFalse(self.ok("%5", "0.051"))    # no rounding tolerance
+        self.assertFalse(self.ok("0,05", "5"))      # plain 0.05 is not 5
+        self.assertFalse(self.ok("5000%", "50"))    # p/100 only against |v| <= 1
+        self.assertFalse(self.ok("101%", "1.01"))
+        self.assertFalse(self.ok("%5", "-0.05"))    # the sign still has to match
 
     def test_unparseable_and_wrong_groupings_fail(self):
         for text in ("1.2.3", "12,34,56", "1.234,5,6"):
@@ -395,17 +509,30 @@ class NumberTests(unittest.TestCase):
         masked = numbers.mask_names("kural H2 için ABC1 kodu", ["H2", "ABC1"])
         self.assertEqual(_tokens(masked), [])
 
+    def test_a_longer_packet_number_does_not_match_a_substring(self):
+        self.assertFalse(self.ok("234567", "1234567"))
+        self.assertFalse(self.ok("123", "1234567"))
+        self.assertFalse(self.ok("1234567", "234567"))
+
     def test_dates_are_extracted_separately(self):
         dates, rest = numbers.extract_dates("2026-01-09 ve 2026-01-12 arasında 40 lot")
         self.assertEqual(dates, ["2026-01-09", "2026-01-12"])
         self.assertEqual([t.raw for t in _tokens(rest)], ["40"])
 
+    def test_number_words(self):
+        for text in ("iki kurum", "Yüz lot", "yüzde yirmi", "YÜZDE beş", "on gün", "üç milyon", "altı gün",
+                     "kırk beş"):
+            self.assertTrue(numbers.find_number_words(text), text)
+        for text in ("bir kurum", "altında", "onlar", "yüzdelik", "binek", "net alıcı", "yedekte"):
+            self.assertEqual(numbers.find_number_words(text), [], text)
+
     def test_packet_number_set(self):
-        packet = {"a": ["100", "-40", "10.5", None, True], "n": 7, "text": "oran 1.234,5 ve 2026-01-09",
+        packet = {"a": ["100", "-40", "10.5", None, True], "n": 7, "text": "oran 1.234,5 ve 2026-01-09 −3",
                   "2026-01-10": {"BBB": ["0.0123"]}}
         allowed, dates = numbers.packet_number_set(packet)
-        for value in ("100", "40", "10.5", "7", "1234.5", "0.0123"):
+        for value in ("100", "-40", "10.5", "7", "1234.5", "0.0123", "-3"):
             self.assertIn(numbers.normalise(Decimal(value)), allowed, value)
+        self.assertNotIn(Decimal("40"), allowed)    # signs are kept
         self.assertEqual(dates, {"2026-01-09", "2026-01-10"})
         self.assertNotIn(Decimal("2026"), allowed)  # date components are not numbers
 
@@ -442,13 +569,18 @@ class ForbiddenTests(unittest.TestCase):
 # --- validator --------------------------------------------------------------------
 
 
+def _day(symbol: str, part: str = "") -> str:
+    return f"/symbols/{symbol}/days/{AS_OF}{part}"
+
+
 def _good_note(build) -> dict:
     return {
         "assessments": [
             {"symbol": item["symbol"], "rule_id": item["rule_id"], "as_of": item["as_of"],
              "assessment": "destekliyor",
              "reasons": [{"text": f"{AS_OF} tarihinde AAA kodunun net_size değeri 100; takas lot 5000.",
-                          "evidence_paths": [f"/symbols/{item['symbol']}/days/{AS_OF}/akd/AAA"]}]}
+                          "evidence_paths": [_day(item["symbol"], "/akd/AAA"),
+                                             _day(item["symbol"], "/custody/AAA")]}]}
             for item in build.packet["required_assessments"]
         ],
         "data_caveats": ["Metadata sağlayıcı hesabıdır; doğrulanmadı."],
@@ -471,6 +603,14 @@ class ValidatorTests(Env, unittest.TestCase):
         note = _good_note(self.built)
         fn(note)
         return note
+
+    def with_reason(self, text: str, *paths: str) -> dict:
+        def change(note):
+            reason = note["assessments"][0]["reasons"][0]
+            reason["text"] = text
+            if paths:
+                reason["evidence_paths"] = list(paths)
+        return self.mutated(change)
 
     def test_good_note_passes(self):
         self.check(_good_note(self.built))
@@ -499,6 +639,7 @@ class ValidatorTests(Env, unittest.TestCase):
         self.check(self.mutated(lambda n: n["assessments"].append(dict(n["assessments"][0]))), "coverage")
         self.check(self.mutated(lambda n: n["assessments"][0].update(rule_id="H1")), "coverage")
         self.check(self.mutated(lambda n: n["assessments"][0].update(symbol="NOPE")), "coverage")
+        self.check(self.mutated(lambda n: n["assessments"][0].update(symbol=SYM_B)), "coverage")
 
     def test_evidence_paths_must_resolve(self):
         for path in ("/symbols/NOPE/days", f"/symbols/{SYM_A}/days/2026-01-12", "symbols", "/", "",
@@ -508,41 +649,94 @@ class ValidatorTests(Env, unittest.TestCase):
         self.assertTrue(resolve_pointer(self.packet, f"/symbols/{SYM_A}/days/{AS_OF}/akd/AAA/0"))
         self.assertFalse(resolve_pointer(self.packet, f"/symbols/{SYM_A}/days/{AS_OF}/akd/AAA/01"))
 
+    def test_an_evidence_path_may_not_cover_many_values(self):
+        note = self.with_reason("AAA net 100.", _day(SYM_A))
+        self.check(note)
+        with patch.object(validate_mod, "MAX_EVIDENCE_LEAVES", 5):
+            self.check(note, "evidence_path")
+
     def test_forbidden_phrase(self):
         for text in ("Hedef fiyat yukarı.", "Bu hissede al yönlü görünüm.", "Kesin destekliyor.",
-                     "Getiri artar.", "Stop seviyesi 10."):
+                     "Getiri artar.", "Stop seviyesi 10.", "Almalı.", "Satılmalı.", "Yükselecek."):
             self.check(self.mutated(
                 lambda n: n["assessments"][0]["reasons"][0].update(text=text)), "forbidden_phrase")
         self.check(self.mutated(lambda n: n["data_caveats"].append("Pozisyon bilgisi yok.")), "forbidden_phrase")
 
     def test_institution_title_with_a_listed_word_is_allowed(self):
-        self.check(self.mutated(lambda n: n["assessments"][0]["reasons"][0].update(
-            text=f"{TITLE_B} kodu BBB net_size değeri -40.")))
+        self.check(self.with_reason(f"{TITLE_B} kodu BBB net_size değeri -40.", _day(SYM_A, "/akd/BBB")))
 
     def test_numbers_must_exist_in_the_packet(self):
         for text in ("Toplam 987654321 lot.", "Net 101.", "Oran %6.", "Net 1.5 lot.", "77 kurum var.",
                      "Takas 5001."):
-            self.check(self.mutated(
-                lambda n: n["assessments"][0]["reasons"][0].update(text=text)), "number_not_in_input")
+            self.check(self.with_reason(text, _day(SYM_A)), "number_not_in_input")
         self.check(self.mutated(lambda n: n["data_caveats"].append("Toplam 31 gün.")), "number_not_in_input")
         # a date that is not in the packet
-        self.check(self.mutated(lambda n: n["assessments"][0]["reasons"][0].update(
-            text="2026-01-12 tarihinde net 100.")), "number_not_in_input")
+        self.check(self.with_reason("2026-01-12 tarihinde net 100.", _day(SYM_A, "/akd/AAA")),
+                   "number_not_in_input")
+
+    def test_a_number_must_be_under_the_reasons_own_evidence_paths(self):
+        # 5000 exists in the packet (custody) but not under the akd path alone
+        self.check(self.with_reason("AAA takas lot 5000.", _day(SYM_A, "/akd/AAA")), "number_not_in_input")
+        self.check(self.with_reason("AAA takas lot 5000.", _day(SYM_A, "/custody/AAA")))
+        # a value that exists under another reason's path does not count
+        def two_reasons(note):
+            reasons = note["assessments"][0]["reasons"]
+            reasons[0].update(text="AAA net 100.", evidence_paths=[_day(SYM_A, "/akd/AAA")])
+            reasons.append({"text": "AAA takas lot 5000.", "evidence_paths": [_day(SYM_A, "/akd/AAA")]})
+        self.check(self.mutated(two_reasons), "number_not_in_input")
+        # a date must be in a cited path (or its subtree)
+        self.check(self.with_reason("2026-01-08 tarihinde net 100.", _day(SYM_A, "/akd/AAA")),
+                   "number_not_in_input")
+        self.check(self.with_reason(f"{AS_OF} tarihinde net 100.", _day(SYM_A, "/akd/AAA")))
+        # data_caveats cite no path: any packet number is fine, others are not
+        self.check(self.mutated(lambda n: n["data_caveats"].append("Takas 5000 lot görüldü.")))
+
+    def test_sign_must_match_the_packet(self):
+        self.check(self.with_reason("BBB net 40.", _day(SYM_A, "/akd/BBB")), "number_not_in_input")
+        self.check(self.with_reason("BBB net satış 40.", _day(SYM_A, "/akd/BBB")), "number_not_in_input")
+        self.check(self.with_reason("BBB net -40.", _day(SYM_A, "/akd/BBB")))
+        self.check(self.with_reason("AAA net -100.", _day(SYM_A, "/akd/AAA")), "number_not_in_input")
+
+    def test_percent_matches_exactly_or_as_a_small_fraction(self):
+        meta = f"/symbols/{SYM_A}/metadata_by_day/{AS_OF}"
+        self.check(self.with_reason("Perakende oranı %40,5.", meta))
+        self.check(self.with_reason("Perakende oranı %4050.", meta), "number_not_in_input")
+        self.check(self.with_reason("Perakende oranı %0,405.", meta), "number_not_in_input")
+
+    def test_spelled_out_numbers_are_rejected(self):
+        for text in ("AAA iki kurumdan biri.", "yüzde elli oranında.", "Yüz lot civarı.", "on gün boyunca."):
+            self.check(self.with_reason(text, _day(SYM_A, "/akd/AAA")), "number_word")
+        self.check(self.mutated(lambda n: n["data_caveats"].append("Üç gün eksik.")), "number_word")
+        self.check(self.with_reason("Bir kurum AAA net 100.", _day(SYM_A, "/akd/AAA")))  # "bir" is allowed
 
     def test_numbers_in_other_formats_match(self):
-        for text in ("Takas lot 5.000 ve net 100,0.", "Metadata oranı %40,5; yatırımcı sayısı 1.234.",
-                     "Net −40, VWAP 10,5.", "Fark %5 (vwap_proxy_vs_close 0.05).", "H2 ve H1 kuralları."):
-            note = self.mutated(lambda n: n["assessments"][0]["reasons"][0].update(text=text))
-            result = validate_note(note, self.packet)
+        feature = self.feature_path("vwap_proxy_vs_close")
+        meta = f"/symbols/{SYM_A}/metadata_by_day/{AS_OF}"
+        for text, paths in (
+            ("Takas lot 5.000 ve net 100,0.", (_day(SYM_A, "/akd/AAA"), _day(SYM_A, "/custody/AAA"))),
+            ("Metadata oranı %40,5; yatırımcı sayısı 1.234.", (meta,)),
+            ("Net −40, VWAP 10,5.", (_day(SYM_A, "/akd/BBB"),)),
+            ("Fark %5 (vwap_proxy_vs_close 0.05).", (feature,)),
+            ("H2 ve H1 kuralları.", (_day(SYM_A, "/akd/AAA"),)),
+        ):
+            result = validate_note(self.with_reason(text, *paths), self.packet)
             self.assertTrue(result.ok, (text, result))
 
+    def feature_path(self, name: str) -> str:
+        scans = self.packet["symbols"][SYM_A]["scans"]
+        for s_index, scan in enumerate(scans):
+            for o_index, obs in enumerate(scan["observations"]):
+                for f_index, feature in enumerate(obs["features"]):
+                    if feature["name"] == name:
+                        return f"/symbols/{SYM_A}/scans/{s_index}/observations/{o_index}/features/{f_index}"
+        raise AssertionError(name)
+
     def test_rule_and_symbol_ids_are_not_numbers(self):
-        self.check(self.mutated(lambda n: n["assessments"][0]["reasons"][0].update(
-            text="H2 kuralı için AAA net 100.")))
+        self.check(self.with_reason("H2 kuralı için AAA net 100.", _day(SYM_A, "/akd/AAA")))
 
     def test_sensitive_content(self):
-        self.check(self.mutated(lambda n: n["assessments"][0]["reasons"][0].update(
-            text="Kaynak https://example.invalid/x net 100.")), "sensitive_content")
+        self.check(self.with_reason("Kaynak https://example.invalid/x net 100.", _day(SYM_A, "/akd/AAA")),
+                   "sensitive_content")
 
 
 # --- runner ------------------------------------------------------------------------
@@ -563,6 +757,14 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(outcome.note["assessments"][0]["rule_id"], "H2")
         self.assertEqual(outcome.model_reported, ["claude-opus-5-5"])
         self.assertEqual(outcome.returncode, 0)
+
+    def test_usage_and_duration_fields_are_extracted_numerically(self):
+        outcome = self.run_fake("ok")
+        self.assertEqual(outcome.usage, {
+            "duration_ms": 1234, "num_turns": 1, "total_cost_usd": 0.5,
+            "usage": {"input_tokens": 11, "output_tokens": 22},  # non-numeric service_tier is not copied
+        })
+        self.assertEqual(self.run_fake("refusal").usage, {})
 
     def test_result_text_with_code_fence_is_decoded(self):
         outcome = self.run_fake("result_text")
@@ -620,6 +822,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(json.loads(config.schema_text)["title"], "fintr_llm_note_v1")
         self.assertIn("{", config.schema_text)
         self.assertNotIn("\n", config.schema_text)
+        self.assertEqual((config.max_symbol_packet_bytes, config.max_symbols_per_run, config.max_run_seconds),
+                         (200_000, 30, 5400.0))
 
     def test_bad_configs_are_rejected(self):
         document = json.loads(REAL_CONFIG.read_text(encoding="utf-8"))
@@ -628,7 +832,8 @@ class ConfigTests(unittest.TestCase):
                 path = Path(directory) / "c.json"
                 path.write_text(json.dumps(doc), encoding="utf-8")
                 return path
-            for change in ({"schema": "x"}, {"model": ""}, {"timeout_seconds": 0}, {"max_packet_bytes": 1.5},
+            for change in ({"schema": "x"}, {"model": ""}, {"timeout_seconds": 0}, {"max_symbol_packet_bytes": 1.5},
+                           {"max_symbols_per_run": 0}, {"max_run_seconds": 0}, {"max_packet_bytes": None, "max_symbol_packet_bytes": 0},
                            {"prompt_file": "nope.md"}, {"cli_path": {"default": "x"}}, {"strip_env": "x"}):
                 with self.assertRaises(ConfigError, msg=str(change)):
                     load_config(write({**document, **change}), project_root=ROOT)
@@ -648,63 +853,84 @@ class ConfigTests(unittest.TestCase):
     def test_prompt_states_the_hard_rules(self):
         prompt = (ROOT / "configs" / "llm_note" / "prompt_v1.md").read_text(encoding="utf-8")
         for needle in ("destekliyor", "zayıflatıyor", "belirsiz", "bilinmiyor", "JSON Pointer",
-                       "Hesap yapma", "manipülasyon", "pozisyon", "hedef", "stop"):
+                       "Hesap yapma", "manipülasyon", "pozisyon", "hedef", "stop", "yazıyla sayı",
+                       "yollarının altındaki", "Eksi işaretli"):
             self.assertIn(needle, prompt)
+
+class PromptLayoutTests(Env, unittest.TestCase):
+    def test_prompt_paths_match_the_real_packet_layout(self):
+        prompt = (ROOT / "configs" / "llm_note" / "prompt_v1.md").read_text(encoding="utf-8")
+        self.assertNotIn("symbols.<SYM>.observations", prompt)  # observations live under scans[]
+        for key in ("scans[].observations[]", "scans[].freshness", "scans[].data_status", "metadata_by_day",
+                    "composition", "institutions", "days.<TARİH>.akd", "days.<TARİH>.custody"):
+            self.assertIn(key, prompt)
+        # ... and the keys the prompt names exist in a real packet
+        block = json.loads(self.build().packet_bytes)["symbols"][SYM_A]
+        self.assertEqual(sorted(block), ["composition", "cutoff", "days", "institutions", "metadata_by_day", "scans"])
+        self.assertEqual(sorted(block["scans"][0]), ["as_of", "data_status", "freshness", "observations"])
+        feature = block["scans"][0]["observations"][0]["features"][0]
+        self.assertTrue({"name", "value", "data_families", "min_date", "max_date"} <= set(feature))
+        self.assertEqual(sorted(block["metadata_by_day"][AS_OF]),
+                         ["institutional_pct", "investor_count", "null_fields", "retail_pct"])
 
 
 # --- script (llm_note.py) ---------------------------------------------------------------
 
 
 class ScriptTests(Env, unittest.TestCase):
-    def attempts(self):
-        parent = self.out_dir / AS_OF
-        return sorted(p.name for p in parent.iterdir()) if parent.exists() else []
-
-    def test_accepted_note_is_recorded_without_secrets_and_with_lineage(self):
-        probe = self.tmp / "probe.json"
-        code, out, err = self.run_note("ok", probe=probe)
-        self.assertEqual((code, self.status(out)), (0, "accepted"), err)
-        self.assertEqual(self.attempts(), ["attempt-001"])
-        attempt = self.out_dir / AS_OF / "attempt-001"
-        self.assertEqual(sorted(p.name for p in attempt.iterdir()),
-                         ["note.json", "packet.json", "record.json", "response_raw.txt"])
-        record = json.loads((attempt / "record.json").read_text(encoding="utf-8"))
+    def test_each_symbol_is_noted_recorded_without_secrets_and_with_lineage(self):
+        probe, log = self.tmp / "probe.json", self.tmp / "calls.log"
+        code, out, err = self.run_note("ok", probe=probe, log=log)
+        self.assertEqual((code, self.status(out)), (0, "ok=2,rejected=0,failed=0"), err)
+        self.assertEqual(sorted(p.name for p in (self.out_dir / AS_OF).iterdir()), sorted(self.symbols))
+        self.assertEqual(log.read_text(encoding="utf-8").split("\n")[:-1],
+                         [f"{s} ok" for s in sorted(self.symbols)])  # one call per symbol
         config = load_config(REAL_CONFIG, project_root=ROOT)
-        packet_bytes = (attempt / "packet.json").read_bytes()
-        self.assertEqual(record["status"], "accepted")
-        self.assertIsNone(record["category"])
-        self.assertEqual(record["inputs"]["packet_sha256"], hashlib.sha256(packet_bytes).hexdigest())
-        self.assertEqual(record["inputs"]["observations_sha256"],
-                         hashlib.sha256(self.obs_path.read_bytes()).hexdigest())
-        self.assertEqual(record["inputs"]["included_symbols"], sorted(self.symbols))
-        self.assertEqual(record["prompt"]["sha256"], config.prompt_sha256)
-        self.assertEqual(record["output_schema"]["sha256"], config.schema_sha256)
-        self.assertEqual(record["config"]["sha256"], config.sha256)
-        self.assertEqual(record["model_requested"], "claude-opus-5-5")
-        self.assertEqual(record["model_reported"], ["claude-opus-5-5"])
-        self.assertEqual(record["cli"]["version"], "fake-cli 0.0.1")
-        self.assertIn("determin", record["determinism_note"].lower())
-        self.assertEqual(record["validation"]["ok"], True)
-        command = record["command"]
-        self.assertEqual(command[0], "<claude-cli>")
-        for flag in ("--model", "--effort", "--tools", "--output-format", "--json-schema",
-                     "--no-session-persistence", "--system-prompt-file"):
-            self.assertIn(flag, command)
-        self.assertEqual(command[command.index("--system-prompt-file") + 1], "configs/llm_note/prompt_v1.md")
-        self.assertNotIn(str(ROOT), json.dumps(record["command"][2:]))
-        self.assertTrue(json.loads((attempt / "note.json").read_text(encoding="utf-8"))["assessments"])
-        # the packet file is the very packet validated and sent
-        self.assertEqual(json.loads(packet_bytes)["required_assessments"],
-                         [{"symbol": s, "rule_id": "H2", "as_of": AS_OF} for s in sorted(self.symbols)])
+        for symbol in self.symbols:
+            attempt = self.sym_dir(symbol) / "attempt-001"
+            self.assertEqual(sorted(p.name for p in attempt.iterdir()),
+                             ["note.json", "packet.json", "record.json", "response_raw.txt"])
+            record = self.record_of(symbol)
+            packet_bytes = (attempt / "packet.json").read_bytes()
+            self.assertEqual((record["status"], record["category"], record["symbol"]), ("accepted", None, symbol))
+            self.assertEqual(record["inputs"]["packet_sha256"], hashlib.sha256(packet_bytes).hexdigest())
+            self.assertEqual(record["inputs"]["packet_bytes"], len(packet_bytes))
+            self.assertEqual(record["inputs"]["observations_sha256"],
+                             hashlib.sha256(self.obs_path.read_bytes()).hexdigest())
+            self.assertEqual(record["prompt"]["sha256"], config.prompt_sha256)
+            self.assertEqual(record["output_schema"]["sha256"], config.schema_sha256)
+            self.assertEqual(record["config"]["sha256"], config.sha256)
+            self.assertEqual(record["model_requested"], "claude-opus-5-5")
+            self.assertEqual(record["model_reported"], ["claude-opus-5-5"])
+            self.assertEqual(record["cli"]["version"], "fake-cli 0.0.1")
+            self.assertIn("determin", record["determinism_note"].lower())
+            self.assertEqual(record["validation"]["ok"], True)
+            self.assertTrue(record["called"])
+            self.assertGreaterEqual(record["duration_seconds"], 0)
+            self.assertEqual(record["usage"]["usage"], {"input_tokens": 11, "output_tokens": 22})
+            self.assertEqual(record["usage"]["duration_ms"], 1234)
+            command = record["command"]
+            self.assertEqual(command[0], "<claude-cli>")
+            for flag in ("--model", "--effort", "--tools", "--output-format", "--json-schema",
+                         "--no-session-persistence", "--system-prompt-file"):
+                self.assertIn(flag, command)
+            self.assertEqual(command[command.index("--system-prompt-file") + 1], "configs/llm_note/prompt_v1.md")
+            self.assertNotIn(str(ROOT), json.dumps(record["command"][2:]))
+            self.assertTrue(json.loads((attempt / "note.json").read_text(encoding="utf-8"))["assessments"])
+            # the packet file is the very packet validated and sent, and holds only this symbol
+            packet = json.loads(packet_bytes)
+            self.assertEqual(packet["required_assessments"], [{"symbol": symbol, "rule_id": "H2", "as_of": AS_OF}])
+            self.assertEqual(list(packet["symbols"]), [symbol])
+            from fintr.evaluation.live_capture import validate_context_contains_no_secrets
+            for name in ("record.json", "note.json"):
+                validate_context_contains_no_secrets(json.loads((attempt / name).read_text(encoding="utf-8")))
         # the child saw: no API key variables, an empty temp cwd, the flags
         seen = json.loads(probe.read_text(encoding="utf-8"))
         self.assertFalse(seen["has_api_key"] or seen["has_auth_token"])
         self.assertNotEqual(Path(seen["cwd"]).resolve(), ROOT.resolve())
         self.assertIn("--no-session-persistence", seen["argv"])
         self.assertEqual(seen["argv"][seen["argv"].index("--model") + 1], "claude-opus-5-5")
-        from fintr.evaluation.live_capture import validate_context_contains_no_secrets
-        for name in ("record.json", "note.json"):
-            validate_context_contains_no_secrets(json.loads((attempt / name).read_text(encoding="utf-8")))
+        self.assertEqual(seen["argv"][seen["argv"].index("--tools") + 1], "")
 
     def test_api_key_variables_never_reach_the_child(self):
         probe = self.tmp / "probe.json"
@@ -714,23 +940,31 @@ class ScriptTests(Env, unittest.TestCase):
         self.assertFalse(seen["has_api_key"])
         self.assertFalse(seen["has_auth_token"])
 
-    def test_accepted_note_is_not_regenerated_and_never_overwritten(self):
+    def test_accepted_notes_are_not_regenerated_and_never_overwritten(self):
         self.run_note("ok")
         before = {p: p.read_bytes() for p in (self.out_dir / AS_OF).rglob("*") if p.is_file()}
-        code, out, _ = self.run_note("refusal")  # would fail if the model were called
+        log = self.tmp / "calls.log"
+        code, out, _ = self.run_note("refusal", log=log)  # would fail if the model were called
         self.assertEqual((code, self.status(out)), (0, "already_noted"))
+        self.assertFalse(log.exists())
         after = {p: p.read_bytes() for p in (self.out_dir / AS_OF).rglob("*") if p.is_file()}
         self.assertEqual(before, after)
 
-    def test_failed_attempt_allows_a_new_attempt_and_keeps_the_old_one(self):
-        code, out, err = self.run_note("refusal")
-        self.assertEqual((code, self.status(out)), (3, "unavailable:refusal"))
-        first = (self.out_dir / AS_OF / "attempt-001" / "record.json").read_bytes()
-        code, out, _ = self.run_note("ok")
-        self.assertEqual((code, self.status(out)), (0, "accepted"))
-        self.assertEqual(self.attempts(), ["attempt-001", "attempt-002"])
-        self.assertEqual((self.out_dir / AS_OF / "attempt-001" / "record.json").read_bytes(), first)
-        self.assertEqual(latest_accepted(self.out_dir, AS_OF)[0].name, "attempt-002")
+    def test_a_rerun_retries_only_the_symbols_without_an_accepted_note(self):
+        code, out, err = self.run_note("bad_number", only=SYM_B)
+        self.assertEqual((code, self.status(out)), (3, "ok=1,rejected=1,failed=0"), err)
+        self.assertIn(f"Analiz notu {SYM_B}: analiz notu doğrulamadan geçemedi (number_not_in_input)", err)
+        self.assertIsNotNone(latest_accepted(self.sym_dir(SYM_A)))
+        self.assertIsNone(latest_accepted(self.sym_dir(SYM_B)))
+        first_b = (self.sym_dir(SYM_B) / "attempt-001" / "record.json").read_bytes()
+        log = self.tmp / "calls.log"
+        code, out, _ = self.run_note("ok", log=log)
+        self.assertEqual((code, self.status(out)), (0, "ok=1,rejected=0,failed=0,already=1"))
+        self.assertEqual(log.read_text(encoding="utf-8").split("\n")[:-1], [f"{SYM_B} ok"])
+        self.assertEqual(sorted(p.name for p in self.sym_dir(SYM_A).iterdir()), ["attempt-001"])
+        self.assertEqual(sorted(p.name for p in self.sym_dir(SYM_B).iterdir()), ["attempt-001", "attempt-002"])
+        self.assertEqual((self.sym_dir(SYM_B) / "attempt-001" / "record.json").read_bytes(), first_b)
+        self.assertEqual(latest_accepted(self.sym_dir(SYM_B))[0].name, "attempt-002")
 
     def test_write_new_refuses_to_overwrite(self):
         from fintr.llm_note.record import write_new
@@ -751,43 +985,86 @@ class ScriptTests(Env, unittest.TestCase):
                 self.out_dir = out_dir
                 code, out, err = self.run_note(mode)
                 self.assertEqual(code, 3, (mode, err))
-                self.assertEqual(self.status(out), f"rejected:{category}")
-                self.assertIn(f"analiz notu doğrulamadan geçemedi ({category})", err)
-                attempt = out_dir / AS_OF / "attempt-001"
-                record = json.loads((attempt / "record.json").read_text(encoding="utf-8"))
-                self.assertEqual((record["status"], record["category"]), ("rejected", category))
-                self.assertFalse(record["validation"]["ok"])
-                self.assertFalse((attempt / "note.json").exists())
-                self.assertIsNone(latest_accepted(out_dir, AS_OF))
+                self.assertEqual(self.status(out), "ok=0,rejected=2,failed=0")
+                for symbol in self.symbols:
+                    self.assertIn(f"Analiz notu {symbol}: analiz notu doğrulamadan geçemedi ({category})", err)
+                    attempt = self.sym_dir(symbol, out_dir) / "attempt-001"
+                    record = self.record_of(symbol, out=out_dir)
+                    self.assertEqual((record["status"], record["category"]), ("rejected", category))
+                    self.assertFalse(record["validation"]["ok"])
+                    self.assertFalse((attempt / "note.json").exists())
+                    self.assertIsNone(latest_accepted(self.sym_dir(symbol, out_dir)))
 
     def test_unavailable_categories_and_flow_continues(self):
-        for mode, category in (("refusal", "refusal"), ("limit", "usage_limit"), ("crash", "cli_error"),
-                               ("nonjson", "cli_error")):
+        for mode, category in (("refusal", "refusal"), ("crash", "cli_error"), ("nonjson", "cli_error")):
             with self.subTest(mode=mode):
                 self.out_dir = self.tmp / f"notes-{mode}"
-                code, out, err = self.run_note(mode)
-                self.assertEqual((code, self.status(out)), (3, f"unavailable:{category}"))
-                self.assertIn(f"analiz notu alınamadı ({category})", err)
-                record = json.loads((self.out_dir / AS_OF / "attempt-001" / "record.json").read_text(encoding="utf-8"))
-                self.assertEqual((record["status"], record["category"]), ("unavailable", category))
-                self.assertIsNone(record["validation"])
+                log = self.tmp / f"calls-{mode}.log"
+                code, out, err = self.run_note(mode, log=log)
+                self.assertEqual((code, self.status(out)), (3, "ok=0,rejected=0,failed=2"))
+                self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 2)  # each symbol was tried
+                for symbol in self.symbols:
+                    self.assertIn(f"Analiz notu {symbol}: analiz notu alınamadı ({category})", err)
+                    record = self.record_of(symbol)
+                    self.assertEqual((record["status"], record["category"]), ("unavailable", category))
+                    self.assertTrue(record["called"])
+                    self.assertIsNone(record["validation"])
+
+    def test_one_failing_symbol_does_not_stop_the_others(self):
+        code, out, err = self.run_note("refusal", only=SYM_A)
+        self.assertEqual((code, self.status(out)), (3, "ok=1,rejected=0,failed=1"))
+        self.assertEqual(self.record_of(SYM_A)["category"], "refusal")
+        self.assertEqual(self.record_of(SYM_B)["status"], "accepted")
+
+    def test_usage_limit_stops_further_calls_but_every_symbol_is_recorded(self):
+        log = self.tmp / "calls.log"
+        code, out, err = self.run_note("limit", log=log)
+        self.assertEqual((code, self.status(out)), (3, "ok=0,rejected=0,failed=2"))
+        self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 1)  # the second was not tried
+        first, second = sorted(self.symbols)
+        self.assertTrue(self.record_of(first)["called"])
+        record = self.record_of(second)
+        self.assertEqual((record["status"], record["category"], record["called"]), ("unavailable", "usage_limit", False))
+        self.assertIn(f"Analiz notu {second}: analiz notu alınamadı (usage_limit)", err)
 
     def test_timeout(self):
         code, out, err = self.run_note("timeout", "--timeout-seconds", "1")
-        self.assertEqual((code, self.status(out)), (3, "unavailable:timeout"))
+        self.assertEqual((code, self.status(out)), (3, "ok=0,rejected=0,failed=2"))
+        self.assertEqual(self.record_of(sorted(self.symbols)[0])["category"], "timeout")
 
     def test_missing_cli(self):
         out, err = io.StringIO(), io.StringIO()
         with patch.object(runner, "cli_version", lambda *a, **k: "unknown"), \
                 redirect_stdout(out), redirect_stderr(err):
             code = llm_script.main(self.argv("--claude-path", str(self.tmp / "no-claude")))
-        self.assertEqual((code, self.status(out.getvalue())), (3, "unavailable:cli_not_found"))
+        self.assertEqual((code, self.status(out.getvalue())), (3, "ok=0,rejected=0,failed=2"))
+        for symbol in self.symbols:
+            self.assertEqual(self.record_of(symbol)["category"], "cli_not_found")
 
-    def test_dry_run_builds_the_packet_but_calls_and_writes_nothing(self):
+    def test_run_time_budget_stops_calls_but_records_the_rest(self):
+        document = json.loads(REAL_CONFIG.read_text(encoding="utf-8"))
+        document["max_run_seconds"] = 1
+        small = self.tmp / "budget.json"
+        small.write_text(json.dumps(document), encoding="utf-8")
+        log = self.tmp / "calls.log"
+        ticks = itertools.count(0, 1000)
+        with patch.object(llm_script.time, "monotonic", side_effect=lambda: next(ticks)):
+            code, out, _ = self.run_note("ok", "--config", str(small), log=log)
+        self.assertEqual((code, self.status(out)), (3, "ok=0,rejected=0,failed=2"))
+        self.assertFalse(log.exists())
+        for symbol in self.symbols:
+            record = self.record_of(symbol)
+            self.assertEqual((record["category"], record["called"]), ("run_time_budget", False))
+
+    def test_dry_run_builds_the_packets_but_calls_and_writes_nothing(self):
         code, out, err = self.run_note("refusal", "--dry-run")
         self.assertEqual((code, self.status(out)), (0, "dry_run"))
         self.assertFalse(self.out_dir.exists())
         self.assertIn("girdi paketi", err)
+        for symbol in self.symbols:
+            self.assertIn(f"Analiz notu girdi paketi {symbol}:", err)
+        self.assertIn("en büyük", err)
+        self.assertIn("ortanca", err)
 
     def test_no_condition_met_means_no_call(self):
         document = json.loads(self.obs_path.read_bytes())
@@ -809,6 +1086,14 @@ class ScriptTests(Env, unittest.TestCase):
             self.assertIn(bad, err)
             self.assertFalse(self.out_dir.exists())
 
+    def test_bad_symbol_name_is_an_error_before_any_call(self):
+        document = json.loads(self.obs_path.read_bytes())
+        document["symbols"]["../X"] = document["symbols"][SYM_A]
+        self.obs_path.write_text(json.dumps(document), encoding="utf-8")
+        code, out, _ = self.run_note("ok")
+        self.assertEqual((code, self.status(out)), (1, "error:bad_symbol"))
+        self.assertFalse(self.out_dir.exists())
+
     def test_input_errors(self):
         code, out, _ = self.run_note("ok", "--scanner-dir", str(self.tmp / "nope"))
         self.assertEqual((code, self.status(out)), (1, "error:observations_unreadable"))
@@ -816,39 +1101,71 @@ class ScriptTests(Env, unittest.TestCase):
         code, out, _ = self.run_note("ok")
         self.assertEqual((code, self.status(out)), (1, "error:observations_schema"))
 
-    def test_missing_capture_is_an_error_not_a_call(self):
-        code, out, _ = self.run_note("ok", "--base-root", str(self.tmp / "empty"))
-        self.assertEqual((code, self.status(out)), (1, "error:data_load_failed"))
-        self.assertFalse(self.out_dir.exists())
+    def test_missing_capture_is_a_per_symbol_failure_without_a_call(self):
+        log = self.tmp / "calls.log"
+        code, out, err = self.run_note("ok", "--base-root", str(self.tmp / "empty"), log=log)
+        self.assertEqual((code, self.status(out)), (3, "ok=0,rejected=0,failed=2"))
+        self.assertFalse(log.exists())
+        for symbol in self.symbols:
+            record = self.record_of(symbol)
+            self.assertEqual((record["status"], record["category"], record["called"]),
+                             ("unavailable", "data_load_failed", False))
+            self.assertIn(f"Analiz notu {symbol}: analiz notu alınamadı (data_load_failed)", err)
 
-    def test_packet_too_large_is_unavailable_without_a_call(self):
+    def test_packet_too_large_is_that_symbols_own_failure_without_a_call(self):
         document = json.loads(REAL_CONFIG.read_text(encoding="utf-8"))
-        document["max_packet_bytes"] = 100
+        document["max_symbol_packet_bytes"] = 100
         small = self.tmp / "small.json"
         small.write_text(json.dumps(document), encoding="utf-8")
-        code, out, _ = self.run_note("refusal", "--config", str(small))
-        self.assertEqual((code, self.status(out)), (3, "unavailable:packet_too_large"))
-        record = json.loads((self.out_dir / AS_OF / "attempt-001" / "record.json").read_text(encoding="utf-8"))
-        self.assertEqual((record["status"], record["category"]), ("unavailable", "packet_too_large"))
+        log = self.tmp / "calls.log"
+        code, out, _ = self.run_note("refusal", "--config", str(small), log=log)
+        self.assertEqual((code, self.status(out)), (3, "ok=0,rejected=0,failed=2"))
+        self.assertFalse(log.exists())
+        for symbol in self.symbols:
+            record = self.record_of(symbol)
+            self.assertEqual((record["status"], record["category"]), ("unavailable", "packet_too_large"))
+            self.assertGreater(record["inputs"]["packet_bytes"], 100)
+            self.assertFalse(record["called"])
+            self.assertFalse((self.sym_dir(symbol) / "attempt-001" / "packet.json").exists())
 
-    def test_omitted_symbols_are_recorded(self):
-        full = len(self.build().packet_bytes)
+    def test_symbol_limit_is_reported_not_silent(self):
         document = json.loads(REAL_CONFIG.read_text(encoding="utf-8"))
-        document["max_packet_bytes"] = full - 1
-        small = self.tmp / "omit.json"
+        document["max_symbols_per_run"] = 1
+        small = self.tmp / "limit.json"
         small.write_text(json.dumps(document), encoding="utf-8")
-        code, out, _ = self.run_note("ok", "--config", str(small))
-        self.assertEqual((code, self.status(out)), (0, "accepted"))
-        record = json.loads((self.out_dir / AS_OF / "attempt-001" / "record.json").read_text(encoding="utf-8"))
-        self.assertEqual(record["inputs"]["included_symbols"], [SYM_A])
-        self.assertEqual(record["inputs"]["omitted"], [{"symbol": SYM_B, "reason": "packet_size_limit"}])
+        log = self.tmp / "calls.log"
+        code, out, err = self.run_note("ok", "--config", str(small), log=log)
+        first, second = sorted(self.symbols)
+        self.assertEqual((code, self.status(out)), (3, "ok=1,rejected=0,failed=1"))
+        self.assertEqual(log.read_text(encoding="utf-8").split("\n")[:-1], [f"{first} ok"])
+        record = self.record_of(second)
+        self.assertEqual((record["status"], record["category"]), ("unavailable", "symbol_limit"))
+        self.assertIn(f"Analiz notu {second}: analiz notu alınamadı (symbol_limit)", err)
 
     def test_stdin_carries_exactly_the_recorded_packet(self):
         self.run_note("ok")
-        attempt = self.out_dir / AS_OF / "attempt-001"
-        record = json.loads((attempt / "record.json").read_text(encoding="utf-8"))
-        stdin = runner.STDIN_HEADER + (attempt / "packet.json").read_text(encoding="utf-8")
-        self.assertEqual(record["inputs"]["stdin_sha256"], hashlib.sha256(stdin.encode("utf-8")).hexdigest())
+        for symbol in self.symbols:
+            attempt = self.sym_dir(symbol) / "attempt-001"
+            record = self.record_of(symbol)
+            stdin = runner.STDIN_HEADER + (attempt / "packet.json").read_text(encoding="utf-8")
+            self.assertEqual(record["inputs"]["stdin_sha256"], hashlib.sha256(stdin.encode("utf-8")).hexdigest())
+
+    def test_newer_daily_captures_do_not_break_an_older_as_of(self):
+        """Price files only reach AS_OF while a rolling capture runs to 01-13:
+        the note step still works and nothing after AS_OF is sent."""
+        short = self.tmp / "price_short"
+        for symbol in self.symbols:
+            bars = [period_fixtures._price_bar(d, o="10", h="10", l="10", c="10", adj="10", v=100)
+                    for d in ("2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09")]
+            period_fixtures._write_price_capture(short, symbol, "2026-01-05", "2026-01-09", bars)
+        for symbol in self.symbols:  # a capture that starts after AS_OF is never opened
+            (self.daily / symbol / "2026-01-12_2026-01-13.json").write_text("garbage", encoding="utf-8")
+        code, out, err = self.run_note("ok", "--price-dir", str(short))
+        self.assertEqual((code, self.status(out)), (0, "ok=2,rejected=0,failed=0"), err)
+        for symbol in self.symbols:
+            text = (self.sym_dir(symbol) / "attempt-001" / "packet.json").read_text(encoding="utf-8")
+            self.assertNotIn(POST_AS_OF_MARKER, text)
+            self.assertEqual(sorted(d for d in set(re.findall(r"\d{4}-\d{2}-\d{2}", text)) if d > AS_OF), [])
 
 
 # --- notifier ------------------------------------------------------------------------------
@@ -881,8 +1198,14 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         parts = re.split(r"--- mesaj \d+/\d+ \(dry-run; ağ kullanılmadı\) ---\n", out)
         return [p for p in parts if p]
 
+    def note_messages(self) -> list[str]:
+        base = self.messages()
+        with_note = self.messages("--llm-note-dir", str(self.out_dir))
+        self.assertEqual(with_note[:len(base)], base)
+        return with_note[len(base):]
+
     def test_without_the_flag_output_is_unchanged(self):
-        self.run_note("ok")  # a verified note exists on disk, but the flag is off
+        self.run_note("ok")  # verified notes exist on disk, but the flag is off
         document = json.loads(self.obs_path.read_bytes())
         rule_texts = json.loads(REAL_RULE_TEXTS.read_text(encoding="utf-8"))["rules"]
         directions = {"H1": "negative", "H2": "positive", "H3": "negative", "H4": "positive"}
@@ -892,12 +1215,9 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         self.assertEqual(self.messages("--no-direction-label"), [m + "\n" for m in plain])
         self.assertNotIn("analiz notu", "".join(self.messages()).lower())
 
-    def test_verified_note_is_a_separate_message_with_fixed_framing(self):
+    def test_verified_notes_are_a_separate_message_with_fixed_framing(self):
         self.run_note("ok")
-        base = self.messages()
-        with_note = self.messages("--llm-note-dir", str(self.out_dir))
-        self.assertEqual(with_note[:len(base)], base)
-        note_messages = with_note[len(base):]
+        note_messages = self.note_messages()
         self.assertEqual(len(note_messages), 1)
         text = note_messages[0]
         self.assertTrue(text.startswith(render.TITLE))
@@ -905,9 +1225,11 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         self.assertIn(fmt.DIRECTION_WARNING_TR, text)
         for symbol in self.symbols:
             self.assertIn(f"{symbol} H2 (beklenen yön: yukarı (al yönlü)) — değerlendirme: destekliyor", text)
+        self.assertIn(f"Veri notları ({SYM_A}):", text)
         self.assertIn("• Takas verisi gecikmeli olabilir.", text)
+        self.assertIn("Özet: doğrulanan 2, doğrulamadan geçemeyen 0, alınamayan 0.", text)
         self.assertIn(render.VERIFIED_FOOTER, text)
-        self.assertIn("attempt-001", text)
+        self.assertIn(f"Kayıt: {(self.out_dir / AS_OF).as_posix()}", text)
         self.assertIn("Durum: preregistered_hypothesis_holdout_test_pending", text)
         self.assertLessEqual(len(text), fmt.TELEGRAM_MESSAGE_LIMIT)
 
@@ -929,15 +1251,53 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         argv = ("--llm-note-dir", str(self.out_dir))
         last = lambda: self.messages(*argv)[-1].strip()
         self.assertEqual(last(), "Opus 5.5 analiz notu: bu as_of için not yok (adım çalıştırılmadı).")
-        self.run_note("limit")
-        self.assertEqual(last(), "Opus 5.5 analiz notu: analiz notu alınamadı (usage_limit).")
+        self.run_note("refusal")
+        text = last()
+        self.assertTrue(text.startswith(
+            "Opus 5.5 analiz notu: doğrulanan 0, doğrulamadan geçemeyen 0, alınamayan 2."), text)
+        for symbol in self.symbols:
+            self.assertIn(f"{symbol}: analiz notu alınamadı (refusal).", text)
+        self.assertNotIn(render.TITLE, text)
         self.out_dir = self.tmp / "rej"
         self.run_note("bad_number")
-        self.assertEqual(
-            self.messages("--llm-note-dir", str(self.out_dir))[-1].strip(),
-            "Opus 5.5 analiz notu: analiz notu doğrulamadan geçemedi (number_not_in_input).")
-        for text in ("analiz notu alınamadı (usage_limit)", "analiz notu doğrulamadan geçemedi (schema)"):
-            self.assertEqual(find_forbidden(text), [])
+        text = self.messages("--llm-note-dir", str(self.out_dir))[-1].strip()
+        self.assertTrue(text.startswith(
+            "Opus 5.5 analiz notu: doğrulanan 0, doğrulamadan geçemeyen 2, alınamayan 0."), text)
+        for symbol in self.symbols:
+            self.assertIn(f"{symbol}: analiz notu doğrulamadan geçemedi (number_not_in_input).", text)
+        for line in ("analiz notu alınamadı (usage_limit)", "analiz notu doğrulamadan geçemedi (schema)"):
+            self.assertEqual(find_forbidden(line), [])
+
+    def test_a_symbol_without_a_record_is_listed_as_not_run(self):
+        self.run_note("ok")
+        import shutil
+        shutil.rmtree(self.sym_dir(SYM_B))
+        text = self.messages("--llm-note-dir", str(self.out_dir))[-1]
+        self.assertIn(f"{SYM_A} H2", text)
+        self.assertIn(f"{SYM_B}: bu as_of için not yok (adım çalıştırılmadı).", text)
+        self.assertIn("Özet: doğrulanan 1, doğrulamadan geçemeyen 0, alınamayan 0, çalıştırılmayan 1.", text)
+
+    def test_partial_result_shows_the_good_note_and_each_symbols_own_status_line(self):
+        self.run_note("bad_number", only=SYM_B)
+        text = self.note_messages()[-1]
+        self.assertTrue(text.startswith(render.TITLE))
+        self.assertIn(f"{SYM_A} H2 (beklenen yön: yukarı (al yönlü)) — değerlendirme: destekliyor", text)
+        self.assertNotIn(f"{SYM_B} H2 (", text)
+        self.assertIn(f"{SYM_B}: analiz notu doğrulamadan geçemedi (number_not_in_input).", text)
+        self.assertIn("Özet: doğrulanan 1, doğrulamadan geçemeyen 1, alınamayan 0.", text)
+        self.assertNotIn("987654321", text)
+
+    def test_symbol_limit_and_too_large_symbols_have_their_own_lines(self):
+        document = json.loads(REAL_CONFIG.read_text(encoding="utf-8"))
+        document["max_symbols_per_run"] = 1
+        small = self.tmp / "limit.json"
+        small.write_text(json.dumps(document), encoding="utf-8")
+        self.run_note("ok", "--config", str(small))
+        text = self.note_messages()[-1]
+        first, second = sorted(self.symbols)
+        self.assertIn(f"{first} H2", text)
+        self.assertIn(f"{second}: analiz notu alınamadı (symbol_limit).", text)
+        self.assertIn("Özet: doğrulanan 1, doğrulamadan geçemeyen 0, alınamayan 1.", text)
 
     def test_rejected_note_content_is_never_sent(self):
         self.run_note("forbidden")
@@ -947,48 +1307,34 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
 
     def test_tampered_note_is_not_shown(self):
         self.run_note("ok")
-        note_path = self.out_dir / AS_OF / "attempt-001" / "note.json"
+        note_path = self.sym_dir(SYM_A) / "attempt-001" / "note.json"
         note = json.loads(note_path.read_text(encoding="utf-8"))
         note["assessments"][0]["reasons"][0]["text"] = "Toplam 987654321 lot."
         note_path.write_text(json.dumps(note), encoding="utf-8")
-        last = self.messages("--llm-note-dir", str(self.out_dir))[-1].strip()
-        self.assertEqual(last, "Opus 5.5 analiz notu: analiz notu doğrulamadan geçemedi (record_integrity).")
-        self.assertNotIn("987654321", last)
+        text = self.messages("--llm-note-dir", str(self.out_dir))[-1]
+        self.assertIn(f"{SYM_A}: analiz notu doğrulamadan geçemedi (record_integrity).", text)
+        self.assertNotIn("987654321", text)
+        self.assertIn(f"{SYM_B} H2", text)  # the untouched symbol is still shown
 
     def test_tampered_packet_is_not_shown(self):
         self.run_note("ok")
-        packet_path = self.out_dir / AS_OF / "attempt-001" / "packet.json"
+        packet_path = self.sym_dir(SYM_A) / "attempt-001" / "packet.json"
         packet_path.write_bytes(packet_path.read_bytes() + b" ")
-        last = self.messages("--llm-note-dir", str(self.out_dir))[-1].strip()
-        self.assertIn("record_integrity", last)
+        text = self.messages("--llm-note-dir", str(self.out_dir))[-1]
+        self.assertIn(f"{SYM_A}: analiz notu doğrulamadan geçemedi (record_integrity).", text)
 
     def test_long_note_is_split_and_every_chunk_keeps_the_title_and_warning(self):
         self.run_note("ok")
-        attempt = self.out_dir / AS_OF / "attempt-001"
-        record = json.loads((attempt / "record.json").read_text(encoding="utf-8"))
-        note, packet = render.load_verified_note(attempt, record)
-        note = json.loads(json.dumps(note))
-        note["data_caveats"] = ["Takas verisi gecikmeli olabilir. " * 11] * 8
-        chunks = render.render_note_messages(
-            attempt, record, note, packet,
-            directions={"H2": "positive"}, limit=700)
+        states = [render.symbol_state(self.out_dir, AS_OF, s) for s in sorted(self.symbols)]
+        states[0].note = json.loads(json.dumps(states[0].note))
+        states[0].note["data_caveats"] = ["Takas verisi gecikmeli olabilir. " * 11] * 8
+        chunks = render.render_note_messages(states, self.out_dir, AS_OF, directions={"H2": "positive"}, limit=700)
         self.assertGreater(len(chunks), 2)
         for chunk in chunks:
             self.assertLessEqual(len(chunk), 700)
             self.assertTrue(chunk.startswith(render.TITLE))
             self.assertEqual(chunk.count(fmt.DIRECTION_WARNING_TR), 1)
         self.assertIn("Durum: preregistered_hypothesis_holdout_test_pending", chunks[-1])
-
-    def test_omitted_symbols_are_listed_in_the_note(self):
-        full = len(self.build().packet_bytes)
-        document = json.loads(REAL_CONFIG.read_text(encoding="utf-8"))
-        document["max_packet_bytes"] = full - 1
-        small = self.tmp / "omit.json"
-        small.write_text(json.dumps(document), encoding="utf-8")
-        self.run_note("ok", "--config", str(small))
-        text = self.messages("--llm-note-dir", str(self.out_dir))[-1]
-        self.assertIn(f"Kapsam dışı (girdi paketi boyut sınırı): {SYM_B}", text)
-        self.assertNotIn(f"{SYM_B} H2", text)
 
     def test_send_includes_note_messages_in_one_receipt(self):
         self.run_note("ok")
@@ -1031,7 +1377,7 @@ SAVED = os.path.join("data", "interim", "scanner_daily", AS_OF, "observations.js
 STEP = {"collect_daily.py": 0, "scan_observations.py": 1, "llm_note.py": 2, "notify_observations.py": 3}
 
 
-def _go(argv, llm_stdout="LLM_NOTE_STATUS: accepted\n", llm_code=0, llm_raises=None, notify_code=0):
+def _go(argv, llm_stdout="LLM_NOTE_STATUS: ok=2,rejected=0,failed=0\n", llm_code=0, llm_raises=None, notify_code=0):
     calls = []
 
     def run(cmd, **kwargs):
@@ -1075,13 +1421,13 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(calls[3][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR, "--send",
                                         "--llm-note-dir", pipeline.LLM_NOTES_DIR])
         self.assertNotIn("--resend", calls[3])
-        self.assertIn("llm_note: accepted", out)
+        self.assertIn("llm_note: ok=2,rejected=0,failed=0", out)
         self.assertIn("note stderr", err)
 
     def test_note_failure_never_stops_the_pipeline(self):
         cases = [
-            dict(llm_stdout="LLM_NOTE_STATUS: unavailable:usage_limit\n", llm_code=3),
-            dict(llm_stdout="LLM_NOTE_STATUS: rejected:number_not_in_input\n", llm_code=3),
+            dict(llm_stdout="LLM_NOTE_STATUS: ok=0,rejected=0,failed=2\n", llm_code=3),
+            dict(llm_stdout="LLM_NOTE_STATUS: ok=0,rejected=2,failed=0\n", llm_code=3),
             dict(llm_stdout="LLM_NOTE_STATUS: error:data_load_failed\n", llm_code=1),
             dict(llm_stdout="", llm_code=1),
             dict(llm_stdout="garbage\n", llm_code=0),
@@ -1106,7 +1452,7 @@ class PipelineTests(unittest.TestCase):
     def test_notify_failure_is_still_reported_with_the_note_step(self):
         rc, calls, out, _ = _go(["--llm-note"], notify_code=4)
         self.assertEqual(rc, 4)
-        self.assertIn("llm_note: accepted", out)
+        self.assertIn("llm_note: ok=2,rejected=0,failed=0", out)
         self.assertIn("failed with exit code 4", out)
 
     def test_same_day_rerun_with_existing_note_is_idempotent(self):

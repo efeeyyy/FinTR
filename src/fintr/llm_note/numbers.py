@@ -1,6 +1,7 @@
 """Number extraction and normalisation for the note's number audit.
 
-Every number a model writes must exist in the input packet. Text is
+Every number a model writes must exist in the input packet -- for a reason,
+under that reason's own ``evidence_paths`` (``validate.py``). Text is
 compared in a normalised form so that formatting differences do not cause
 false rejections, but values are never rounded or computed:
 
@@ -8,10 +9,20 @@ false rejections, but values are never rounded or computed:
   a lone ``.``/``,`` followed by exactly three digits is read both ways
   (decimal and thousand grouping) and accepted if either reading exists in
   the packet;
-- sign is ignored (the magnitude must exist; ``-5`` and ``5`` match);
-- a number marked with ``%`` matches the packet value ``v`` or ``v / 100``
-  (a fraction printed as a percentage), exactly -- no rounding tolerance;
-- ISO dates are separate: each must be a date string present in the packet.
+- the sign is matched: a ``-``/``−`` directly before the digits (not after a
+  letter or digit, so ``10-15`` and ``H2-kural`` carry no sign) makes the
+  token negative; a negative packet value matches only a negative token and
+  a positive one only an unsigned token. "net satış 5" for a packet value
+  ``-5`` is therefore rejected: the model must quote ``-5`` (a documented
+  limit: strict sign matching, not semantic reading of the wording);
+- a number marked with ``%`` matches the packet value ``p`` exactly, or the
+  fraction ``p / 100`` only against a packet value with ``|v| <= 1`` (a
+  ratio printed as a percentage); no rounding tolerance;
+- ISO dates are separate: each must be a date string present in the packet;
+- spelled-out numbers cannot be audited, so ``find_number_words`` flags the
+  common Turkish number words and ``yüzde <word>`` ("bir" is not flagged: it
+  is also the indefinite article; fractions such as "yarı" are not either --
+  documented limits).
 
 ``mask_names`` blanks known identifiers (symbols, rule ids, institution
 names) before extraction so ``H2`` or a broker title with a digit is not
@@ -28,12 +39,21 @@ import re
 ISO_DATE = re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)")
 _PLAIN_NUMBER = re.compile(r"[+\-−]?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?")
 _TOKEN = re.compile(r"\d+(?:[.,]\d+)*")
+_NUMBER_WORDS = (
+    "sıfır", "iki", "üç", "dört", "beş", "altı", "yedi", "sekiz", "dokuz", "on", "yirmi", "otuz",
+    "kırk", "elli", "altmış", "yetmiş", "seksen", "doksan", "yüz", "bin", "milyon", "milyar",
+    "trilyon", "yarım", "çeyrek",
+)
+_NUMBER_WORD = re.compile(r"(?<!\w)(?:" + "|".join(_NUMBER_WORDS) + r")(?!\w)")
+_PERCENT_WORD = re.compile(r"(?<!\w)yüzde\s+\w+")
+_TR_LOWER = str.maketrans({"İ": "i", "I": "ı"})
 
 
 @dataclass(frozen=True, slots=True)
 class NumberToken:
     raw: str
     percent: bool
+    negative: bool
     candidates: tuple[Decimal, ...]  # empty: unparseable
 
 
@@ -100,12 +120,22 @@ def extract_numbers(text: str) -> list[NumberToken]:
         before = text[:match.start()].rstrip("+-−").rstrip()
         after = text[match.end():match.end() + 3].lstrip()
         percent = before.endswith("%") or after.startswith("%")
-        tokens.append(NumberToken(match.group(0), percent, _candidates(match.group(0))))
+        start = match.start()
+        negative = start > 0 and text[start - 1] in "-−" and (start == 1 or not text[start - 2].isalnum())
+        tokens.append(NumberToken(match.group(0), percent, negative, _candidates(match.group(0))))
     return tokens
 
 
+def find_number_words(text: str) -> list[str]:
+    """Spelled-out numbers and ``yüzde <word>`` in ``text`` (names already
+    masked). Not flagged: "bir" (also the article) -- a documented limit."""
+    lowered = text.translate(_TR_LOWER).lower()
+    return sorted(set(_NUMBER_WORD.findall(lowered)) | set(_PERCENT_WORD.findall(lowered)))
+
+
 def normalise(value: Decimal) -> Decimal:
-    return abs(value).normalize()
+    """Signed canonical form (``5.0`` == ``5``; ``-0`` == ``0``)."""
+    return value.normalize()
 
 
 # Packet fields whose digits are not data: hashes, schema names, rule ids and
@@ -117,13 +147,13 @@ SKIP_KEYS = frozenset({"schema", "formula", "validation_status", "columns", "rul
 def packet_number_set(
     packet: object, *, mask: list[str] = (),
 ) -> tuple[set[Decimal], set[str]]:
-    """(allowed magnitudes, allowed ISO date strings) of one packet.
+    """(allowed signed values, allowed ISO date strings) of a packet or subtree.
 
     Numeric JSON values and pure-number strings (the packet's canonical
-    decimal form) are taken exactly; any other string or key is read with
-    ``extract_numbers`` (all readings allowed) after ``mask`` names (symbols,
-    rule ids, institution names) are blanked. Values under ``SKIP_KEYS`` and
-    any ``*sha256`` key are ignored."""
+    decimal form) are taken exactly, with their sign; any other string or key
+    is read with ``extract_numbers`` (all readings allowed) after ``mask``
+    names (symbols, rule ids, institution names) are blanked. Values under
+    ``SKIP_KEYS`` and any ``*sha256`` key are ignored."""
     numbers: set[Decimal] = set()
     dates: set[str] = set()
 
@@ -136,7 +166,7 @@ def packet_number_set(
         found, rest = extract_dates(text)
         dates.update(found)
         for token in extract_numbers(mask_names(rest, list(mask))):
-            numbers.update(normalise(c) for c in token.candidates)
+            numbers.update(normalise(-c if token.negative else c) for c in token.candidates)
 
     def walk(node: object) -> None:
         if isinstance(node, dict):
@@ -165,9 +195,10 @@ def packet_number_set(
 
 def number_in_packet(token: NumberToken, allowed: set[Decimal]) -> bool:
     for candidate in token.candidates:
-        magnitude = normalise(candidate)
-        if magnitude in allowed:
+        signed = -candidate if token.negative else candidate
+        if normalise(signed) in allowed:
             return True
-        if token.percent and normalise(candidate / 100) in allowed:
+        # a ratio printed as a percentage: only against a packet value |v| <= 1
+        if token.percent and abs(signed) <= 100 and normalise(signed / 100) in allowed:
             return True
     return False

@@ -651,10 +651,13 @@ $env:PYTHONPATH = "$PWD\src"
 
 - **Sıra:** toplama -> tarama -> `llm_note.py` -> bildirim (`--llm-note-dir
   data\interim\llm_notes` ile). Not adımının hatası boru hattını **durdurmaz**;
-  deterministik mesaj yine gider. Özette `llm_note: <durum>` görünür:
-  `accepted`, `already_noted`, `no_observations`, `rejected:<kategori>`
-  (doğrulamadan geçemedi), `unavailable:<kategori>` (alınamadı),
-  `error:<kategori>`.
+  deterministik mesaj yine gider. Hisse başına bir model çağrısı yapılır; özette
+  `llm_note: <durum>` görünür: `ok=A,rejected=B,failed=C` (+ `,already=D`:
+  zaten doğrulanmış notu olan hisseler; `rejected` = doğrulamadan geçemedi,
+  `failed` = alınamadı), `already_noted`, `no_observations`, `error:<kategori>`.
+  Adım hisse sayısı x çağrı süresi kadar sürer (varsayılan: çağrı başına 900 sn
+  zaman aşımı, tüm adım için `max_run_seconds` 5400); bildirim not adımından sonra
+  gider.
 - **Ön koşul:** Claude Code CLI Efe'nin aboneliğiyle giriş yapmış olmalı
   (`%USERPROFILE%\.local\bin\claude.exe`; farklı yol için
   `configs/llm_note/config_v1.json` `cli_path` ya da `scripts\llm_note.py
@@ -667,20 +670,25 @@ $env:PYTHONPATH = "$PWD\src"
   değiştirilir (`claude --help` ile doğrula).
 - **Önce dry-run:** `.\.venv\Scripts\python.exe scripts\llm_note.py --as-of
   <as_of> --scanner-dir data\interim\scanner_daily --dry-run` paketi kurar,
-  boyutunu/sha256'sını/hisselerini yazar; model çağırmaz, dosya yazmaz.
-- **Abonelik limiti:** limit/zaman aşımı/red durumunda not "alınamadı (usage_limit |
-  timeout | refusal | cli_error | cli_not_found)" olur, bildirim etkilenmez.
+  hisse başına boyutunu/sha256'sını, en büyük ve ortanca bayt sayısını yazar;
+  model çağırmaz, dosya yazmaz.
+- **Abonelik limiti:** limit/zaman aşımı/red durumunda o hisse için not "alınamadı
+  (usage_limit | timeout | refusal | cli_error | cli_not_found | packet_too_large |
+  symbol_limit | run_time_budget)" olur, bildirim etkilenmez. `usage_limit` veya
+  `cli_not_found` sonrası kalan hisseler çağrılmadan aynı kategoriyle kaydedilir.
   Limit açıldığında aynı gün `--skip-collect --llm-note` ile yeniden çalıştırmak
-  yeni bir `attempt-NNN` üretir (doğrulanmış not zaten varsa model **yeniden
-  çağrılmaz**; makbuz varsa bildirim yeniden gönderilmez, 6h).
-- **Kayıtlar:** `data\interim\llm_notes\<as_of>\attempt-NNN\` (hiçbir dosyanın
-  üzerine yazılmaz): `packet.json` (modele giden ham paket), `response_raw.txt`,
-  `note.json` (yalnız doğrulanmış not), `record.json` (paket/prompt/şema/config
-  sha256, model, CLI sürümü, komut satırı, süre, doğrulama sonucu, determinizm
-  notu). `record.json` en son yazılır; olmayan attempt yarım sayılır. LLM çıktısı
-  deterministik değildir. Paket boyut sınırı (`max_packet_bytes`, varsayılan
-  400 000 bayt) aşılırsa hisseler bütün halinde dışarıda bırakılır ve notta
-  "Kapsam dışı" olarak listelenir.
+  yalnız doğrulanmış notu olmayan hisseler için yeni `attempt-NNN` üretir
+  (doğrulanmış notlu hisse için model **yeniden çağrılmaz**; makbuz varsa bildirim
+  yeniden gönderilmez, 6h).
+- **Kayıtlar:** `data\interim\llm_notes\<as_of>\<SYM>\attempt-NNN\` (hiçbir
+  dosyanın üzerine yazılmaz): `packet.json` (modele giden o hissenin ham paketi),
+  `response_raw.txt`, `note.json` (yalnız doğrulanmış not), `record.json`
+  (paket/prompt/şema/config sha256, model, CLI sürümü, komut satırı, çağrı süresi,
+  CLI'nin bildirdiği kullanım, doğrulama sonucu, determinizm notu). `record.json`
+  en son yazılır; olmayan attempt yarım sayılır. LLM çıktısı deterministik
+  değildir. Hisse başına paket sınırı `max_symbol_packet_bytes` (varsayılan
+  200 000 bayt), çalışma başına hisse sınırı `max_symbols_per_run` (30);
+  aşılırsa o hisse kırpılmaz, kendi "alınamadı" satırını alır.
 - **Gizlilik:** ham AKD/takas satırları Anthropic'e gönderilir (Efe kararı;
   lisans kapsamı doğrulanmadı). Kayıtlarda secret yoktur (kayıt yazılmadan önce
   `validate_context_contains_no_secrets`).

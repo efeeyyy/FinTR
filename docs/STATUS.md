@@ -111,7 +111,9 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    (varsayılan kapalı) ve `notify_observations.py --llm-note-dir`. Claude Opus 5.5, Claude
    Code CLI başsız mod; her `condition_met` gözlem için kuralın yönünü veri
    `destekliyor`/`zayıflatıyor`/`belirsiz` diye değerlendirir, kodla fail-closed doğrulanır
-   (şema, kanıt yolları, yasak ifade, her rakam girdide). Al/sat/hedef/stop/pozisyon/getiri
+   (şema, kanıt yolları, yasak ifade, her rakam o gerekçenin kendi kanıt yolunda, işaret
+   eşleşir). Hisse başına bir çağrı/paket/kayıt (`llm_notes/<as_of>/<SYM>/attempt-NNN/`),
+   özet `ok=A,rejected=B,failed=C`. Al/sat/hedef/stop/pozisyon/getiri
    tahmini/puan yok; not başarısız olursa deterministik bildirim gider. Ham veri
    Anthropic'e gider (Efe kararı, lisans kapsamı doğrulanmadı). Gerçek CLI çağrısı ve
    bayrak adları Efe'nin makinesinde doğrulanacak. Ayrıntı: DECISIONS.md, `docs/notify.md`,

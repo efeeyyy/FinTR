@@ -12,19 +12,24 @@ end dates) are left out. Holdout and excluded symbols are refused with the
 same guards the scanner and notifier use.
 
 Numbers are carried as decimal strings (exact; ``format(value, "f")``).
-Whole symbols are dropped in sorted-symbol order when the encoded packet
-would exceed ``max_packet_bytes``; they are reported in ``omitted`` (never
-silently), and are not among ``required_assessments``.
+
+One packet per symbol (one model call per symbol): the shared rule/column
+context plus that symbol's data. A symbol whose encoded packet exceeds
+``max_symbol_packet_bytes`` is never truncated: its outcome carries a
+``packet_too_large`` error (and the size) and it gets its own "alınamadı"
+line. Symbols beyond ``max_symbols`` get a ``symbol_limit`` error the same
+way. Nothing is dropped silently.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 import json
 from pathlib import Path
+import re
 
 from fintr.data.period_capture import PeriodCapture, resolve_brokerage_label
 from fintr.llm_note.numbers import ISO_DATE
@@ -51,13 +56,31 @@ class GuardRefusal(PacketError):
 
 @dataclass(frozen=True, slots=True)
 class PacketBuild:
+    """One symbol's packet (``symbol``) and its canonical encoding."""
+    symbol: str
     packet: dict
     packet_bytes: bytes
-    omitted: tuple[dict, ...] = field(default_factory=tuple)
 
-    @property
-    def included_symbols(self) -> list[str]:
-        return sorted(self.packet["symbols"])
+
+@dataclass(frozen=True, slots=True)
+class SymbolOutcome:
+    """Per-symbol result of ``build_symbol_packets``: a ``build`` or an
+    ``error`` (``data_load_failed``, ``packet_too_large``, ``symbol_limit``);
+    ``size`` is the encoded packet size in bytes (0 if none was built)."""
+    symbol: str
+    build: PacketBuild | None = None
+    error: PacketError | None = None
+    size: int = 0
+
+
+_SYMBOL_NAME = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+
+
+def positive_symbols(document: dict) -> list[str]:
+    """Sorted symbols with at least one ``condition_met`` observation."""
+    return sorted(
+        symbol for symbol, block in document.get("symbols", {}).items() if _positive_scans(block)
+    )
 
 
 def _num(value: Decimal | None) -> str | None:
@@ -197,14 +220,17 @@ def _rule_entries(rule_ids: set[str], rules: tuple[ScannerRule, ...], rule_texts
     return entries
 
 
-def build_packet(
+def build_symbol_packets(
     *, as_of: date, document: dict, observations_sha256: str,
     rules: tuple[ScannerRule, ...], rule_texts: dict, project_root: Path, guards,
     load_capture: Callable[[str], PeriodCapture],
-    max_packet_bytes: int, fallback_window_days: int,
-) -> PacketBuild:
-    """See the module docstring. Raises ``PacketError`` (``GuardRefusal`` for
-    a holdout/excluded symbol)."""
+    max_symbol_packet_bytes: int, max_symbols: int, fallback_window_days: int,
+    only_symbols: set[str] | None = None,
+) -> list[SymbolOutcome]:
+    """One ``SymbolOutcome`` per positive symbol (sorted; restricted to
+    ``only_symbols`` if given). Whole-run problems raise ``PacketError``
+    (``GuardRefusal`` for a holdout/excluded symbol anywhere in the file);
+    per-symbol problems are carried in the outcome's ``error``."""
     if not isinstance(document, dict) or document.get("schema") not in SUPPORTED_OBSERVATIONS_SCHEMAS:
         raise PacketError("observations_schema")
     all_symbols = document.get("symbols", {})
@@ -217,6 +243,8 @@ def build_packet(
         scans = _positive_scans(all_symbols[symbol])
         if not scans:
             continue
+        if not _SYMBOL_NAME.match(symbol):
+            raise PacketError("bad_symbol", symbol)
         scan_dates = [date.fromisoformat(scan["as_of"]) for scan in scans]
         if max(scan_dates) > as_of:
             raise PacketError("scan_after_as_of", symbol)
@@ -224,15 +252,20 @@ def build_packet(
     if not candidates:
         raise PacketError("no_observations")
 
-    blocks: dict[str, dict] = {}
-    required: dict[str, list[dict]] = {}
-    for symbol, info in candidates.items():
+    outcomes: list[SymbolOutcome] = []
+    selected = [s for s in sorted(candidates) if only_symbols is None or s in only_symbols]
+    for index, symbol in enumerate(selected):
+        if index >= max_symbols:
+            outcomes.append(SymbolOutcome(symbol, error=PacketError("symbol_limit", f"max {max_symbols} per run")))
+            continue
+        info = candidates[symbol]
         try:
             capture = load_capture(symbol)
         except ValueError as exc:
-            raise PacketError("data_load_failed", str(exc)) from None
-        blocks[symbol] = _symbol_block(symbol, info["block"], capture, info["cutoff"], fallback_window_days)
-        required[symbol] = sorted(
+            outcomes.append(SymbolOutcome(symbol, error=PacketError("data_load_failed", str(exc))))
+            continue
+        block = _symbol_block(symbol, info["block"], capture, info["cutoff"], fallback_window_days)
+        required = sorted(
             (
                 {"symbol": symbol, "rule_id": obs["rule_id"], "as_of": scan["as_of"]}
                 for scan in _positive_scans(info["block"]) for obs in scan["observations"]
@@ -240,11 +273,6 @@ def build_packet(
             ),
             key=lambda item: (item["as_of"], item["rule_id"]),
         )
-
-    included = sorted(blocks)
-    omitted: list[dict] = []
-    while True:
-        rule_ids = {item["rule_id"] for symbol in included for item in required[symbol]}
         packet = {
             "schema": PACKET_SCHEMA, "as_of": as_of.isoformat(),
             "observation_file": {
@@ -255,14 +283,15 @@ def build_packet(
                 "akd": AKD_COLUMNS,
                 "custody": "lot_count per institution code (custody balance)",
             },
-            "rules": _rule_entries(rule_ids, rules, rule_texts, project_root),
-            "required_assessments": [item for symbol in included for item in required[symbol]],
-            "symbols": {symbol: blocks[symbol] for symbol in included},
+            "rules": _rule_entries({item["rule_id"] for item in required}, rules, rule_texts, project_root),
+            "required_assessments": required,
+            "symbols": {symbol: block},
         }
         payload = encode_packet(packet)
-        if len(payload) <= max_packet_bytes:
-            return PacketBuild(packet, payload, tuple(omitted))
-        if len(included) <= 1:
-            raise PacketError("packet_too_large", f"{len(payload)} > {max_packet_bytes}")
-        dropped = included.pop()
-        omitted.append({"symbol": dropped, "reason": "packet_size_limit"})
+        if len(payload) > max_symbol_packet_bytes:
+            outcomes.append(SymbolOutcome(
+                symbol, size=len(payload),
+                error=PacketError("packet_too_large", f"{len(payload)} > {max_symbol_packet_bytes}")))
+            continue
+        outcomes.append(SymbolOutcome(symbol, build=PacketBuild(symbol, packet, payload), size=len(payload)))
+    return outcomes

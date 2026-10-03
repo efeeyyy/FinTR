@@ -12,8 +12,9 @@ Optional step 2b, only with ``--llm-note`` (default off; Efe's decision of
 2026-10-02): ``llm_note.py --as-of <as_of>`` between scan and notify, and
 ``--llm-note-dir`` passed to notify. Its failure NEVER stops the pipeline
 (the deterministic notice still goes out); the summary shows
-``llm_note: <status>`` (the script's ``LLM_NOTE_STATUS`` line). An accepted
-note for the same as_of is not regenerated on a same-day re-run. Without
+``llm_note: <status>`` (the script's ``LLM_NOTE_STATUS`` line; one model call
+per symbol, so normally ``ok=A,rejected=B,failed=C``). A symbol with an
+accepted note for the same as_of is not regenerated on a same-day re-run. Without
 ``--llm-note`` the behaviour is exactly as before.
 
 Any other non-zero exit stops the pipeline with that exit code; nothing is sent.

@@ -130,16 +130,23 @@ biçimde kayda geçti.)
   `load_active_guards` ile reddedilir; model çağrılmaz.
 - Çıktı yapılandırılmış JSON'dur (şema `configs/llm_note/output_schema_v1.json`);
   izinli değerlendirme değerleri `destekliyor`/`zayıflatıyor`/`belirsiz`.
+- Hisse başına bir paket ve bir model çağrısı; paket hiçbir zaman kırpılmaz (sınırı
+  aşan hisse "alınamadı (packet_too_large)", hisse sayısı sınırını aşan
+  "alınamadı (symbol_limit)"; her hisse kendi sonucunu alır).
 - Doğrulayıcı fail-closed'dur: şema, izinli değer, kapsam (her gözlem için tam bir
-  değerlendirme), kanıt yolları (pakette çözülmek zorunda), yasak ifade listesi (al,
-  sat, hedef, stop, pozisyon, kesin, kâr, getiri, tahmin, öneri, tavsiye, puan/skor,
-  fırsat, manipülasyon, niyet…) ve metindeki her rakamın/tarihin girdi paketinde
-  bulunması. Biri başarısızsa not reddedilir ("analiz notu doğrulamadan geçemedi
-  (<kategori>)"); model reddi/limit/zaman aşımı "analiz notu alınamadı
-  (<kategori>)" olur. Not başarısız olursa deterministik bildirim yine gönderilir.
+  değerlendirme), kanıt yolları (pakette çözülmek ve dar olmak zorunda), yasak ifade
+  listesi (al/almalı, sat/satmalı, hedef, stop, pozisyon, kesin, kâr/zarar, getiri,
+  tahmin, öneri, tavsiye, puan/skor, fırsat, garanti, manipülasyon, niyet,
+  yükselecek/düşecek/bekleniyor…), yazıyla sayı ve gerekçedeki her rakamın/tarihin o
+  gerekçenin kendi kanıt yolları altında bulunması (işaret eşleşir; `%` için `p` aynen
+  veya `p/100` yalnız `|v| <= 1`). Biri başarısızsa not reddedilir ("analiz notu
+  doğrulamadan geçemedi (<kategori>)"); model reddi/limit/zaman aşımı "analiz notu
+  alınamadı (<kategori>)" olur. Not başarısız olursa deterministik bildirim yine
+  gönderilir.
 - Prompt, şema ve config Git'tedir; sha256'ları ile model kimliği, CLI sürümü, komut
-  satırı, ham yanıt ve doğrulama sonucu `data/interim/llm_notes/<as_of>/attempt-NNN/`
-  altına no-overwrite kaydedilir. LLM çıktısı deterministik değildir.
+  satırı, ham yanıt, çağrı süresi/kullanımı ve doğrulama sonucu
+  `data/interim/llm_notes/<as_of>/<SYM>/attempt-NNN/` altına no-overwrite kaydedilir.
+  LLM çıktısı deterministik değildir.
 
 **Değişmeyen.** Spec hash'leri, eşikler, tarayıcı kuralları ve çıktı şeması, holdout
 planı ve K4 aynen geçerlidir; deterministik bildirim metni (`--llm-note-dir` verilmediğinde)
