@@ -132,9 +132,11 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      etiketli her hisse mesajında uyarı satırı (AGENTS.md), kural satırlarında %10 bant,
      Ctrl-C sonrası receipt, v1/not hata yollarında chat id redaksiyonu. Efe kararları
      (2026-10-03): yüzde = |v|*100, özne VWAP ("Ortalama fiyat (VWAP proxy) kapanışın %X
-     altında/üstünde", eşik tam %1); etiket AGENTS.md'deki gibi küçük harf. Bu iki değişiklik
-     bulut görevi `notify-layout-v2-pct` (Efe yapıştırdı). Dal gelince: yerel alt ajan test +
-     dry-run (yalnız yapı), sonra main'e `--no-ff` birleştir; Efe push eder.
+     altında/üstünde", eşik tam %1); etiket AGENTS.md'deki gibi küçük harf. Bulutta
+     `notify-layout-v2-pct` ile uygulandı; doğrulanıp main'e birleşti (`ebb3b51`). Bulut
+     `notify-note-resume` (not mesajı devam edebilir, `note_receipt` v2) da birleşti
+     (`95fdc13`, 1122 test OK). Yönetici artık doğrulanmış birleştirmeleri kendisi push eder
+     (Efe izni 2026-10-03).
    - Kalan risk (belgeli): Telegram zaman aşımında tek mesaj devamda bir kez daha gidebilir;
      not yolu (`--llm-note-dir`) da devam edebilir `note_receipt` (v2) kullanır; kalan risk aynı
      (zaman aşımında tek not mesajı bir kez daha gidebilir). Bkz. `docs/notify.md`.
