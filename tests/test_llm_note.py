@@ -733,6 +733,40 @@ class ValidatorTests(Env, unittest.TestCase):
         # data_caveats cite no path: any packet number is fine, others are not
         self.check(self.mutated(lambda n: n["data_caveats"].append("Takas 5000 lot görüldü.")))
 
+    def test_an_assessments_own_as_of_is_allowed_without_a_path(self):
+        rule = f"/rules/{self.packet['required_assessments'][0]['rule_id']}"
+        # the cited rule entry carries no date, so only the as_of exemption can admit it
+        self.check(self.with_reason(f"Gözlem tarihi {AS_OF}.", rule))
+        self.check(self.with_plain(f"{AS_OF} günü.", rule))
+        # any other date still has to be under the reason's paths
+        self.check(self.with_reason("Gözlem tarihi 2026-01-08.", rule), "number_not_in_input")
+        self.check(self.with_plain("2026-01-08 günü.", rule), "number_not_in_input")
+        # numbers are not loosened
+        self.check(self.with_reason(f"Gözlem tarihi {AS_OF}, net 100.", rule), "number_not_in_input")
+        # data_caveats keep the whole-packet check (this date is not in the packet)
+        self.check(self.mutated(lambda n: n["data_caveats"].append("2026-01-12 eksik.")), "number_not_in_input")
+
+    def test_another_assessments_as_of_does_not_leak(self):
+        import copy
+        other = "2026-01-08"
+        packet = copy.deepcopy(self.packet)
+        # the fixture packet has one required assessment: add a second one (same symbol and rule, other as_of)
+        packet["required_assessments"].append({**packet["required_assessments"][0], "as_of": other})
+        rule = f"/rules/{packet['required_assessments'][0]['rule_id']}"
+        note = _good_note(self.built)
+        note["assessments"].append(copy.deepcopy(note["assessments"][0]))
+        note["assessments"][1]["as_of"] = other
+        for item in note["assessments"]:
+            item["reasons"][0].update(text="Kayıt satırı incelendi.", evidence_paths=[rule])
+        self.assertTrue(validate_note(note, packet).ok)
+        note["assessments"][0]["reasons"][0]["text"] = f"Tarih {other}."
+        self.assertEqual(validate_note(note, packet).category, "number_not_in_input")
+        note["assessments"][0]["reasons"][0]["text"] = "Kayıt satırı incelendi."
+        note["assessments"][1]["reasons"][0]["text"] = f"Tarih {other}."
+        self.assertTrue(validate_note(note, packet).ok)
+        note["assessments"][1]["reasons"][0]["text"] = f"Tarih {AS_OF}."
+        self.assertEqual(validate_note(note, packet).category, "number_not_in_input")
+
     def test_sign_must_match_the_packet(self):
         self.check(self.with_reason("BBB net 40.", _day(SYM_A, "/akd/BBB")), "number_not_in_input")
         self.check(self.with_reason("BBB net satış 40.", _day(SYM_A, "/akd/BBB")), "number_not_in_input")
@@ -992,8 +1026,28 @@ class ConfigTests(unittest.TestCase):
         reason = item["properties"]["reasons"]["items"]
         self.assertEqual(set(reason["required"]), v._REASON_KEYS)
 
+    def test_prompt_v2_is_configured_and_states_the_limits(self):
+        config = load_config(REAL_CONFIG, project_root=ROOT)
+        self.assertEqual(config.prompt_path.name, "prompt_v2.md")
+        prompt = config.prompt_path.read_text(encoding="utf-8")
+        self.assertIn(f"1 ile {validate_mod.MAX_REASONS} arasında gerekçe (`reasons`)", prompt)
+        self.assertIn(f"1 ile {validate_mod.MAX_PATHS_PER_REASON} arasında `evidence_paths`", prompt)
+        self.assertIn("en az 1 gerekçe", prompt)
+        for needle in ('"iki kurum"', '"üç gün"', '"beş satır"', "kendi `as_of` tarihini"):
+            self.assertIn(needle, prompt)
+        # v1 stays unchanged for provenance and v2 keeps every v1 rule
+        self.assertTrue((ROOT / "configs" / "llm_note" / "prompt_v1.md").is_file())
+        self.assertIn("Şu sözcükleri kullanma: al, sat, hedef, stop, pozisyon", prompt)
+
+    def test_suggested_qualitative_phrases_are_not_number_words(self):
+        for phrase in ("birden fazla kurum", "bazı kurumlar", "birkaç gün"):
+            self.assertEqual(numbers.find_number_words(phrase), [], phrase)
+            self.assertEqual(validate_mod.find_forbidden(phrase), [], phrase)
+        for phrase in ("iki kurum", "üç gün", "beş satır"):
+            self.assertTrue(numbers.find_number_words(phrase), phrase)
+
     def test_prompt_states_the_hard_rules(self):
-        prompt = (ROOT / "configs" / "llm_note" / "prompt_v1.md").read_text(encoding="utf-8")
+        prompt = (ROOT / "configs" / "llm_note" / "prompt_v2.md").read_text(encoding="utf-8")
         for needle in ("destekliyor", "zayıflatıyor", "belirsiz", "bilinmiyor", "JSON Pointer",
                        "Hesap yapma", "manipülasyon", "pozisyon", "hedef", "stop", "yazıyla sayı",
                        "yollarının altındaki", "Eksi işaretli", "plain_explanation", "hypothesis_text",
@@ -1002,7 +1056,7 @@ class ConfigTests(unittest.TestCase):
 
 class PromptLayoutTests(Env, unittest.TestCase):
     def test_prompt_paths_match_the_real_packet_layout(self):
-        prompt = (ROOT / "configs" / "llm_note" / "prompt_v1.md").read_text(encoding="utf-8")
+        prompt = (ROOT / "configs" / "llm_note" / "prompt_v2.md").read_text(encoding="utf-8")
         self.assertNotIn("symbols.<SYM>.observations", prompt)  # observations live under scans[]
         for key in ("scans[].observations[]", "scans[].freshness", "scans[].data_status", "metadata_by_day",
                     "composition", "institutions", "days.<TARİH>.akd", "days.<TARİH>.custody"):
@@ -1058,7 +1112,7 @@ class ScriptTests(Env, unittest.TestCase):
                          "--no-session-persistence", "--system-prompt-file", "--strict-mcp-config",
                          "--disable-slash-commands", "--setting-sources"):
                 self.assertIn(flag, command)
-            self.assertEqual(command[command.index("--system-prompt-file") + 1], "configs/llm_note/prompt_v1.md")
+            self.assertEqual(command[command.index("--system-prompt-file") + 1], "configs/llm_note/prompt_v2.md")
             self.assertNotIn(str(ROOT), json.dumps(record["command"][2:]))
             self.assertTrue(json.loads((attempt / "note.json").read_text(encoding="utf-8"))["assessments"])
             # the packet file is the very packet validated and sent, and holds only this symbol
