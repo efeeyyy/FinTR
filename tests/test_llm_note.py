@@ -418,6 +418,12 @@ class ForbiddenTests(unittest.TestCase):
                      "manipülasyon", "niyetli", "kasıtlı", "buy now", "target price"):
             self.assertTrue(find_forbidden(text), text)
 
+    def test_flags_inflected_advice_and_forecast_wording(self):
+        for text in ("almalı", "Satmalı", "satılmalı", "alınmalı", "alınabilir", "elde tutmalı",
+                     "tutulmalı", "yükselecek", "DÜŞECEK", "artacak", "bekleniyor", "garanti",
+                     "mutlaka", "zarar riski"):
+            self.assertTrue(find_forbidden(text), text)
+
     def test_allows_data_wording_and_scanner_terms(self):
         for text in ("Kesinleşmemiş gün sayısı 1.", "net alıcı konumunda", "alınan veri", "satış hacmi",
                      "takas verisi gecikmeli", "veri durumu belirsiz", "yatırım tavsiyesi değildir"):

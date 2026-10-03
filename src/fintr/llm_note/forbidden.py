@@ -33,6 +33,14 @@ _PATTERNS: tuple[tuple[str, str], ...] = (
     ("stop", r"(?<!\w)stop\w*"),
     ("pozisyon", r"pozisyon\w*"),
     ("position", r"(?<!\w)position\w*"),
+    # inflected buy/sell/hold advice ("almalı", "satılmalı", "alınabilir", "tutmalı")
+    ("almalı/satmalı", r"(?<!\w)(?:al|sat)(?:ın|ıl)?(?:mal[ıi]|abilir)\w*"),
+    ("tutmalı", r"(?<!\w)(?:elde\s+)?tut(?:mal|ulmal|abilir)\w*"),
+    # forecast / certainty / loss wording
+    ("yükselecek/düşecek", r"(?<!\w)(?:(?:yüksel|düş)ecek|(?:art|azal)acak)\w*"),
+    ("beklenti", r"(?<!\w)(?:beklenti\w*|bekleniyor|beklenir|beklenmekte)(?!\w)"),
+    ("garanti/mutlaka", r"(?<!\w)(?:garanti\w*|mutlaka)(?!\w)"),
+    ("zarar", r"zarar\w*"),
     ("kesin", r"(?<!\w)kesin(?:lik\w*|likle)?(?!\w)"),
     ("kâr", r"(?<!\w)(?:kâr|kar|kârlı|karlı|profit)(?!\w)"),
     ("getiri", r"getiri\w*"),
