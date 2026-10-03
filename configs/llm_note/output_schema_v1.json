@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "fintr_llm_note_v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["assessments", "data_caveats"],
+  "properties": {
+    "assessments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "rule_id", "as_of", "assessment", "plain_explanation", "reasons"],
+        "properties": {
+          "symbol": {"type": "string"},
+          "rule_id": {"type": "string"},
+          "as_of": {"type": "string"},
+          "assessment": {"type": "string", "enum": ["destekliyor", "zayıflatıyor", "belirsiz"]},
+          "plain_explanation": {"type": "string"},
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["text", "evidence_paths"],
+              "properties": {
+                "text": {"type": "string"},
+                "evidence_paths": {"type": "array", "items": {"type": "string"}}
+              }
+            }
+          }
+        }
+      }
+    },
+    "data_caveats": {"type": "array", "items": {"type": "string"}}
+  }
+}

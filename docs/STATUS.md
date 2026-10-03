@@ -1,6 +1,6 @@
 # Proje durumu (devir notu)
 
-Son güncelleme: 2026-10-02. Yeni bir yönetici oturumu uzun sohbet geçmişi yerine bu
+Son güncelleme: 2026-10-03. Yeni bir yönetici oturumu uzun sohbet geçmişi yerine bu
 dosyayı ve vault notunu (`Beynim/İkinci Beyin/notes/fintr-llm.md`) okuyarak devam eder.
 Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulur.
 
@@ -106,8 +106,38 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    gece yarısından sonra/sabah tek komutu çalıştırır; gözlem içerikleri finans sohbetinde. `tzdata` venv'de yok (UTC+3 yedeği
    çalışıyor). Açık kararlar: günlük dosya saklama/temizlik politikası, Aşama B (ayrı ADR).
    2027-03-31'e kadar H1–H4 için ara performans değerlendirmesi yok (K4).
-7. Telegram botu: Efe BotFather'dan açıp token/chat id'yi ortam değişkenine koyacak
-   (`docs/notify.md`); ilk gerçek `--send` denemesi Efe'de.
+8. Günlük analiz notu (Efe kararı 2026-10-02): `scripts/llm_note.py` + `src/fintr/llm_note/`,
+   `run_daily_pipeline.py --llm-note` (varsayılan kapalı; sıra collect → scan → deterministik
+   notify → llm_note → notun ayrı mesajı, ayrı `note_receipt.json`) ve `notify_observations.py
+   --llm-note-dir`. Opus 5.5, Efe'nin aboneliğiyle Claude Code CLI başsız mod (CLI'da giriş
+   yapıldı 2026-10-03). Her `condition_met` gözlem için hisse başına bir çağrı: kuralın yönünü
+   veri `destekliyor`/`zayıflatıyor`/`belirsiz` + `plain_explanation` (sade Türkçe); fail-closed
+   doğrulayıcı (şema, kanıt yolu, yasak ifade, işaretli/yuvarlamalı rakam eşleşmesi). Ham veri
+   Anthropic'e gider (Efe kararı, lisans kapsamı doğrulanmadı). Yalıtım bayrakları
+   (`--tools "" --strict-mcp-config --disable-slash-commands --setting-sources local
+   --exclude-dynamic-system-prompt-sections`, boş temp cwd, CLAUDE*/ANTHROPIC* env silinir)
+   elle tuzak soruyla doğrulandı (bayraksız: CLAUDE.md görülüyor; bayraklı: görülmüyor).
+   **DEVİR DURUMU (2026-10-03 öğleden sonra, yönetici oturumu kapandı):**
+   - Main'e birleşti ve push edildi: `daily-llm-note`, sahte CLI UTF-8 düzeltmesi,
+     `llm-probe-canary` (tuzak yöntemli yalıtım sınaması); 1028 test OK. Gerçek
+     `llm_note.py --probe-isolation` → `probe:clean`.
+   - İlk gerçek not çalıştırması (as_of 2026-10-02, 5 hisse, `llm_notes/2026-10-02/`):
+     `ok=2,rejected=3,failed=0`; redler: `number_word`, `number_not_in_input`, `schema`
+     (birer hisse). Çağrı başına ~40 sn, CLI'ın raporladığı eşdeğer maliyet ~0,35 USD
+     (abonelikten düşer). SIRADAKİ İŞ: her reddin ayrıntısını `record.json` → doğrulama
+     alanından oku (içerik değil, yalnız neden), prompt'u (`configs/llm_note/prompt_v1.md`)
+     ve gerekirse doğrulayıcıyı ayarla; yalnız tavsiye ifadeleri yasak kalmalı. Ayar sonrası
+     `llm_note.py` yeniden çalıştırılınca yalnız kabul edilmemiş hisseler denenir.
+   - Bulut görevi `notify-layout-v2` (Efe yapıştırdı; özet + hisse başına mesaj, okunur yüzde,
+     sabit "Ne demek" açıklamaları `configs/notify/rule_explanations_v1.json`): dal gelince
+     doğrula (açıklama metinlerini H*.md'ye karşı gözden geçir), main'le birleştir.
+   - Temizlik: eski worktree `.claude/worktrees/agent-ab7784bb8e3a538bf` (dal `daily-llm-note`,
+     main'e birleşti) silinebilir.
+   - Sonra Efe'ye günlük komut: `run_daily_pipeline.py --allow-session-takeover --send
+     --llm-note` (Telegram değişkenleri kalıcı User ortam değişkeni olarak kayıtlı).
+7. Telegram botu: çalışıyor; ilk gerçek gönderim 2026-10-03 (as_of 10-02). Token/chat id Efe'nin
+   Windows User ortam değişkenlerinde. `run_daily_pipeline.py --send` değişken yoksa toplamadan
+   önce durur (`b7c0373`). Efe'nin geri bildirimi: tek uzun mesaj okunmuyor → `notify-layout-v2`.
 5. KAP erişimi tarayıcıda engelli; KAP belgeleri Efe'den gelir (indirme Java serileştirme
    sarmalıdır, 27 bayt başlık atılınca PDF).
 6. Canlı yanıtlarda bilinmeyen olay tipleri görüldü; fiyat/derinlik protokolü keşfedilmedi.
