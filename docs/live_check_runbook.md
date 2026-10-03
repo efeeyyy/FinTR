@@ -652,7 +652,9 @@ $env:PYTHONPATH = "$PWD\src"
 - **Sıra:** toplama -> tarama -> **deterministik bildirim** (modeli beklemez) ->
   `llm_note.py` -> not bildirimi (`notify_observations.py --llm-note-dir
   data\interim\llm_notes`: kendi Telegram mesajı, kendi makbuzu
-  `note_receipt.json`, aynı no-overwrite/`--resend` koruması). Not adımının veya not
+  `note_receipt.json`; mesaj başına durumlu, devam edebilir: aynı gün yeniden çalıştırma yalnız
+  gönderilmemiş not mesajlarını gönderir, tamamlanmışı tekrar göndermez; içerik değiştiyse
+  `--resend` ister). Not adımının veya not
   bildiriminin hatası gönderilmiş bildirimi ve çıkış kodunu değiştirmez; yalnız
   özette görünür. Hisse başına bir model çağrısı yapılır; özette `llm_note:
   <durum>`: `ok=A,rejected=B,failed=C` (+ `,already=D`: zaten doğrulanmış notu

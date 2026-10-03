@@ -136,7 +136,8 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      bulut görevi `notify-layout-v2-pct` (Efe yapıştırdı). Dal gelince: yerel alt ajan test +
      dry-run (yalnız yapı), sonra main'e `--no-ff` birleştir; Efe push eder.
    - Kalan risk (belgeli): Telegram zaman aşımında tek mesaj devamda bir kez daha gidebilir;
-     `--llm-note-dir` yolu tek seferlik (yarıda kalırsa notlar tekrar gider).
+     not yolu (`--llm-note-dir`) da devam edebilir `note_receipt` (v2) kullanır; kalan risk aynı
+     (zaman aşımında tek not mesajı bir kez daha gidebilir). Bkz. `docs/notify.md`.
    - Sonra Efe'ye günlük komut: `run_daily_pipeline.py --allow-session-takeover --send
      --llm-note` (Telegram değişkenleri kalıcı User ortam değişkeni olarak kayıtlı).
 7. Telegram botu: çalışıyor; ilk gerçek gönderim 2026-10-03 (as_of 10-02). Token/chat id Efe'nin

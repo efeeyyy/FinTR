@@ -24,7 +24,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fintr.data.period_capture import canonical_json
 from fintr.llm_note import numbers, packet as packet_mod, render, runner, validate as validate_mod
@@ -42,7 +42,7 @@ from fintr.notify import format as fmt
 from fintr.notify.direction import load_rule_horizons
 from fintr.notify.explanations import load_rule_explanations
 from fintr.notify.layout import render_layout_v2
-from fintr.notify.telegram import SendResult
+from fintr.notify.telegram import SendResult, TelegramSendError
 from fintr.scanner.rules import load_scanner_rules
 
 import test_period_analysis as period_fixtures
@@ -1649,7 +1649,9 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         self.assertEqual(receipt_path.read_bytes(), before)  # the notice's receipt is untouched
         note_receipt = json.loads(
             (self.tmp / "receipts" / AS_OF / "note_receipt.json").read_text(encoding="utf-8"))
-        self.assertEqual(note_receipt["schema"], "fintr_notify_note_receipt_v1")
+        self.assertEqual(note_receipt["schema"], "fintr_notify_note_receipt_v2")
+        self.assertTrue(note_receipt["complete"])
+        self.assertEqual([i["status"] for i in note_receipt["message_status"]], ["sent"] * 3)
         self.assertEqual(note_receipt["message_sha256"],
                          [hashlib.sha256(m.encode("utf-8")).hexdigest() for m in second])
         self.assertNotIn("llm_note_messages", json.loads(before))
@@ -1668,6 +1670,209 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         self.assertTrue(any(n.startswith("note_receipt-") for n in names), names)
         self.assertIn("note_receipt.json", names)
         self.assertEqual(self.send()[0], 0)  # the deterministic notice was never sent: still allowed
+
+    # --- resumable note delivery (fintr.notify.delivery, note_receipt family) ---------------
+
+    TOKEN = "123456:NoteSecretToken"
+    CHAT = "5551234567"
+
+    def send_seq(self, effects, *extra: str):
+        """``--send --llm-note-dir`` with a fake Telegram client: each call
+        consumes one effect (an int = the message_id, an exception = raised).
+        Returns (code, stderr, texts sent successfully)."""
+        pending = list(effects)
+        sent: list[str] = []
+
+        def fake_send(token, chat_id, text, **kwargs):
+            effect = pending.pop(0)
+            if isinstance(effect, BaseException):
+                raise effect
+            sent.append(text)
+            return SendResult(message_id=effect)
+
+        out, err = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, {"FINTR_TELEGRAM_BOT_TOKEN": self.TOKEN,
+                                     "FINTR_TELEGRAM_CHAT_ID": self.CHAT}), \
+                patch.object(notify, "send_message", fake_send), redirect_stdout(out), redirect_stderr(err):
+            code = notify.main(self.notify_argv("--send", "--llm-note-dir", str(self.out_dir), *extra))
+        return code, err.getvalue(), sent
+
+    def sent_texts(self) -> list[str]:
+        """The note messages exactly as ``--send`` sends them (the dry-run
+        output adds print()'s newline to each)."""
+        return [message.removesuffix("\n") for message in self.note_messages()]
+
+    def receipt_dir(self) -> Path:
+        return self.tmp / "receipts" / AS_OF
+
+    def receipt_names(self) -> list[str]:
+        directory = self.receipt_dir()
+        return sorted(p.name for p in directory.iterdir()) if directory.exists() else []
+
+    def read_receipt(self, name: str) -> dict:
+        return json.loads((self.receipt_dir() / name).read_text(encoding="utf-8"))
+
+    def test_partial_note_send_is_recorded_and_the_rerun_sends_only_the_unsent_messages(self):
+        self.run_note("ok")
+        expected = self.sent_texts()
+        self.assertEqual(len(expected), 3)
+        failure = TelegramSendError(f"HTTP 500: bot{self.TOKEN} chat {self.CHAT}")
+        code, err, sent = self.send_seq([11, failure])
+        self.assertEqual(code, 1)
+        self.assertEqual(sent, expected[:1])
+        self.assertIn("analiz notu kısmi gönderim (1/3 mesaj; 2. mesajda hata)", err)
+        self.assertNotIn(self.TOKEN, err)
+        self.assertNotIn(self.CHAT, err)
+        self.assertEqual(self.receipt_names(), ["note_receipt.json"])
+        partial = self.read_receipt("note_receipt.json")
+        self.assertEqual(partial["schema"], "fintr_notify_note_receipt_v2")
+        self.assertFalse(partial["complete"])
+        self.assertEqual(partial["failed_at_index"], 2)
+        self.assertEqual(partial["error_kind"], "TelegramSendError")
+        self.assertEqual([i["status"] for i in partial["message_status"]], ["sent", "not_sent", "not_sent"])
+        self.assertEqual(partial["telegram_message_ids"], [11])
+        self.assertEqual(partial["message_sha256"],
+                         [hashlib.sha256(m.encode("utf-8")).hexdigest() for m in expected])
+        dumped = json.dumps(partial, ensure_ascii=False)
+        self.assertNotIn(self.TOKEN, dumped)
+        self.assertNotIn(self.CHAT, dumped)
+
+        # same as_of again, no --resend: only the two unsent messages go out
+        code, err, sent = self.send_seq([12, 13])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(sent, expected[1:])
+        self.assertIn("analiz notu kısmi gönderim sürdürülüyor (1/3", err)
+        self.assertEqual(self.receipt_names(), ["note_receipt.json", "note_receipt.part-002.json"])
+        self.assertEqual(self.read_receipt("note_receipt.json"), partial)  # never rewritten
+        part = self.read_receipt("note_receipt.part-002.json")
+        self.assertTrue(part["complete"])
+        self.assertEqual(part["continues"], "note_receipt.json")
+        self.assertEqual([i["telegram_message_id"] for i in part["message_status"]], [11, 12, 13])
+
+        # now complete: the ordinary "already sent" rejection, nothing is sent
+        code, err, sent = self.send_seq([])
+        self.assertEqual((code, sent), (1, []))
+        self.assertIn("analiz notu receipt zaten var", err)
+
+    def test_failure_on_the_second_of_three_then_a_second_failure_keeps_resuming(self):
+        self.run_note("ok")
+        expected = self.sent_texts()
+        boom = TelegramSendError("boom")
+        self.assertEqual(self.send_seq([1, boom])[0], 1)               # 1/3
+        code, _, sent = self.send_seq([2, boom])                       # 2/3
+        self.assertEqual((code, sent), (1, expected[1:2]))
+        code, _, sent = self.send_seq([3])                             # 3/3
+        self.assertEqual((code, sent), (0, expected[2:]))
+        self.assertEqual(self.receipt_names(),
+                         ["note_receipt.json", "note_receipt.part-002.json", "note_receipt.part-003.json"])
+        last = self.read_receipt("note_receipt.part-003.json")
+        self.assertEqual([i["telegram_message_id"] for i in last["message_status"]], [1, 2, 3])
+
+    def test_ctrl_c_mid_note_send_records_what_was_sent(self):
+        self.run_note("ok")
+        expected = self.sent_texts()
+        code, err, sent = self.send_seq([21, KeyboardInterrupt()])
+        self.assertEqual((code, sent), (1, expected[:1]))
+        receipt = self.read_receipt("note_receipt.json")
+        self.assertEqual([i["status"] for i in receipt["message_status"]], ["sent", "not_sent", "not_sent"])
+        self.assertEqual(receipt["error_kind"], "KeyboardInterrupt")
+        code, _, sent = self.send_seq([22, 23])
+        self.assertEqual((code, sent), (0, expected[1:]))  # no duplicate of message 1
+
+    def test_failure_on_the_first_note_message_writes_no_receipt_and_the_rerun_sends_all(self):
+        self.run_note("ok")
+        expected = self.sent_texts()
+        code, err, sent = self.send_seq([TelegramSendError(f"bot{self.TOKEN} down, chat {self.CHAT}")])
+        self.assertEqual((code, sent), (1, []))
+        self.assertNotIn(self.TOKEN, err)
+        self.assertNotIn(self.CHAT, err)
+        self.assertEqual(self.receipt_names(), [])
+        code, _, sent = self.send_seq([1, 2, 3])
+        self.assertEqual((code, sent), (0, expected))
+
+    def test_changed_note_content_refuses_to_resume_until_resend(self):
+        self.run_note("ok")
+        expected = self.sent_texts()
+        self.assertEqual(self.send_seq([1, TelegramSendError("boom")])[0], 1)
+        note_path = self.sym_dir(SYM_A) / "attempt-001" / "note.json"
+        note = json.loads(note_path.read_text(encoding="utf-8"))
+        note["assessments"][0]["reasons"][0]["text"] = "Toplam 987654321 lot."
+        note_path.write_text(json.dumps(note), encoding="utf-8")  # same as_of, different note messages
+        code, err, sent = self.send_seq([])
+        self.assertEqual((code, sent), (1, []))
+        self.assertIn("mesaj içeriği ondan farklı", err)
+        self.assertIn("--resend", err)
+        self.assertNotIn("receipt zaten var", err)
+        self.assertEqual(self.receipt_names(), ["note_receipt.json"])
+        # --resend: a fresh, full send under a new head; later runs resume THAT session
+        changed = self.sent_texts()
+        self.assertGreaterEqual(len(changed), 2)
+        self.assertNotEqual(changed, expected)
+        code, err, sent = self.send_seq([4, TelegramSendError("again")], "--resend")
+        self.assertEqual((code, sent), (1, changed[:1]))
+        heads = [n for n in self.receipt_names() if n.startswith("note_receipt-")]
+        self.assertEqual(len(heads), 1)
+        self.assertEqual(self.read_receipt(heads[0])["resend"], True)
+        code, _, sent = self.send_seq(list(range(5, 5 + len(changed) - 1)))
+        self.assertEqual((code, sent), (0, changed[1:]))  # the NEW session's rest, not the old one's
+        self.assertEqual(self.send_seq([])[0], 1)
+
+    def test_resend_after_a_complete_note_sends_everything_again(self):
+        self.run_note("ok")
+        expected = self.sent_texts()
+        self.assertEqual(self.send_seq([1, 2, 3])[0], 0)
+        self.assertEqual(self.send_seq([])[0], 1)
+        code, _, sent = self.send_seq([4, 5, 6], "--resend")
+        self.assertEqual((code, sent), (0, expected))
+        names = self.receipt_names()
+        self.assertIn("note_receipt.json", names)
+        self.assertEqual(len([n for n in names if n.startswith("note_receipt-")]), 1)
+
+    def test_legacy_v1_note_receipt_blocks_a_send_and_is_never_silently_resent(self):
+        self.run_note("ok")
+        self.receipt_dir().mkdir(parents=True)
+        legacy = self.receipt_dir() / "note_receipt.json"
+        legacy.write_text(json.dumps({"schema": "fintr_notify_note_receipt_v1", "as_of": AS_OF,
+                                      "message_sha256": ["x"], "telegram_message_ids": [1]}), encoding="utf-8")
+        code, err, sent = self.send_seq([])
+        self.assertEqual((code, sent), (1, []))
+        self.assertIn("analiz notu receipt zaten var", err)
+        code, _, sent = self.send_seq([1, 2, 3], "--resend")  # a deliberate decision
+        self.assertEqual((code, len(sent)), (0, 3))
+
+    def test_note_and_notice_receipt_families_do_not_see_each_other(self):
+        self.run_note("ok")
+        self.assertEqual(self.send_seq([1, 2, TelegramSendError("boom")])[0], 1)  # partial note
+        code, err, sent = self.send()  # the deterministic notice is unaffected
+        self.assertEqual(code, 0, err)
+        names = self.receipt_names()
+        self.assertIn("receipt.json", names)
+        self.assertIn("note_receipt.json", names)
+        self.assertEqual(self.read_receipt("receipt.json")["schema"], "fintr_notify_receipt_v2")
+        self.assertEqual(self.read_receipt("note_receipt.json")["schema"], "fintr_notify_note_receipt_v2")
+        code, _, sent = self.send_seq([9])  # and the note still resumes
+        self.assertEqual((code, len(sent)), (0, 1))
+
+    def test_unwritable_note_receipt_is_reported_without_a_traceback_or_secrets(self):
+        self.run_note("ok")
+        err = io.StringIO()
+        with patch.dict(os.environ, {"FINTR_TELEGRAM_BOT_TOKEN": self.TOKEN,
+                                     "FINTR_TELEGRAM_CHAT_ID": self.CHAT}), \
+                patch.object(notify, "send_message", lambda *a, **k: SendResult(message_id=1)), \
+                patch.object(notify, "_write_receipt", side_effect=PermissionError(self.TOKEN)), \
+                redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = notify.main(self.notify_argv("--send", "--llm-note-dir", str(self.out_dir)))
+        self.assertEqual(code, 1)
+        self.assertIn("receipt yazılamadı (PermissionError)", err.getvalue())
+        self.assertNotIn(self.TOKEN, err.getvalue())
+
+    def test_note_dry_run_is_still_the_default_and_uses_no_network_or_receipt(self):
+        self.run_note("ok")
+        with patch.object(notify, "send_message", side_effect=AssertionError("network")):
+            code, out, err = self.dry_run("--llm-note-dir", str(self.out_dir))
+        self.assertEqual(code, 0, err)
+        self.assertIn("dry-run", out)
+        self.assertEqual(self.receipt_names(), [])
 
     def test_note_mode_with_no_condition_met_sends_nothing(self):
         document = json.loads(self.obs_path.read_bytes())
@@ -1817,6 +2022,21 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("note_notify: skipped", out)
         self.assertEqual(self.names(calls)[-1], "llm_note.py")
 
+    def test_partial_and_changed_note_statuses_in_the_summary(self):
+        env = {"FINTR_TELEGRAM_BOT_TOKEN": "t", "FINTR_TELEGRAM_CHAT_ID": "c"}
+        _, _, out, _, _ = _go(["--llm-note", "--send"], note_notify_code=1, env=env,
+                              note_notify_stderr="Notify: analiz notu kısmi gönderim (1/3 mesaj; 2. mesajda hata)\n")
+        self.assertIn("note_notify: partial", out)
+        self.assertIn("sends only the note messages not yet sent", out)
+        rc, calls, out, _, _ = _go(
+            ["--llm-note", "--send"], note_notify_code=1, env=env,
+            note_notify_stderr="Notify failed: bu as_of için tamamlanmamış (kısmi) bir analiz notu receipt var, "
+                               "ama mesaj içeriği ondan farklı\n")
+        self.assertEqual(rc, 0)
+        self.assertIn("note_notify: content_changed", out)
+        self.assertTrue(all("--resend" not in c for c in calls))  # a full resend is Efe's decision
+        self.assertIn("notify: 0", out)
+
     def test_status_is_taken_from_the_status_line(self):
         _, _, out, _, _ = _go(["--llm-note"], llm_stdout="x\nLLM_NOTE_STATUS: already_noted\n")
         self.assertIn("llm_note: already_noted", out)
@@ -1853,6 +2073,104 @@ class PipelineTests(unittest.TestCase):
         rc, calls, _, _, _ = _go(["--dry-run", "--llm-note"])
         self.assertEqual(self.names(calls), ["collect_daily.py"])
 
+
+
+class PipelineNoteResumeTests(Env, unittest.TestCase):
+    """The pipeline with the REAL ``notify_observations.main`` as the notify
+    children (in process, fake Telegram, no network): a same-day re-run."""
+
+    ENV = {"FINTR_TELEGRAM_BOT_TOKEN": "123456:PipeToken", "FINTR_TELEGRAM_CHAT_ID": "5551234567"}
+
+    def expected_note(self) -> list[str]:
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            code = notify.main(["--as-of", AS_OF, "--scanner-dir", str(self.scanner_dir),
+                                "--out-dir", str(self.tmp / "receipts"), "--llm-note-dir", str(self.out_dir)])
+        self.assertEqual(code, 0)
+        parts = re.split(r"--- mesaj \d+/\d+ \(dry-run; ağ kullanılmadı\) ---\n", out.getvalue())
+        return [part.removesuffix("\n") for part in parts if part]
+
+    def run_pipeline(self, fail_note_message: int | None = None):
+        """One ``--skip-collect --llm-note --send`` run. ``fail_note_message``:
+        the 1-based note message whose send raises. Returns (rc, out, notice
+        texts sent, note texts sent, notify argv per child)."""
+        notice, notes, children = [], [], []
+        counter = {"note": 0}
+
+        def fake_send(token, chat_id, text, **kwargs):
+            if text.startswith(render.TITLE):
+                counter["note"] += 1
+                if counter["note"] == fail_note_message:
+                    raise TelegramSendError(f"HTTP 500 bot{token} chat {chat_id}")
+                notes.append(text)
+            else:
+                notice.append(text)
+            return SendResult(message_id=len(notice) + len(notes))
+
+        def run(cmd, **kwargs):
+            name = Path(cmd[1]).name
+            if name == "scan_observations.py":
+                return subprocess.CompletedProcess(cmd, 0, stdout="OBS", stderr=f"Observations saved: {SAVED}\n")
+            if name == "llm_note.py":
+                return subprocess.CompletedProcess(cmd, 0, stdout="LLM_NOTE_STATUS: already_noted\n", stderr="")
+            argv = list(cmd[2:])
+            children.append(argv)
+            for flag, value in (("--scanner-dir", self.scanner_dir), ("--llm-note-dir", self.out_dir)):
+                if flag in argv:
+                    argv[argv.index(flag) + 1] = str(value)
+            argv += ["--out-dir", str(self.tmp / "receipts")]
+            err = io.StringIO()
+            with redirect_stderr(err), patch.object(notify, "send_message", fake_send), \
+                    patch.object(notify, "time", MagicMock()):
+                code = notify.main(argv)
+            return subprocess.CompletedProcess(cmd, code, stdout="", stderr=err.getvalue())
+
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(pipeline.subprocess, "run", run), redirect_stdout(out), redirect_stderr(err), \
+                patch.dict(os.environ, self.ENV):
+            rc = pipeline.main(["--skip-collect", "--llm-note", "--send"])
+        self.stderr = err.getvalue()
+        return rc, out.getvalue(), notice, notes, children
+
+    def test_same_day_rerun_completes_a_partial_note_and_never_resends_a_complete_one(self):
+        self.run_note("ok")
+        expected_note = self.expected_note()
+        rc, out, notice, notes, _ = self.run_pipeline(fail_note_message=2)
+        self.assertEqual(rc, 0)  # the note never changes the exit code
+        self.assertGreaterEqual(len(notice), 1)
+        self.assertEqual(notes, expected_note[:1])
+        self.assertIn("  note_notify: partial", out)
+        self.assertIn("re-running the same command sends only the note messages not yet sent", out)
+        self.assertNotIn("PipeToken", out + self.stderr)
+        self.assertNotIn("5551234567", out + self.stderr)
+
+        # second run, same day: notice already sent, the note is completed -- only messages 2 and 3
+        rc, out, notice2, notes2, children = self.run_pipeline()
+        self.assertEqual(rc, 0)
+        self.assertEqual(notice2, [])
+        self.assertEqual(notes2, expected_note[1:])
+        self.assertIn("  notify: already_sent", out)
+        self.assertIn("  note_notify: 0", out)
+        self.assertTrue(all("--resend" not in argv for argv in children))
+
+        # third run, same day: nothing at all is sent again
+        rc, out, notice3, notes3, _ = self.run_pipeline()
+        self.assertEqual((rc, notice3, notes3), (0, [], []))
+        self.assertIn("  note_notify: already_sent", out)
+
+    def test_changed_note_content_is_reported_and_nothing_is_sent(self):
+        self.run_note("ok")
+        rc, out, _, notes, _ = self.run_pipeline(fail_note_message=2)
+        self.assertEqual(len(notes), 1)
+        note_path = self.sym_dir(SYM_A) / "attempt-001" / "note.json"
+        note = json.loads(note_path.read_text(encoding="utf-8"))
+        note["assessments"][0]["reasons"][0]["text"] = "Toplam 987654321 lot."
+        note_path.write_text(json.dumps(note), encoding="utf-8")
+        rc, out, notice, notes, children = self.run_pipeline()
+        self.assertEqual((rc, notice, notes), (0, [], []))
+        self.assertIn("  note_notify: content_changed", out)
+        self.assertIn("--resend by hand", out)
+        self.assertTrue(all("--resend" not in argv for argv in children))
 
 
 class RealPipelineSmokeTests(Env, unittest.TestCase):
