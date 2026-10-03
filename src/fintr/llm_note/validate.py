@@ -24,7 +24,7 @@ rejects the whole note. Categories (stable slugs, shown to Efe as
                         assessment's reasons and ``plain_explanation``
                         without a path; no other date or number, and no
                         other assessment's ``as_of``, is exempt
-``number_format``      a quoted number with more than ``numbers.MAX_DECIMALS``
+``number_format``       a quoted number with more than ``numbers.MAX_DECIMALS``
                         decimals (a raw, unrounded value)
 ``sensitive_content``   ``validate_context_contains_no_secrets`` rejected the note
 """
