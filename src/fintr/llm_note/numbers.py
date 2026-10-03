@@ -17,7 +17,14 @@ false rejections, but values are never rounded or computed:
   limit: strict sign matching, not semantic reading of the wording);
 - a number marked with ``%`` matches the packet value ``p`` exactly, or the
   fraction ``p / 100`` only against a packet value with ``|v| <= 1`` (a
-  ratio printed as a percentage); no rounding tolerance;
+  ratio printed as a percentage);
+- rounding is accepted only at the quoted precision: a quoted number with at
+  least one decimal place (``10,46``, ``%5,12``) matches a packet value that
+  rounds to it at that many decimals (sign included; ``-10.46`` for
+  ``-10.4567``, ``5,12%`` for ``0.051234``). Integers stay exact (``5`` does
+  not match ``4.6``), so a coarse quote cannot match a wide range of values.
+  More than ``MAX_DECIMALS`` decimal places in a quoted number is refused as
+  a raw, unrounded value;
 - ISO dates are separate: each must be a date string present in the packet;
 - spelled-out numbers cannot be audited, so ``find_number_words`` flags the
   common Turkish number words and ``yüzde <word>`` ("bir" is not flagged: it
@@ -32,7 +39,7 @@ read as a number.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Context, Decimal, InvalidOperation
 import re
 
 
@@ -193,12 +200,50 @@ def packet_number_set(
     return numbers, dates
 
 
+_CTX = Context(prec=120)
+MAX_DECIMALS = 4  # more decimal places than this in a quoted number = a raw, unrounded value
+
+
+def decimals_of(candidate: Decimal) -> int:
+    exponent = candidate.as_tuple().exponent
+    return max(0, -exponent) if isinstance(exponent, int) else 0
+
+
+def too_many_decimals(token: NumberToken) -> bool:
+    """True if every reading of the token has more than ``MAX_DECIMALS``
+    decimal places (a raw 30-digit value pasted into the text)."""
+    return bool(token.candidates) and all(decimals_of(c) > MAX_DECIMALS for c in token.candidates)
+
+
+def _rounds_to(value: Decimal, quoted: Decimal, places: int) -> bool:
+    """``value`` rounded to ``places`` decimals (half-up or half-even; the
+    sign is kept) equals ``quoted``."""
+    unit = Decimal(1).scaleb(-places)
+    if abs(value - quoted) > unit:
+        return False
+    return any(value.quantize(unit, rounding=mode, context=_CTX) == quoted
+               for mode in (ROUND_HALF_UP, ROUND_HALF_EVEN))
+
+
 def number_in_packet(token: NumberToken, allowed: set[Decimal]) -> bool:
+    """Exact match of the signed value; or, for a quoted number with at least
+    one decimal place, a packet value that rounds to it at the quoted
+    precision (sign included). Integers stay exact. With ``%``: ``p`` against
+    a packet value (exact/rounded), or ``p / 100`` against a packet value with
+    ``|v| <= 1`` -- i.e. ``round(v * 100, places) == p``."""
     for candidate in token.candidates:
         signed = -candidate if token.negative else candidate
+        places = decimals_of(candidate)
         if normalise(signed) in allowed:
             return True
         # a ratio printed as a percentage: only against a packet value |v| <= 1
         if token.percent and abs(signed) <= 100 and normalise(signed / 100) in allowed:
             return True
+        if places >= 1:
+            if any(_rounds_to(value, signed, places) for value in allowed):
+                return True
+            if token.percent and any(
+                abs(value) <= 1 and _rounds_to(value * 100, signed, places) for value in allowed
+            ):
+                return True
     return False

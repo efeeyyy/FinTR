@@ -528,6 +528,41 @@ class NumberTests(unittest.TestCase):
         for text in ("bir kurum", "altında", "onlar", "yüzdelik", "binek", "net alıcı", "yedekte"):
             self.assertEqual(numbers.find_number_words(text), [], text)
 
+    def test_rounded_quotes_match_at_the_quoted_precision(self):
+        self.assertTrue(self.ok("10,46", "10.4567"))
+        self.assertTrue(self.ok("10.46", "10.4567"))
+        self.assertTrue(self.ok("10,5", "10.4567"))
+        self.assertTrue(self.ok("10.4567", "10.4567"))
+        self.assertTrue(self.ok("-10,46", "-10.4567"))
+        self.assertTrue(self.ok("0,05", "0.050000000000000000000000000001"))  # a 30-digit packet value
+        self.assertTrue(self.ok("1.234.567,89", "1234567.891234"))
+        self.assertFalse(self.ok("10,45", "10.4567"))   # wrong rounding
+        self.assertFalse(self.ok("10,4", "10.4567"))
+        self.assertFalse(self.ok("10,47", "10.4567"))
+        self.assertFalse(self.ok("10,46", "-10.4567"))  # the sign must match
+        self.assertFalse(self.ok("-10,46", "10.4567"))
+        self.assertFalse(self.ok("10", "10.4567"))      # integers stay exact: no coarse range match
+        self.assertFalse(self.ok("11", "10.9"))
+        self.assertTrue(self.ok("10", "10.000000000"))
+
+    def test_rounded_percent_quotes(self):
+        self.assertTrue(self.ok("5,12%", "0.051234"))   # ratio printed as a percentage, 2 decimals
+        self.assertTrue(self.ok("%5,12", "0.051234"))
+        self.assertTrue(self.ok("%-5,12", "-0.051234"))
+        self.assertTrue(self.ok("40,5%", "40.5"))       # a percent value already in the packet
+        self.assertTrue(self.ok("40,52%", "40.5249"))
+        self.assertFalse(self.ok("5,13%", "0.051234"))
+        self.assertFalse(self.ok("%5,12", "-0.051234"))
+        self.assertFalse(self.ok("512,34%", "5.1234"))  # the x100 reading only for |v| <= 1
+        self.assertFalse(self.ok("5%", "0.051234"))     # integer percent: exact only
+
+    def test_raw_unrounded_decimals_are_flagged(self):
+        flagged = lambda text: [numbers.too_many_decimals(t) for t in _tokens(text)]
+        self.assertEqual(flagged("0,123456 ve 10,5 ve 3"), [True, False, False])
+        self.assertEqual(flagged("1.234"), [False])  # also a thousand grouping
+        self.assertEqual(flagged("0.050000000000000000000000000001"), [True])
+        self.assertEqual(flagged("0,1234"), [False])
+
     def test_packet_number_set(self):
         packet = {"a": ["100", "-40", "10.5", None, True], "n": 7, "text": "oran 1.234,5 ve 2026-01-09 −3",
                   "2026-01-10": {"BBB": ["0.0123"]}}
@@ -571,6 +606,10 @@ class ForbiddenTests(unittest.TestCase):
 # --- validator --------------------------------------------------------------------
 
 
+PLAIN = ("Bu kural, günün son fiyatının hacim ağırlıklı ortalama fiyatın altında kalmasını arar. "
+         "Veri bu koşulun sağlandığını gösteriyor. Hipotez, bu tür baskının kısmen geri döneceğini varsayar.")
+
+
 def _day(symbol: str, part: str = "") -> str:
     return f"/symbols/{symbol}/days/{AS_OF}{part}"
 
@@ -580,6 +619,7 @@ def _good_note(build) -> dict:
         "assessments": [
             {"symbol": item["symbol"], "rule_id": item["rule_id"], "as_of": item["as_of"],
              "assessment": "destekliyor",
+             "plain_explanation": PLAIN,
              "reasons": [{"text": f"{AS_OF} tarihinde AAA kodunun net_size değeri 100; takas lot 5000.",
                           "evidence_paths": [_day(item["symbol"], "/akd/AAA"),
                                              _day(item["symbol"], "/custody/AAA")]}]}
@@ -711,6 +751,63 @@ class ValidatorTests(Env, unittest.TestCase):
         self.check(self.mutated(lambda n: n["data_caveats"].append("Üç gün eksik.")), "number_word")
         self.check(self.with_reason("Bir kurum AAA net 100.", _day(SYM_A, "/akd/AAA")))  # "bir" is allowed
 
+    def with_plain(self, text: str, *paths: str) -> dict:
+        def change(note):
+            note["assessments"][0]["plain_explanation"] = text
+            if paths:  # a number-free reason, so only the plain text is under test
+                note["assessments"][0]["reasons"][0]["text"] = "Kayıt satırı incelendi."
+                note["assessments"][0]["reasons"][0]["evidence_paths"] = list(paths)
+        return self.mutated(change)
+
+    def test_plain_explanation_is_required_and_bounded(self):
+        self.check(self.mutated(lambda n: n["assessments"][0].pop("plain_explanation")), "schema")
+        self.check(self.with_plain(""), "schema")
+        self.check(self.mutated(lambda n: n["assessments"][0].update(plain_explanation=5)), "schema")
+        self.check(self.with_plain("Kısa anlatım. " * 60), "schema")  # more than MAX_PLAIN_CHARS
+
+    def test_plain_explanation_gets_the_same_checks(self):
+        self.check(self.with_plain("Hedef fiyat yukarı gider."), "forbidden_phrase")
+        self.check(self.with_plain("Kurumlar niyetle alım yaptı."), "forbidden_phrase")
+        self.check(self.with_plain("Getiri artacak."), "forbidden_phrase")
+        self.check(self.with_plain("Yüzde elli oranında."), "number_word")
+        self.check(self.with_plain("Toplam 987654321 lot."), "number_not_in_input")
+        self.check(self.with_plain("2026-01-12 günü."), "number_not_in_input")
+        self.check(self.with_plain("Değer 0,123456789."), "number_format")
+
+    def test_plain_explanation_numbers_come_from_the_reasons_paths_or_the_rule_entry(self):
+        # 5000 is under the custody path the reason cites; 100 under the akd path
+        self.check(self.with_plain("AAA net 100 ve takas 5000 lot."))
+        # 5000 is not under the akd-only citation
+        self.check(self.with_plain("Takas 5000 lot.", _day(SYM_A, "/akd/AAA")), "number_not_in_input")
+        # the rule's own condition threshold (%1 = 0.01 in the condition) is allowed
+        self.check(self.with_plain("Kapanış ortalamanın en az %1 altında olmalı.", _day(SYM_A, "/akd/AAA")))
+        # a packet number the assessment did not cite is not
+        self.check(self.with_plain("Yatırımcı sayısı 1234.", _day(SYM_A, "/akd/AAA")), "number_not_in_input")
+
+    def test_rounded_quotes_are_accepted_in_reasons_and_plain_text(self):
+        feature = self.feature_path("vwap_proxy_vs_close")
+        self.check(self.with_reason("Fark %5,00.", feature))
+        self.check(self.with_reason("Fark %5,01.", feature), "number_not_in_input")
+        self.check(self.with_plain("Fark yaklaşık %5,0.", feature))
+        meta = f"/symbols/{SYM_A}/metadata_by_day/{AS_OF}"
+        self.check(self.with_reason("Perakende oranı %40,50.", meta))
+        self.check(self.with_reason("Perakende oranı %40,51.", meta), "number_not_in_input")
+        self.check(self.with_reason("Oran %0,123456.", meta), "number_format")
+
+    def test_rule_entry_carries_the_prereg_hypothesis_and_rationale(self):
+        rule = self.build().packet["rules"]["H2"]
+        doc = (ROOT / "docs" / "prereg" / "H2.md").read_bytes()
+        self.assertIn("H1 (beklenen)", rule["hypothesis_text"])
+        self.assertIn("H1 ile aynı mekanizma", rule["rationale_text"])
+        self.assertNotIn("## ", rule["hypothesis_text"] + rule["rationale_text"])
+        self.assertNotIn("Koşul (motor dili", rule["rationale_text"])  # stops at the next section
+        self.assertEqual(rule["prereg_doc_sha256"], hashlib.sha256(doc).hexdigest())
+        self.assertEqual(sorted(set(re.findall(r"\d{4}-\d{2}-\d{2}", json.dumps(rule)))), [])
+
+    def test_missing_prereg_document_gives_none_not_an_invented_text(self):
+        entry = packet_mod._prereg_text(self.tmp, "H2")
+        self.assertEqual(entry, {"hypothesis_text": None, "rationale_text": None, "prereg_doc_sha256": None})
+
     def test_numbers_in_other_formats_match(self):
         feature = self.feature_path("vwap_proxy_vs_close")
         meta = f"/symbols/{SYM_A}/metadata_by_day/{AS_OF}"
@@ -828,10 +925,15 @@ class RunnerTests(unittest.TestCase):
         cfg = {"windows": "%USERPROFILE%\\.local\\bin\\claude.exe", "default": "claude"}
         self.assertEqual(runner.resolve_cli(cfg, "X"), "X")
         self.assertIn("claude", runner.resolve_cli(cfg, None))
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "k", "KEEP": "1"}):
-            env = runner.child_env(["ANTHROPIC_API_KEY"])
-        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "k", "KEEP": "1", "EXTRA": "x", "CLAUDECODE": "1",
+                                     "CLAUDE_CODE_ENTRYPOINT": "cli", "claude_config_dir": "c",
+                                     "ANTHROPIC_BASE_URL": "u", "CLAUDIA": "keep"}):
+            env = runner.child_env(["ANTHROPIC_API_KEY", "EXTRA"])
+        for gone in ("ANTHROPIC_API_KEY", "EXTRA", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "claude_config_dir",
+                     "ANTHROPIC_BASE_URL"):
+            self.assertNotIn(gone, env)
         self.assertEqual(env["KEEP"], "1")
+        self.assertEqual(env["CLAUDIA"], "keep")  # only the CLAUDE*/ANTHROPIC* prefixes
 
 
 class ConfigTests(unittest.TestCase):
@@ -880,7 +982,8 @@ class ConfigTests(unittest.TestCase):
         prompt = (ROOT / "configs" / "llm_note" / "prompt_v1.md").read_text(encoding="utf-8")
         for needle in ("destekliyor", "zayıflatıyor", "belirsiz", "bilinmiyor", "JSON Pointer",
                        "Hesap yapma", "manipülasyon", "pozisyon", "hedef", "stop", "yazıyla sayı",
-                       "yollarının altındaki", "Eksi işaretli"):
+                       "yollarının altındaki", "Eksi işaretli", "plain_explanation", "hypothesis_text",
+                       "rationale_text", "en çok 2 ondalığa"):
             self.assertIn(needle, prompt)
 
 class PromptLayoutTests(Env, unittest.TestCase):
@@ -1005,6 +1108,7 @@ class ScriptTests(Env, unittest.TestCase):
         for mode, category in (("schema_bad", "schema"), ("bad_enum", "assessment_value"),
                                ("forbidden", "forbidden_phrase"), ("forbidden_buy", "forbidden_phrase"),
                                ("bad_number", "number_not_in_input"), ("bad_path", "evidence_path"),
+                               ("bad_plain", "number_not_in_input"), ("raw_decimals", "number_format"),
                                ("missing", "coverage"), ("secret", "sensitive_content"),
                                ("result_garbage", "schema")):
             with self.subTest(mode=mode):
@@ -1298,6 +1402,9 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         self.assertTrue(messages[0].startswith("Opus 5.5 analiz notu") or messages[0].startswith(render.TITLE))
         return messages
 
+    def joined(self, *extra: str) -> str:
+        return "\n".join(self.messages("--llm-note-dir", str(self.out_dir), *extra))
+
     def test_without_the_flag_output_is_unchanged(self):
         self.run_note("ok")  # verified notes exist on disk, but the flag is off
         document = json.loads(self.obs_path.read_bytes())
@@ -1309,34 +1416,39 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         self.assertEqual(self.messages("--no-direction-label"), [m + "\n" for m in plain])
         self.assertNotIn("analiz notu", "".join(self.messages()).lower())
 
-    def test_verified_notes_are_a_separate_message_with_fixed_framing(self):
+    def test_verified_notes_are_one_message_per_symbol_plus_a_closing_message(self):
         self.run_note("ok")
-        note_messages = self.note_messages()
-        self.assertEqual(len(note_messages), 1)
-        text = note_messages[0]
-        self.assertTrue(text.startswith(render.TITLE))
-        self.assertIn(f"as_of: {AS_OF}", text)
-        self.assertIn(fmt.DIRECTION_WARNING_TR, text)
-        for symbol in self.symbols:
+        messages = self.note_messages()
+        self.assertEqual(len(messages), 3)  # AAA/BBB symbols' notes, then the closing message
+        for symbol, text in zip(sorted(self.symbols), messages):
+            self.assertTrue(text.startswith(render.TITLE))
+            self.assertIn(f"as_of: {AS_OF}", text)
+            self.assertIn(fmt.DIRECTION_WARNING_TR, text)
             self.assertIn(f"{symbol} H2 (beklenen yön: yukarı (al yönlü)) — değerlendirme: destekliyor", text)
-        self.assertIn(f"Veri notları ({SYM_A}):", text)
-        self.assertIn("• Takas verisi gecikmeli olabilir.", text)
-        self.assertIn("Özet: doğrulanan 2, doğrulamadan geçemeyen 0, alınamayan 0.", text)
-        self.assertIn(render.VERIFIED_FOOTER, text)
-        self.assertIn(f"Kayıt: {(self.out_dir / AS_OF).as_posix()}", text)
-        self.assertIn("Durum: preregistered_hypothesis_holdout_test_pending", text)
-        self.assertLessEqual(len(text), fmt.TELEGRAM_MESSAGE_LIMIT)
+            self.assertIn(f"Sade anlatım: {PLAIN}", text)
+            self.assertIn("• ", text)                        # the reasons as short bullets
+            self.assertIn("Veri notları:\n• Takas verisi gecikmeli olabilir.", text)
+            self.assertIn("Durum: preregistered_hypothesis_holdout_test_pending", text)
+            other = next(s for s in self.symbols if s != symbol)
+            self.assertNotIn(f"{other} H2", text)
+            self.assertLessEqual(len(text), fmt.TELEGRAM_MESSAGE_LIMIT)
+        closing = messages[-1]
+        self.assertTrue(closing.startswith(render.TITLE))
+        self.assertIn("Özet: doğrulanan 2, doğrulamadan geçemeyen 0, alınamayan 0.", closing)
+        self.assertIn(render.VERIFIED_FOOTER, closing)
+        self.assertIn(f"Kayıt: {(self.out_dir / AS_OF).as_posix()}", closing)
+        self.assertNotIn("Sade anlatım", closing)
 
     def test_no_direction_label_flag_removes_the_label_from_the_note_too(self):
         self.run_note("ok")
-        text = self.messages("--llm-note-dir", str(self.out_dir), "--no-direction-label")[-1]
+        text = self.joined("--no-direction-label")
         for phrase in (*fmt.DIRECTION_LABELS_TR.values(), fmt.DIRECTION_WARNING_TR, "yön bilinmiyor"):
             self.assertNotIn(phrase, text)
         self.assertIn(f"{SYM_A} H2 — değerlendirme: destekliyor", text)
 
     def test_note_message_has_no_forbidden_words_outside_the_fixed_label(self):
         self.run_note("ok")
-        text = self.messages("--llm-note-dir", str(self.out_dir))[-1]
+        text = self.joined()
         body = _clean(text)
         for word in _FORBIDDEN:
             self.assertIsNone(re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", body), word)
@@ -1366,14 +1478,14 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         self.run_note("ok")
         import shutil
         shutil.rmtree(self.sym_dir(SYM_B))
-        text = self.messages("--llm-note-dir", str(self.out_dir))[-1]
+        text = self.joined()
         self.assertIn(f"{SYM_A} H2", text)
         self.assertIn(f"{SYM_B}: bu as_of için not yok (adım çalıştırılmadı).", text)
         self.assertIn("Özet: doğrulanan 1, doğrulamadan geçemeyen 0, alınamayan 0, çalıştırılmayan 1.", text)
 
     def test_partial_result_shows_the_good_note_and_each_symbols_own_status_line(self):
         self.run_note("bad_number", only=SYM_B)
-        text = self.note_messages()[-1]
+        text = "\n".join(self.note_messages())
         self.assertTrue(text.startswith(render.TITLE))
         self.assertIn(f"{SYM_A} H2 (beklenen yön: yukarı (al yönlü)) — değerlendirme: destekliyor", text)
         self.assertNotIn(f"{SYM_B} H2 (", text)
@@ -1387,7 +1499,7 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         small = self.tmp / "limit.json"
         small.write_text(json.dumps(document), encoding="utf-8")
         self.run_note("ok", "--config", str(small))
-        text = self.note_messages()[-1]
+        text = "\n".join(self.note_messages())
         first, second = sorted(self.symbols)
         self.assertIn(f"{first} H2", text)
         self.assertIn(f"{second}: analiz notu alınamadı (symbol_limit).", text)
@@ -1405,7 +1517,7 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         note = json.loads(note_path.read_text(encoding="utf-8"))
         note["assessments"][0]["reasons"][0]["text"] = "Toplam 987654321 lot."
         note_path.write_text(json.dumps(note), encoding="utf-8")
-        text = self.messages("--llm-note-dir", str(self.out_dir))[-1]
+        text = self.joined()
         self.assertIn(f"{SYM_A}: analiz notu doğrulamadan geçemedi (record_integrity).", text)
         self.assertNotIn("987654321", text)
         self.assertIn(f"{SYM_B} H2", text)  # the untouched symbol is still shown
@@ -1414,7 +1526,7 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         self.run_note("ok")
         packet_path = self.sym_dir(SYM_A) / "attempt-001" / "packet.json"
         packet_path.write_bytes(packet_path.read_bytes() + b" ")
-        text = self.messages("--llm-note-dir", str(self.out_dir))[-1]
+        text = self.joined()
         self.assertIn(f"{SYM_A}: analiz notu doğrulamadan geçemedi (record_integrity).", text)
 
     def test_long_note_is_split_and_every_chunk_keeps_the_title_and_warning(self):
@@ -1423,7 +1535,7 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         states[0].note = json.loads(json.dumps(states[0].note))
         states[0].note["data_caveats"] = ["Takas verisi gecikmeli olabilir. " * 11] * 8
         chunks = render.render_note_messages(states, self.out_dir, AS_OF, directions={"H2": "positive"}, limit=700)
-        self.assertGreater(len(chunks), 2)
+        self.assertGreater(len(chunks), 3)
         for chunk in chunks:
             self.assertLessEqual(len(chunk), 700)
             self.assertTrue(chunk.startswith(render.TITLE))
@@ -1451,14 +1563,15 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         before = receipt_path.read_bytes()
         code, err, second = self.send("--llm-note-dir", str(self.out_dir))
         self.assertEqual(code, 0, err)
-        self.assertEqual(len(second), 1)
-        self.assertTrue(second[0].startswith(render.TITLE))
+        self.assertEqual(len(second), 3)  # one message per symbol + the closing message
+        self.assertTrue(all(m.startswith(render.TITLE) for m in second))
         self.assertTrue(all(not m.startswith(render.TITLE) for m in first))
         self.assertEqual(receipt_path.read_bytes(), before)  # the notice's receipt is untouched
         note_receipt = json.loads(
             (self.tmp / "receipts" / AS_OF / "note_receipt.json").read_text(encoding="utf-8"))
         self.assertEqual(note_receipt["schema"], "fintr_notify_note_receipt_v1")
-        self.assertEqual(note_receipt["message_sha256"], [hashlib.sha256(second[0].encode("utf-8")).hexdigest()])
+        self.assertEqual(note_receipt["message_sha256"],
+                         [hashlib.sha256(m.encode("utf-8")).hexdigest() for m in second])
         self.assertNotIn("llm_note_messages", json.loads(before))
 
     def test_the_note_receipt_blocks_a_second_send_but_not_the_notice(self):
@@ -1470,7 +1583,7 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         self.assertIn(pipeline.RECEIPT_EXISTS_MARK, err)  # the pipeline recognises it
         # --resend writes a timestamped note receipt; the notice's own guard is independent
         code, _, sent = self.send("--llm-note-dir", str(self.out_dir), "--resend")
-        self.assertEqual((code, len(sent)), (0, 1))
+        self.assertEqual((code, len(sent)), (0, 3))
         names = sorted(p.name for p in (self.tmp / "receipts" / AS_OF).iterdir())
         self.assertTrue(any(n.startswith("note_receipt-") for n in names), names)
         self.assertIn("note_receipt.json", names)

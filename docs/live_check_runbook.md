@@ -664,7 +664,8 @@ $env:PYTHONPATH = "$PWD\src"
   (`%USERPROFILE%\.local\bin\claude.exe`; farklı yol için
   `configs/llm_note/config_v1.json` `cli_path` ya da `scripts\llm_note.py
   --claude-path`). `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` çocuk sürece
-  geçirilmez (abonelik kullanılır). Çağrı: `claude -p --model claude-opus-5-5
+  geçirilmez; `CLAUDE*`/`ANTHROPIC*` önekli bütün ortam değişkenleri de çıkarılır
+  (üst süreç Claude Code içinde çalışıyor olabilir; abonelik girişi kullanılır). Çağrı: `claude -p --model claude-opus-5-5
   --effort high --tools "" --strict-mcp-config --disable-slash-commands
   --setting-sources local --exclude-dynamic-system-prompt-sections
   --output-format json --json-schema <şema> --no-session-persistence

@@ -49,6 +49,9 @@ def valid_note() -> dict:
         assessments.append({
             "symbol": item["symbol"], "rule_id": item["rule_id"], "as_of": item["as_of"],
             "assessment": "destekliyor",
+            "plain_explanation": (
+                "Bu kural, günün son fiyatının hacim ağırlıklı ortalama fiyatın altında kalmasını arar. "
+                "Veri bu koşulun sağlandığını gösteriyor. Hipotez, bu tür baskının kısmen geri döneceğini varsayar."),
             "reasons": [{
                 "text": f"{day} tarihinde {code} kodunun net_size değeri {net}; hipotezle tutarlı.",
                 "evidence_paths": [f"/symbols/{item['symbol']}/days/{day}/akd/{code}"],
@@ -106,6 +109,10 @@ elif mode == "forbidden_buy":
     note["assessments"][0]["reasons"][0]["text"] = "Bu hissede al yönlü bir görünüm var."
 elif mode == "bad_number":
     note["assessments"][0]["reasons"][0]["text"] += " Toplam 987654321 lot."
+elif mode == "bad_plain":
+    note["assessments"][0]["plain_explanation"] += " Toplam 987654321 lot."
+elif mode == "raw_decimals":
+    note["assessments"][0]["reasons"][0]["text"] += " Oran 0,123456789."
 elif mode == "bad_path":
     note["assessments"][0]["reasons"][0]["evidence_paths"] = ["/symbols/NOPE/days"]
 elif mode == "missing":

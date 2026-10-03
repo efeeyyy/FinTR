@@ -27,6 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -217,7 +218,37 @@ def _rule_entries(rule_ids: set[str], rules: tuple[ScannerRule, ...], rule_texts
             # date after ``as_of`` is in the packet
             "spec_description": ISO_DATE.sub("[tarih]", rule.spec.description),
         }
+        entries[rule_id].update(_prereg_text(project_root, rule_id))
     return entries
+
+
+_SECTION = re.compile(r"^## (.+?)\s*$", re.MULTILINE)
+PREREG_SECTIONS = {"Hipotez": "hypothesis_text", "Gerekçe": "rationale_text"}
+
+
+def _prereg_text(project_root: Path, rule_id: str) -> dict:
+    """The "Hipotez" and "Gerekçe" sections of ``docs/prereg/<rule_id>.md``
+    (the frozen hypothesis and its stated rationale), so the model can explain
+    what the rule expects and why in the document's own words. Missing file
+    or section: ``None`` (never an invented text). ISO dates are masked like
+    in the spec description; the file's sha256 is carried for the lineage."""
+    path = Path(project_root) / "docs" / "prereg" / f"{rule_id}.md"
+    out: dict = {key: None for key in PREREG_SECTIONS.values()}
+    try:
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        out["prereg_doc_sha256"] = None
+        return out
+    out["prereg_doc_sha256"] = hashlib.sha256(raw).hexdigest()
+    headings = list(_SECTION.finditer(text))
+    for index, heading in enumerate(headings):
+        key = PREREG_SECTIONS.get(heading.group(1).strip())
+        if key is None:
+            continue
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        out[key] = ISO_DATE.sub("[tarih]", text[heading.end():end].strip())
+    return out
 
 
 def build_symbol_packets(

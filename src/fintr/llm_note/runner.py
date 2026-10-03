@@ -86,8 +86,20 @@ def resolve_cli(cli_config: dict, override: str | None) -> str:
     return os.path.expandvars(os.path.expanduser(template))
 
 
+STRIP_PREFIXES = ("CLAUDE", "ANTHROPIC")
+
+
 def child_env(strip: list[str]) -> dict[str, str]:
-    return {key: value for key, value in os.environ.items() if key not in set(strip)}
+    """The parent's environment without the configured variables and without
+    any ``CLAUDE*``/``ANTHROPIC*`` variable: the parent may itself run inside
+    Claude Code (session/config/auth variables), and the child must use only
+    the subscription login with no inherited context. (A relocated config
+    directory via ``CLAUDE_CONFIG_DIR`` is therefore not honoured.)"""
+    drop = set(strip)
+    return {
+        key: value for key, value in os.environ.items()
+        if key not in drop and not key.upper().startswith(STRIP_PREFIXES)
+    }
 
 
 @dataclass(slots=True)

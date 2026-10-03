@@ -10,12 +10,13 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["symbol", "rule_id", "as_of", "assessment", "reasons"],
+        "required": ["symbol", "rule_id", "as_of", "assessment", "plain_explanation", "reasons"],
         "properties": {
           "symbol": {"type": "string"},
           "rule_id": {"type": "string"},
           "as_of": {"type": "string"},
           "assessment": {"type": "string", "enum": ["destekliyor", "zayıflatıyor", "belirsiz"]},
+          "plain_explanation": {"type": "string"},
           "reasons": {
             "type": "array",
             "items": {

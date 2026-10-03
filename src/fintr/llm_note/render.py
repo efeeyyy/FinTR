@@ -116,12 +116,13 @@ def _blocks(state: SymbolState, directions: dict | None) -> list[str]:
         lines = [
             f"{item['symbol']} {item['rule_id']}"
             f"{_direction_text(state.packet, item['rule_id'], directions)}"
-            f" — değerlendirme: {item['assessment']}"
+            f" — değerlendirme: {item['assessment']}",
+            f"Sade anlatım: {item['plain_explanation']}",
         ]
         lines += [f"• {reason['text']}" for reason in item["reasons"]]
         blocks.append("\n".join(lines))
     if state.note["data_caveats"]:
-        blocks.append("\n".join([f"Veri notları ({state.symbol}):"] + [f"• {c}" for c in state.note["data_caveats"]]))
+        blocks.append("\n".join(["Veri notları:"] + [f"• {c}" for c in state.note["data_caveats"]]))
     return blocks
 
 
@@ -146,22 +147,26 @@ def render_note_messages(
     states: list[SymbolState], root: Path, as_of: str, *, directions: dict | None,
     limit: int = fmt.TELEGRAM_MESSAGE_LIMIT,
 ) -> list[str]:
-    """The verified notes (title, warning, per-symbol assessments), the
-    per-symbol status lines of the symbols without a note, the counts line
-    and the fixed footer."""
+    """One message per symbol with a verified note (title, warning, symbol +
+    rule, assessment, plain explanation, reasons, caveats), then one closing
+    message: the status lines of the symbols without a note, the counts line
+    and the fixed footer. Every message (and every chunk of a long one) keeps
+    the title and the direction warning."""
     header = [TITLE, f"as_of: {as_of}"]
     if directions is not None:
         header.append(fmt.DIRECTION_WARNING_TR)
-    blocks: list[str] = []
+    messages: list[str] = []
     for state in states:
         if state.kind == "ok":
-            blocks.extend(_blocks(state, directions))
+            messages.extend(_chunk(header, _blocks(state, directions) + [f"Durum: {VALIDATION_STATUS}"], limit))
+    closing: list[str] = []
     lacking = [s.status_line for s in states if s.kind != "ok"]
     if lacking:
-        blocks.append("\n".join(lacking))
-    blocks.append(f"Özet: {summary_line(states)}.")
+        closing.append("\n".join(lacking))
+    closing.append(f"Özet: {summary_line(states)}.")
     footer = [VERIFIED_FOOTER, f"Kayıt: {(Path(root) / as_of).as_posix()}", f"Durum: {VALIDATION_STATUS}"]
-    return _chunk(header, blocks + ["\n".join(footer)], limit)
+    messages.extend(_chunk(header, closing + ["\n".join(footer)], limit))
+    return messages
 
 
 def render_status_messages(states: list[SymbolState], *, limit: int = fmt.TELEGRAM_MESSAGE_LIMIT) -> list[str]:

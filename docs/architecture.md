@@ -853,7 +853,14 @@ denetimi gerekçe bazlıdır: gerekçedeki her rakam/tarih, o gerekçenin kendi
 `evidence_paths` altındaki değerlerden biri olmalıdır; işaret eşleşir; `%` için `p%`
 paketteki `p` ile aynen veya `p/100` yalnız `|v| <= 1` değerlerle eşleşir; yuvarlama
 toleransı yok (alternatif: yalnız büyüklük eşleşmesi + bütün paket -- işaret çevirme
-ve tesadüfi eşleşme riski nedeniyle reddedildi). Kalan sınırlar: küçük tam sayılar
+ve tesadüfi eşleşme riski nedeniyle reddedildi). Her gözlem için zorunlu `plain_explanation` (finans bilgisi olmayana 2-4 kısa cümle;
+koşulun gündelik karşılığı, bugünkü sayıların anlamı, hipotezin varsayımı ve gerekçesi --
+`docs/prereg/H*.md` "Hipotez"/"Gerekçe" bölümleri paylaşılan kural bağlamında pakete
+girer) aynı doğrulayıcıdan geçer; rakamları gerekçelerin yollarından veya kuralın kendi
+girdisinden gelmelidir. Yuvarlama yalnız yazılan hassasiyette kabul edilir (en az bir
+ondalık yazılmış sayı, o hassasiyette yuvarlanan paket değeriyle eşleşir; tam sayı
+aynen; >4 ondalık reddedilir), böylece mesajda ham 30 haneli sayı olmaz. Telegram:
+her notlu hisse kendi mesajı + kapanış mesajı. Kalan sınırlar: küçük tam sayılar
 yol altındaki başka değerle tesadüfen eşleşebilir; "bir"/"yarım" gibi sözcükler ve
 türetilmiş anlatımlar denetlenemez. Reddedilen not gösterilmez. Kayıtlar
 `data/interim/llm_notes/<as_of>/<SYM>/attempt-NNN/` altında no-overwrite saklanır

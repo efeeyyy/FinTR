@@ -13,9 +13,14 @@ rejects the whole note. Categories (stable slugs, shown to Efe as
 ``forbidden_phrase``    wording forbidden by AGENTS.md (``forbidden.py``)
 ``number_word``         a spelled-out number or "yüzde <word>" (cannot be audited)
 ``number_not_in_input`` a number or ISO date in a reason is not under that
-                        reason's own ``evidence_paths`` (sign-aware, see
-                        ``numbers.py``), or one in ``data_caveats`` is absent
-                        from the packet
+                        reason's own ``evidence_paths`` (sign- and
+                        rounding-aware, see ``numbers.py``); one in the
+                        ``plain_explanation`` is under none of the
+                        assessment's cited paths nor the rule's own packet
+                        entry; one in ``data_caveats`` is absent from the
+                        packet
+``number_format``       a quoted number with more than ``numbers.MAX_DECIMALS``
+                        decimals (a raw, unrounded value)
 ``sensitive_content``   ``validate_context_contains_no_secrets`` rejected the note
 """
 
@@ -34,11 +39,12 @@ MAX_REASONS = 6
 MAX_PATHS_PER_REASON = 6
 MAX_CAVEATS = 8
 MAX_TEXT_CHARS = 400
+MAX_PLAIN_CHARS = 800  # "plain_explanation": 2-4 short sentences asked for; length is the enforced bound
 MAX_PATH_CHARS = 300
 MAX_EVIDENCE_LEAVES = 600  # an evidence path may not point at "the whole packet"
 
 _TOP_KEYS = {"assessments", "data_caveats"}
-_ASSESSMENT_KEYS = {"symbol", "rule_id", "as_of", "assessment", "reasons"}
+_ASSESSMENT_KEYS = {"symbol", "rule_id", "as_of", "assessment", "plain_explanation", "reasons"}
 _REASON_KEYS = {"text", "evidence_paths"}
 
 
@@ -111,6 +117,10 @@ def _structure(note: object) -> Validation | None:
                 return _fail("schema", f"{where}.{key}: expected a non-empty string")
         if not isinstance(item["assessment"], str):
             return _fail("schema", f"{where}.assessment: expected a string")
+        plain = item["plain_explanation"]
+        if not isinstance(plain, str) or not plain.strip() or len(plain) > MAX_PLAIN_CHARS:
+            return _fail("schema", f"{where}.plain_explanation: expected a non-empty string "
+                                   f"of at most {MAX_PLAIN_CHARS} characters")
         reasons = item["reasons"]
         if not isinstance(reasons, list) or not 1 <= len(reasons) <= MAX_REASONS:
             return _fail("schema", f"{where}.reasons: expected 1..{MAX_REASONS} items")
@@ -130,6 +140,7 @@ def _structure(note: object) -> Validation | None:
 
 def _free_texts(note: dict) -> list[str]:
     texts = [reason["text"] for item in note["assessments"] for reason in item["reasons"]]
+    texts += [item["plain_explanation"] for item in note["assessments"]]
     return texts + list(note["data_caveats"])
 
 
@@ -214,11 +225,15 @@ def validate_note(note: object, packet: dict) -> Validation:
             if date_text not in allowed_dates:
                 return _fail("number_not_in_input", f"date {date_text} ({where})")
         for token in numbers.extract_numbers(numbers.mask_names(rest, names)):
+            if numbers.too_many_decimals(token):
+                return _fail("number_format", f"{token.raw}: more than {numbers.MAX_DECIMALS} decimals")
             if not token.candidates or not numbers.number_in_packet(token, allowed_numbers):
                 return _fail("number_not_in_input", f"{token.raw} ({where})")
         return None
 
     for item in note["assessments"]:
+        assessment_values: set = set()
+        assessment_dates: set = set()
         for reason in item["reasons"]:
             values: set = set()
             dates: set = set()
@@ -229,6 +244,16 @@ def validate_note(note: object, packet: dict) -> Validation:
             failure = audit(reason["text"], values, dates, "not under the reason's evidence_paths")
             if failure is not None:
                 return failure
+            assessment_values |= values
+            assessment_dates |= dates
+        # The plain explanation may use what the assessment's reasons cite plus
+        # the rule's own entry (condition, thresholds, hypothesis text).
+        rule_values, rule_dates = under_path(f"/rules/{item['rule_id']}")
+        failure = audit(item["plain_explanation"], assessment_values | rule_values,
+                        assessment_dates | rule_dates,
+                        "plain_explanation: not under the reasons' evidence_paths or the rule entry")
+        if failure is not None:
+            return failure
     all_numbers, all_dates = numbers.packet_number_set(packet, mask=names)
     for caveat in note["data_caveats"]:
         failure = audit(caveat, all_numbers, all_dates, "data_caveats: not in the packet")

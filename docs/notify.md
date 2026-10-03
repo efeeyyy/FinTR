@@ -92,11 +92,18 @@ as_of: 2026-09-30
 Uyarı: yön etiketi doğrulanmamış ön kayıtlı hipotezdir (holdout testi 2027 Nisan); yatırım tavsiyesi değildir.
 
 AKFIS H2 (beklenen yön: yukarı (al yönlü)) — değerlendirme: destekliyor
+Sade anlatım: <2-4 kısa cümle: koşul gündelik dille ne demek, bugünkü sayılar ne söylüyor, hipotez ne varsayıyor ve neden>
 • <doğrulanmış gerekçe metni>
-...
-Veri notları (AKFIS):
+Veri notları:
 • <veri sınırlamaları>
+Durum: preregistered_hypothesis_holdout_test_pending
+```
 
+Her notlu hisse kendi mesajıdır (yukarıdaki biçim); en sonda kapanış mesajı gelir:
+
+```
+Opus 5.5 analiz notu — doğrulanmamış hipotez değerlendirmesi, yatırım tavsiyesi değildir
+as_of: 2026-09-30
 GARAN: analiz notu doğrulamadan geçemedi (number_not_in_input).
 THYAO: analiz notu alınamadı (usage_limit).
 Özet: doğrulanan 1, doğrulamadan geçemeyen 1, alınamayan 1.
@@ -114,7 +121,10 @@ Durum: preregistered_hypothesis_holdout_test_pending
   bırakılan hisse yoktur. Özet satırı sayıları verir (doğrulanan / doğrulamadan geçemeyen
   / alınamayan).
 - **Ne içerir:** her `condition_met` gözlem için dondurulmuş kuralın yönünü veri
-  `destekliyor` / `zayıflatıyor` / `belirsiz` ve kısa, kanıt yollu gerekçeler.
+  `destekliyor` / `zayıflatıyor` / `belirsiz`, finans bilgisi olmayan biri için sade
+  Türkçe anlatım (`plain_explanation`: koşul gündelik dille ne demek, bugünkü sayılar
+  ne söylüyor, hipotez ne varsayıyor ve neden; hipotez/gerekçe metni `docs/prereg/H*.md`
+  "Hipotez" ve "Gerekçe" bölümlerinden pakete konur) ve kısa, kanıt yollu gerekçeler.
   Değerlendirme dışında yeni finansal ifade eklemez; al/sat emri, hedef, stop,
   pozisyon, getiri tahmini veya puan üretmez. Yön etiketi, deterministik
   mesajdaki aynı iki sabit ifadedir ve `--no-direction-label` ile notta da
@@ -126,8 +136,15 @@ Durum: preregistered_hypothesis_holdout_test_pending
   değeri kapsıyorsa ret); işaret eşleşir (negatif değer yalnız `-x`/`−x` ile; "net
   satış 5" yazıp paketteki `-5`'i kastetmek reddedilir — katı kural, anlam
   okunmaz); `%` için `p%` paketteki `p` ile aynen, `p/100` yalnız `|değer| <= 1` olan
-  paket değerleriyle eşleşir; yuvarlama toleransı yoktur. `data_caveats` yol
-  göstermez: oradaki rakamlar paketteki herhangi bir değer olmalıdır. **Bilinen
+  paket değerleriyle eşleşir. Yuvarlama yalnız yazılan hassasiyette kabul edilir:
+  en az bir ondalık yazılmış sayı (`10,46`, `%5,12`), o hassasiyette yuvarlanınca eşit
+  olan bir paket değeriyle eşleşir (işaret dahil); tam sayılar aynen eşleşir (`5`,
+  `4.6` ile eşleşmez); 4'ten fazla ondalıklı ham değer (`number_format`) reddedilir —
+  mesajda 30 haneli ham sayı çıkmaz. `plain_explanation` aynı kurallara tabidir
+  (yasak sözcük, yazıyla sayı, rakam); rakamları o gözlemin gerekçelerinin yollarından
+  veya kuralın kendi paket girdisinden (`/rules/<kural>`: koşul eşiği, hipotez
+  metni) gelmelidir. `data_caveats` yol göstermez: oradaki rakamlar paketteki
+  herhangi bir değer olmalıdır. **Bilinen
   sınır:** küçük tam sayılar paketteki başka bir değerle tesadüfen eşleşebilir;
   "bir", "yarım/çeyrek" benzeri sözcükler ve türetilmiş anlatımlar (ör. "artış")
   kodla denetlenemez. Gösterim sırasında kayıt bütünlüğü yeniden denetlenir (paket
