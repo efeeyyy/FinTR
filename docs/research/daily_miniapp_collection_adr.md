@@ -363,3 +363,9 @@ Canlı (Efe, kabul sonrası):
 | K6 | İlk canlı günlük çalıştırmada (2026-10-01) 20 sembolün tamamı `failed:unknown_event_type` oldu; dört beklenen yanıt gelmişti. Tek sembollü probda yalnız `welcome` (ilk frame, bir kez), `hb` ve `request_queued` (her istekten sonra bir kez) bilinmeyen tip olarak görüldü. Bu üç tip günlük çalıştırmada tolere edilsin mi? | Evet, yalnız bu üç ad; başka her bilinmeyen tip fail-closed kalsın | **2026-10-01, Efe: "evet olsun".** Yalnız `hb`, `request_queued`, `welcome` tolere edilir (config `tolerated_control_event_types`; CLI ile genişletilemez). Üç adın anlamı (karşılama / heartbeat / istek kuyruğa alındı) ad ve sıradan çıkarımdır, sağlayıcı dokümanıyla doğrulanmadı; payload'ları hiçbir parser tarafından kullanılmaz. Tolere/engelleyen adlar çalıştırma kaydına yazılır (§6, "Şemalar"). |
 
 K4'ün ek süreç kuralı §7'ye de işlendi (aşağıda).
+
+## Ek: saklama kararı (Efe, 2026-10-03)
+
+Günlük ham pencereler, çalıştırma kayıtları, gözlemler, analiz notu paketleri ve bildirim
+receipt'leri silinmez ve sıkıştırılmaz (ölçüm ~5 MB/gün, ~1,2 GB/yıl; kaynak/soy
+izlenebilirliği tam kalır). Kural holdout testinden sonra (Nisan 2027) yeniden değerlendirilir.

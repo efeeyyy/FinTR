@@ -104,7 +104,9 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    yukarı (al yönlü)/aşağı (sat yönlü)", doğrulanmamış hipotez uyarısı, `--no-direction-label`;
    AGENTS.md istisnası, DECISIONS.md 2026-10-02) birleşti; 895 test. Sırada: Efe her işlem günü
    gece yarısından sonra/sabah tek komutu çalıştırır; gözlem içerikleri finans sohbetinde. `tzdata` venv'de yok (UTC+3 yedeği
-   çalışıyor). Açık kararlar: günlük dosya saklama/temizlik politikası, Aşama B (ayrı ADR).
+   çalışıyor). Saklama kararı (Efe, 2026-10-03): günlük dosyalar (daily_capture, _runs, scanner_daily,
+   llm_notes, notify) hiç silinmez; ölçüm ~5 MB/gün (~1,2 GB/yıl), holdout testinden sonra
+   (Nisan 2027) yeniden bakılır. Açık karar: Aşama B (ayrı ADR).
    2027-03-31'e kadar H1–H4 için ara performans değerlendirmesi yok (K4).
 8. Günlük analiz notu (Efe kararı 2026-10-02): `scripts/llm_note.py` + `src/fintr/llm_note/`,
    `run_daily_pipeline.py --llm-note` (varsayılan kapalı; sıra collect → scan → deterministik
