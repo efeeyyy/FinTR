@@ -12,17 +12,17 @@ Percent conversion (all four rules read ``vwap_proxy_vs_close``,
 ``docs/features.md``/``src/fintr/features/period.py``)::
 
     v       = (vwap_proxy[t] - close[t]) / close[t]        # the saved raw value
-    pct     = -v / (1 + v) * 100  = (close - vwap_proxy) / vwap_proxy * 100
+    pct     = |v| * 100                                    # shown unsigned
 
-``pct`` is how far the close is from the day's average traded price
-(``vwap_proxy``, an AKD-derived proxy), as a percent *of that average
-price*. ``pct > 0``: the close is above it; ``pct < 0``: below it. The
-wording ("üstünde"/"altında") follows the sign of ``v`` itself, never the
-rule id. A frozen threshold ``v >= 0.01`` is therefore ``0.99%`` below the
-average price and ``v <= -0.01`` is ``1.01%`` above it, which is why rule
-lines say "~%1". ``top1_akd_net_share_of_volume`` is already a 0..1 share
-and is shown as ``value * 100``. Both are rounded half-up to two decimals
-with a Turkish decimal comma.
+This is the frozen feature itself (``docs/prereg/H1.md``), not a re-based
+ratio: the subject of the sentence is the VWAP proxy, measured as a percent
+*of the close*. ``v > 0``: the VWAP proxy is above the close ("üstünde");
+``v < 0``: below it ("altında"). The wording follows the sign of ``v``
+itself, never the rule id. The frozen thresholds therefore read exactly as
+the spec: at least ``%1`` (``|v| = 0.01``) and, as the data-quality band,
+at most ``%10`` (``|v| = 0.10``). ``top1_akd_net_share_of_volume`` is
+already a 0..1 share and is shown as ``value * 100``. Both are rounded
+half-up to two decimals with a Turkish decimal comma.
 
 Direction wording follows ``fintr.notify.format``: only the frozen spec's
 ``predicted_direction`` (``directions``) may produce one of the two fixed
@@ -44,10 +44,10 @@ from fintr.scanner.observe import NOTICE_TEXT_TR, VALIDATION_STATUS
 
 
 # The only buy/sell wording this layout may emit (Efe, 2026-10-02): the two
-# direction labels, capitalised direction word as in the approved layout.
+# direction labels, worded exactly as in AGENTS.md (lower case).
 DIRECTION_LABELS_V2_TR = {
-    "positive": "beklenen yön: YUKARI (al yönlü)",
-    "negative": "beklenen yön: AŞAĞI (sat yönlü)",
+    "positive": "beklenen yön: yukarı (al yönlü)",
+    "negative": "beklenen yön: aşağı (sat yönlü)",
 }
 DIRECTION_ARROWS = {"positive": "▲", "negative": "▼"}
 DIRECTION_UNKNOWN_MARK = "•"
@@ -85,15 +85,13 @@ def _decimal(value: object) -> Decimal | None:
     return parsed if parsed.is_finite() else None
 
 
-def close_vs_vwap_percent(vwap_proxy_vs_close: Decimal) -> Decimal | None:
-    """Signed percent of the close relative to ``vwap_proxy``: ``-v/(1+v)*100``
-    for ``v = (vwap_proxy - close) / close``. Positive = close above the
-    average price. None when ``1 + v <= 0`` (cannot come from a positive
-    close and a positive average price)."""
-    denominator = 1 + vwap_proxy_vs_close
-    if denominator <= 0:
+def vwap_vs_close_percent(vwap_proxy_vs_close: Decimal) -> Decimal | None:
+    """The frozen feature as a signed percent: ``v * 100`` for
+    ``v = (vwap_proxy - close) / close``. Positive = VWAP proxy above the
+    close. None when ``v <= -1`` (a non-positive VWAP proxy cannot be real)."""
+    if vwap_proxy_vs_close <= -1:
         return None
-    return -vwap_proxy_vs_close / denominator * _HUNDRED
+    return vwap_proxy_vs_close * _HUNDRED
 
 
 def share_percent(share: Decimal) -> Decimal | None:
@@ -127,13 +125,13 @@ def _date_text_tr(iso: str) -> str:
 
 def _vwap_fragment(feature: dict) -> str:
     value = _decimal(feature.get("value"))
-    pct = close_vs_vwap_percent(value) if value is not None else None
+    pct = vwap_vs_close_percent(value) if value is not None else None
     if pct is None:
-        return "kapanış–ortalama fiyat farkı okunamadı"
+        return "Ortalama fiyat (VWAP proxy)–kapanış farkı okunamadı"
     if pct == 0:
-        return "kapanış ortalama fiyata eşit"
+        return "Ortalama fiyat (VWAP proxy) kapanışa eşit"
     where = "üstünde" if pct > 0 else "altında"
-    return f"kapanış ortalama fiyatın {format_percent_tr(pct)} {where}"
+    return f"Ortalama fiyat (VWAP proxy) kapanışın {format_percent_tr(pct)} {where}"
 
 
 def _share_fragment(feature: dict) -> str:

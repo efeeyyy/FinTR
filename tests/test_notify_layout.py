@@ -28,8 +28,8 @@ from fintr.notify.explanations import (
 )
 from fintr.notify.guard import find_forbidden_words
 from fintr.notify.layout import (
-    DIRECTION_LABELS_V2_TR, STOCK_WARNING_TR, SUMMARY_WARNING_TR, close_vs_vwap_percent,
-    format_percent_tr, render_layout_v2, share_percent,
+    DIRECTION_LABELS_V2_TR, STOCK_WARNING_TR, SUMMARY_WARNING_TR, format_percent_tr,
+    render_layout_v2, share_percent, vwap_vs_close_percent,
 )
 from fintr.notify.telegram import SendResult, TelegramSendError
 from fintr.scanner.observe import NOTICE_TEXT_TR
@@ -97,25 +97,28 @@ def _five_stock_doc() -> dict:
 
 
 class PercentConversionTests(unittest.TestCase):
-    def test_close_vs_vwap_percent_formula_and_sign(self):
-        # v = (vwap - close) / close.  close=100, vwap=101.5: v=0.015, close is
-        # (100-101.5)/101.5 = -1.4778...% of vwap, i.e. 1.48% BELOW it.
-        pct = close_vs_vwap_percent(Decimal("0.015"))
-        self.assertEqual(format_percent_tr(pct), "%1,48")
-        self.assertLess(pct, 0)
-        # close=101, vwap=100: v=-1/101, close is 1.0% above vwap.
-        pct = close_vs_vwap_percent(Decimal(-1) / Decimal(101))
-        self.assertEqual(format_percent_tr(pct), "%1,00")
-        self.assertGreater(pct, 0)
+    def test_percent_is_the_frozen_feature_times_100(self):
+        # v = (vwap - close) / close shown as-is: close=100, vwap=101.5 -> v=0.015 -> 1.5%.
+        pct = vwap_vs_close_percent(Decimal("0.015"))
+        self.assertEqual(pct, Decimal("1.5"))
+        self.assertEqual(format_percent_tr(pct), "%1,50")
+        pct = vwap_vs_close_percent(Decimal("-0.02"))
+        self.assertEqual(pct, Decimal("-2"))
+        self.assertEqual(format_percent_tr(pct), "%2,00")
+        # the example of Efe's decision: 0.01534 -> %1,53 (no re-basing by 1+v)
+        self.assertEqual(format_percent_tr(vwap_vs_close_percent(Decimal("0.01534"))), "%1,53")
+        self.assertEqual(format_percent_tr(vwap_vs_close_percent(Decimal("-0.01534"))), "%1,53")
 
-    def test_frozen_thresholds_map_to_099_below_and_101_above(self):
-        self.assertEqual(format_percent_tr(close_vs_vwap_percent(Decimal("0.01"))), "%0,99")
-        self.assertEqual(format_percent_tr(close_vs_vwap_percent(Decimal("-0.01"))), "%1,01")
+    def test_frozen_thresholds_are_exactly_one_percent_on_both_sides(self):
+        self.assertEqual(format_percent_tr(vwap_vs_close_percent(Decimal("0.01"))), "%1,00")
+        self.assertEqual(format_percent_tr(vwap_vs_close_percent(Decimal("-0.01"))), "%1,00")
+        self.assertEqual(format_percent_tr(vwap_vs_close_percent(Decimal("0.10"))), "%10,00")
+        self.assertEqual(format_percent_tr(vwap_vs_close_percent(Decimal("-0.10"))), "%10,00")
 
     def test_zero_and_impossible_values(self):
-        self.assertEqual(close_vs_vwap_percent(Decimal(0)), 0)
-        self.assertIsNone(close_vs_vwap_percent(Decimal(-1)))
-        self.assertIsNone(close_vs_vwap_percent(Decimal(-2)))
+        self.assertEqual(vwap_vs_close_percent(Decimal(0)), 0)
+        self.assertIsNone(vwap_vs_close_percent(Decimal(-1)))
+        self.assertIsNone(vwap_vs_close_percent(Decimal(-2)))
 
     def test_format_percent_is_half_up_two_decimals_turkish_comma_unsigned(self):
         self.assertEqual(format_percent_tr(Decimal("1.005")), "%1,01")
@@ -131,44 +134,65 @@ class PercentConversionTests(unittest.TestCase):
 
 
 class SignAndDirectionPerRuleTests(unittest.TestCase):
-    """H1/H3: close ABOVE the average price (v < 0), frozen direction negative
-    (▼ aşağı). H2/H4: close BELOW it (v > 0), frozen direction positive (▲ yukarı)."""
+    """The subject is the VWAP proxy. H1/H3: v < 0, VWAP below the close
+    ("altında"), frozen direction negative (▼ aşağı). H2/H4: v > 0, VWAP above
+    the close ("üstünde"), frozen direction positive (▲ yukarı)."""
 
     def _stock_message(self, rule_id, value, share=None):
         document = _doc({"KCHOL1": _block([_hit(rule_id, value, share)])})
         return _render(document)[1]
 
-    def test_h1_close_above_average_price_down_label(self):
+    def test_h1_vwap_below_close_down_label(self):
         message = self._stock_message("H1", "-0.0153407002341234")
-        self.assertIn("▼ KCHOL1 — beklenen yön: AŞAĞI (sat yönlü)", message)
-        self.assertIn("Bugün: kapanış ortalama fiyatın %1,56 üstünde", message)
+        self.assertIn("▼ KCHOL1 — beklenen yön: aşağı (sat yönlü)", message)
+        self.assertIn("Bugün: Ortalama fiyat (VWAP proxy) kapanışın %1,53 altında", message)
 
-    def test_h2_close_below_average_price_up_label(self):
+    def test_h2_vwap_above_close_up_label(self):
         message = self._stock_message("H2", "0.0153407002341234")
-        self.assertIn("▲ KCHOL1 — beklenen yön: YUKARI (al yönlü)", message)
-        self.assertIn("Bugün: kapanış ortalama fiyatın %1,51 altında", message)
+        self.assertIn("▲ KCHOL1 — beklenen yön: yukarı (al yönlü)", message)
+        self.assertIn("Bugün: Ortalama fiyat (VWAP proxy) kapanışın %1,53 üstünde", message)
 
-    def test_h3_above_with_share(self):
+    def test_h3_below_with_share(self):
         message = self._stock_message("H3", "-0.0153407002341234", share="0.123456789")
-        self.assertIn("▼ KCHOL1 — beklenen yön: AŞAĞI (sat yönlü)", message)
-        self.assertIn("kapanış ortalama fiyatın %1,56 üstünde · tek kurum net payı %12,35", message)
+        self.assertIn("▼ KCHOL1 — beklenen yön: aşağı (sat yönlü)", message)
+        self.assertIn("Ortalama fiyat (VWAP proxy) kapanışın %1,53 altında · tek kurum net payı %12,35", message)
 
-    def test_h4_below_with_share(self):
+    def test_h4_above_with_share(self):
         message = self._stock_message("H4", "0.0153407002341234", share="0.1")
-        self.assertIn("▲ KCHOL1 — beklenen yön: YUKARI (al yönlü)", message)
-        self.assertIn("kapanış ortalama fiyatın %1,51 altında · tek kurum net payı %10,00", message)
+        self.assertIn("▲ KCHOL1 — beklenen yön: yukarı (al yönlü)", message)
+        self.assertIn("Ortalama fiyat (VWAP proxy) kapanışın %1,53 üstünde · tek kurum net payı %10,00", message)
+
+    def test_example_0_01534_is_1_53_in_both_signs(self):
+        self.assertIn("kapanışın %1,53 üstünde", self._stock_message("H2", "0.01534"))
+        self.assertIn("kapanışın %1,53 altında", self._stock_message("H1", "-0.01534"))
+
+    def test_threshold_values_show_exactly_1_00_percent(self):
+        self.assertIn("Ortalama fiyat (VWAP proxy) kapanışın %1,00 üstünde", self._stock_message("H2", "0.01"))
+        self.assertIn("Ortalama fiyat (VWAP proxy) kapanışın %1,00 altında", self._stock_message("H1", "-0.01"))
+        self.assertIn("kapanışın %1,00 üstünde", self._stock_message("H4", "0.01", share="0.1"))
+        self.assertIn("kapanışın %1,00 altında", self._stock_message("H3", "-0.01", share="0.1"))
+
+    def test_direction_label_is_the_exact_lowercase_agents_md_text(self):
+        self.assertEqual(DIRECTION_LABELS_V2_TR, {
+            "positive": "beklenen yön: yukarı (al yönlü)",
+            "negative": "beklenen yön: aşağı (sat yönlü)",
+        })
+        text = "\n".join(_render(_five_stock_doc()))
+        self.assertNotIn("YUKARI", text)
+        self.assertNotIn("AŞAĞI", text)
+        self.assertNotIn("kapanış ortalama fiyatın", text)
 
     def test_wording_follows_the_value_sign_not_the_rule_id(self):
         # Never produced by the scanner (the frozen condition would be false),
         # but the percent wording must come from the value itself.
         message = self._stock_message("H2", "-0.02")
-        self.assertIn("%2,04 üstünde", message)
+        self.assertIn("kapanışın %2,00 altında", message)
 
     def test_unreadable_values_are_marked_not_guessed(self):
         for bad in (None, "", "abc", "NaN", "Infinity", "-1", "-5"):
             with self.subTest(bad=bad):
                 message = self._stock_message("H2", bad)
-                self.assertIn("kapanış–ortalama fiyat farkı okunamadı", message)
+                self.assertIn("Ortalama fiyat (VWAP proxy)–kapanış farkı okunamadı", message)
                 self.assertNotIn("%", message.split("Bugün:")[1].split("\n")[0])
 
     def test_raw_values_never_in_any_message(self):
@@ -200,10 +224,10 @@ class SummaryAndStockMessageTests(unittest.TestCase):
             "⚠ Yön etiketi doğrulanmamış hipotezdir (test: Nisan 2027); yatırım tavsiyesi değildir.",
         )
         first = messages[1].split("\n")
-        self.assertEqual(first[0], "▲ AKBNK1 — beklenen yön: YUKARI (al yönlü)")
+        self.assertEqual(first[0], "▲ AKBNK1 — beklenen yön: yukarı (al yönlü)")
         self.assertEqual(first[1], STOCK_WARNING_TR)
         self.assertEqual(first[2], "Kural H2: " + EXPLANATIONS.rule_lines["H2"])
-        self.assertEqual(first[3], "Bugün: kapanış ortalama fiyatın %1,51 altında")
+        self.assertEqual(first[3], "Bugün: Ortalama fiyat (VWAP proxy) kapanışın %1,53 üstünde")
         self.assertEqual(first[4], "Ne demek: " + EXPLANATIONS.meanings["H2"])
         self.assertEqual(first[5], "Vade: 5 işlem günü · kural sürümü 42fca88a")
         self.assertEqual(len(first), 6)
@@ -261,10 +285,10 @@ class SummaryAndStockMessageTests(unittest.TestCase):
         messages = _render(document)
         self.assertEqual(len(messages), 2)
         lines = messages[1].split("\n")
-        self.assertEqual(lines[0], "▲ KCHOL1 — beklenen yön: YUKARI (al yönlü)")
+        self.assertEqual(lines[0], "▲ KCHOL1 — beklenen yön: yukarı (al yönlü)")
         self.assertEqual([line.split(":")[0] for line in lines[1:]],
                          [STOCK_WARNING_TR, "Kural H2", "Kural H4", "Bugün", "Ne demek (H2)", "Ne demek (H4)", "Vade"])
-        self.assertEqual(lines[4], "Bugün: kapanış ortalama fiyatın %1,96 altında · tek kurum net payı %20,00 (günlük toplama oranı)")
+        self.assertEqual(lines[4], "Bugün: Ortalama fiyat (VWAP proxy) kapanışın %2,00 üstünde · tek kurum net payı %20,00 (günlük toplama oranı)")
         self.assertIn("Koşulu sağlanan: 1 hisse — 1 yukarı", messages[0])
 
     def test_rule_without_explanation_skips_the_line_not_invents_it(self):
@@ -304,7 +328,7 @@ class SummaryAndStockMessageTests(unittest.TestCase):
         self.assertEqual(messages[0].split("\n")[1], "Koşulu sağlanan: 5 hisse")
         self.assertIn(NOTICE_TEXT_TR, messages[0])
         self.assertTrue(messages[1].startswith("AKBNK1 — koşul sağlandı\nKural H2: "))
-        self.assertIn("Bugün: kapanış ortalama fiyatın %1,51 altında", messages[1])
+        self.assertIn("Bugün: Ortalama fiyat (VWAP proxy) kapanışın %1,53 üstünde", messages[1])
         self.assertTrue(messages[1].endswith("Kural sürümü: 42fca88a"))
 
     def test_conflicting_directions_for_one_stock_are_unknown(self):
@@ -496,20 +520,21 @@ class ExplanationsFileTests(unittest.TestCase):
             with self.subTest(rule=rule_id):
                 lower = max(c for op, c in vwap if op == "ge")
                 upper = min(c for op, c in vwap if op == "le")
-                above = upper < 0  # v <= -0.01 and v >= -0.10: close above the average price
-                self.assertEqual(("üstünde" in line), above)
-                self.assertEqual(("altında" in line), not above)
-                self.assertEqual(abs(upper if above else lower), Decimal("0.01"))
-                self.assertIn("~%1 ", line)
-                self.assertIn("aşırı sapmalar kural dışı", line)  # the other band edge exists in the spec
-                self.assertEqual(abs(lower if above else upper), Decimal("0.10"))
+                below = upper < 0  # v <= -0.01 and v >= -0.10: the VWAP proxy is below the close
+                self.assertEqual(("altında" in line), below)
+                self.assertEqual(("üstünde" in line), not below)
+                self.assertEqual(abs(upper if below else lower), Decimal("0.01"))
+                self.assertEqual(abs(lower if below else upper), Decimal("0.10"))
+                self.assertTrue(line.startswith("ortalama fiyat (VWAP proxy)") or "ve ortalama fiyat (VWAP proxy)" in line)
+                self.assertIn("kapanışın en az %1, en çok %10 ", line)
+                self.assertNotIn("~", line)
                 if share:
                     self.assertEqual(share, [("ge", Decimal("0.10"))])
                     self.assertIn("en az %10'u", line)
                     self.assertIn("net payı", line)
                 else:
-                    self.assertNotIn("%10", line)
-                expected_direction = "negative" if above else "positive"
+                    self.assertNotIn("%10'u", line)
+                expected_direction = "negative" if below else "positive"
                 self.assertEqual(spec["preregistration"]["predicted_direction"], expected_direction)
                 self.assertEqual(spec["preregistration"]["primary_horizon_trading_days"], 5)
 
@@ -681,8 +706,8 @@ class ScriptV2Tests(GuardEnvMixin, unittest.TestCase):
         self.assertEqual(out.count("--- mesaj "), 3)
         self.assertIn("--- mesaj 1/3 (dry-run; ağ kullanılmadı) ---\nFinTR · 02.10.2026 (Cuma kapanışı)\n", out)
         self.assertIn("Koşulu sağlanan: 2 hisse — 1 yukarı, 1 aşağı", out)
-        self.assertIn(f"▲ {DEVELOPMENT[0]} — beklenen yön: YUKARI (al yönlü)", out)
-        self.assertIn(f"▼ {DEVELOPMENT[1]} — beklenen yön: AŞAĞI (sat yönlü)", out)
+        self.assertIn(f"▲ {DEVELOPMENT[0]} — beklenen yön: yukarı (al yönlü)", out)
+        self.assertIn(f"▼ {DEVELOPMENT[1]} — beklenen yön: aşağı (sat yönlü)", out)
         self.assertIn("kural sürümü 99999999", out)
         self.assertIn("Vade: 5 işlem günü", out)  # from the real frozen specs
         self.assertEqual(out.count(SUMMARY_WARNING_TR), 1)
@@ -711,6 +736,19 @@ class ScriptV2Tests(GuardEnvMixin, unittest.TestCase):
             for i, m in enumerate(msgs, start=1)
         )
         self.assertEqual(out, expected)
+
+    def test_layout_v1_output_is_pinned_to_the_pre_change_text(self):
+        # Digests taken from the v1 renderer of the parent commit (before the
+        # percent / label wording change of layout v2); v1 must not move.
+        pinned = {
+            True: "4228844759fd405baea3fb4b160d3d84e41dae7404871ec509147d310edc2d1d",
+            False: "574571dee83a65481eb0badb6748385a1c6c03a21d6cd04fe49aa386032e71c9",
+        }
+        for labelled, digest in pinned.items():
+            with self.subTest(labelled=labelled):
+                messages = fmt.render_notification(
+                    _five_stock_doc(), RULE_TEXTS, DIRECTIONS if labelled else None)
+                self.assertEqual(hashlib.sha256("\n\x00".join(messages).encode()).hexdigest(), digest)
 
     def test_no_direction_label_flag_gives_the_unlabelled_v2_layout(self):
         root = self._prepare()

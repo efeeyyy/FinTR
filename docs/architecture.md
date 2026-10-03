@@ -774,6 +774,19 @@ redaksiyonu değişmez. Bilinen risk: Telegram'a yanıt alınamadan kabul edilmi
 bir mesaj (zaman aşımı) kayıtsız kalır ve devam çalıştırmasında bir kez daha
 gidebilir. Ayrıntılar `docs/notify.md`.
 
+Değişiklik (Efe kararı, 2026-10-03, `notify-layout-v2-pct`): ilk v2 sürümü
+yüzdeyi `-v/(1+v)*100` ile kapanışın VWAP proxy'ye göre konumu olarak
+gösteriyordu; bu, dondurulmuş özellikten (`vwap_proxy_vs_close`,
+`docs/prereg/H1.md`) ayrı bir türev rakamdı ve kural eşiğini "~%1"e
+yuvarlatıyordu. Karar: yüzde doğrudan dondurulmuş özelliktir, `|v|*100`,
+özne VWAP proxy ("Ortalama fiyat (VWAP proxy) kapanışın %1,53 altında/üstünde");
+kural satırları spec'teki eşiği ("en az %1") ve bandı ("en çok %10") aynen
+okur. Alternatif (eski formülü korumak) reddedildi: mesajdaki rakam spec'teki
+eşikle aynı ölçekte olmalı. Yön etiketi AGENTS.md ifadesiyle birebir ve küçük
+harflidir. `--layout v1`, `--no-direction-label`, `--llm-note-dir`, receipt v2,
+`--resend` ve redaksiyon değişmedi. Eski mesajlarla karşılaştırılırken rakamlar
+aynı değildir (ör. `v = 0,015` eskiden "%1,48", şimdi "%1,50").
+
 ### Günlük Mini App toplama ve birleştirme (aşama 2 adım 3)
 
 Problem: Tarayıcı ve bildirim botu her işlem günü güncel AKD, takas ve fiyat

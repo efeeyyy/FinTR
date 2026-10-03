@@ -30,40 +30,42 @@ Veri: 20 hissenin hepsi tam (boşluk 0) · 2 gün kesinleşmemiş
 Koşulu sağlayan her hisse için bir mesaj (örnek, sentetik):
 
 ```
-▲ ABCDE — beklenen yön: YUKARI (al yönlü)
+▲ ABCDE — beklenen yön: yukarı (al yönlü)
 ⚠ Doğrulanmamış hipotez; yatırım tavsiyesi değildir.
-Kural H2: kapanış, günün ortalama işlem fiyatının (AKD VWAP) en az ~%1 altında (veri/ölçek uyumsuzluğu ihtimali nedeniyle aşırı sapmalar kural dışı)
-Bugün: kapanış ortalama fiyatın %1,48 altında
+Kural H2: ortalama fiyat (VWAP proxy) kapanışın en az %1, en çok %10 üstünde (daha büyük sapmalar veri/ölçek uyumsuzluğu ihtimali nedeniyle kural dışı)
+Bugün: Ortalama fiyat (VWAP proxy) kapanışın %1,53 üstünde
 Ne demek: Gün içinde lotlar ortalama olarak kapanıştan daha yüksek fiyattan el değiştirdi; ...
 Vade: 5 işlem günü · kural sürümü 42fca88a
 ```
 
-Aşağı yön için `▼` ve `beklenen yön: AŞAĞI (sat yönlü)`. Hiçbir hissede koşul
+Aşağı yön için `▼` ve `beklenen yön: aşağı (sat yönlü)`. Hiçbir hissede koşul
 yoksa tek mesaj: `FinTR · <tarih> (<gün> kapanışı): bugün hiçbir hissede koşul
 sağlanmadı` + veri satırı (`--skip-empty` önceki gibi hiçbir şey göndermez).
 
 - **Ham değer yok.** `vwap_proxy_vs_close` ve `top1_akd_net_share_of_volume` ham
   hâliyle mesajda görünmez; ham değer gözlem dosyasında (ve receipt'teki
   `observations_sha256` ile) kalır. Mesajdaki yüzdeler *hesaplanmış* değerlerdir.
-- **Yüzde formülü** (kodda `layout.close_vs_vwap_percent`/`share_percent`):
+- **Yüzde formülü** (kodda `layout.vwap_vs_close_percent`/`share_percent`; 2026-10-03
+  Efe kararıyla `-v/(1+v)` yeniden tabanlaması bırakıldı):
 
   ```
-  v   = vwap_proxy_vs_close = (vwap_proxy - close) / close      (docs/features.md; saklanan ham değer)
-  pct = -v / (1 + v) * 100  = (close - vwap_proxy) / vwap_proxy * 100
+  v   = vwap_proxy_vs_close = (vwap_proxy - close) / close      (docs/prereg/H1.md; saklanan ham değer)
+  pct = |v| * 100                                               (işaretsiz gösterilir)
   ```
 
-  `pct`, kapanışın günün ortalama işlem fiyatından (`vwap_proxy`, AKD türevi
-  doğrulanmamış proxy) ne kadar uzak olduğunu, **o ortalama fiyatın yüzdesi**
-  olarak verir. `v < 0` ⇒ kapanış ortalama fiyatın **üstünde** (H1, H3 koşulları:
-  `v ≤ -0,01`); `v > 0` ⇒ **altında** (H2, H4: `v ≥ 0,01`). "üstünde/altında" kelimesi
-  kural kimliğinden değil `v`'nin işaretinden gelir. Örnek (sentetik): `v = 0,015`
-  ⇒ "%1,48 altında"; `v = -0,02` ⇒ "%2,04 üstünde". Dondurulmuş eşik `v = 0,01`
-  ortalama fiyatın %0,99 altına, `v = -0,01` %1,01 üstüne denk gelir; kural
-  satırları bu yüzden "~%1" der. `top1_akd_net_share_of_volume` zaten 0..1 arası
-  paydır, `pay * 100` olarak gösterilir ("tek kurum net payı %12,35 (günlük toplama
-  oranı)"). Yuvarlama: iki ondalık, yarıdan yukarı, Türkçe virgül. Okunamayan
-  değer (yok, sayı değil, `1 + v ≤ 0`, pay 0..1 dışı) tahmin edilmez:
-  "okunamadı" yazılır.
+  Mesajdaki yüzde dondurulmuş özelliğin kendisidir; özne VWAP proxy'dir ve
+  kapanışın yüzdesi olarak ölçülür. `v > 0` ⇒ VWAP proxy kapanışın **üstünde**
+  (H2, H4 koşulları: `v ≥ 0,01`); `v < 0` ⇒ **altında** (H1, H3: `v ≤ -0,01`).
+  "üstünde/altında" kelimesi kural kimliğinden değil `v`'nin işaretinden gelir.
+  Örnek (sentetik): `v = 0,01534` ⇒ "Ortalama fiyat (VWAP proxy) kapanışın %1,53
+  üstünde"; `v = -0,02` ⇒ "… kapanışın %2,00 altında"; eşik `v = ±0,01` ⇒ "%1,00".
+  Kural satırlarındaki "en az %1" ve "en çok %10" dondurulmuş spec'ten gelir
+  (`|v| ≥ 0,01` ve veri kalitesi bandı `|v| ≤ 0,10`, `configs/studies/prereg/h1..h4_*.json`);
+  yeni rakam yoktur. `v ≤ -1` (VWAP proxy ≤ 0, gerçek olamaz) okunamaz sayılır.
+  `top1_akd_net_share_of_volume` zaten 0..1 arası paydır, `pay * 100` olarak
+  gösterilir ("tek kurum net payı %12,35 (günlük toplama oranı)"). Yuvarlama: iki
+  ondalık, yarıdan yukarı, Türkçe virgül. Okunamayan değer (yok, sayı değil,
+  `v ≤ -1`, pay 0..1 dışı) tahmin edilmez: "okunamadı" yazılır.
 - **Veri durumu toplanır.** Sembol başına `composition` sayıları (`boşluk`,
   `kesinleşmemiş gün`, `revize gün`; pencere-sınırlı, bkz. aşağıdaki v1 bölümü)
   aynıysa tek satır ("20 hissenin hepsi tam (boşluk 0) · 2 gün kesinleşmemiş");
