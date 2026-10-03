@@ -29,6 +29,14 @@ SCANNER_DIR = os.path.join("data", "interim", "scanner_daily")
 SAVED_PREFIX = "Observations saved:"
 EXISTS_PREFIX = "Scan failed: output file already exists (no overwrite):"
 RECEIPT_EXISTS_MARK = "receipt zaten var"
+TELEGRAM_ENV = ("FINTR_TELEGRAM_BOT_TOKEN", "FINTR_TELEGRAM_CHAT_ID")
+
+
+def _child_env() -> dict[str, str]:
+    """Children write UTF-8 to the pipes we read; otherwise a Windows child
+    uses the ANSI code page (cp1254) and a Turkish letter in an error line
+    breaks decoding after the child already ran."""
+    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -115,6 +123,16 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     results: list[tuple[str, str]] = []
 
+    if args.send and not args.dry_run:
+        missing = [name for name in TELEGRAM_ENV if not os.environ.get(name)]
+        if missing:
+            # Checked before collect so a missing variable does not cost a
+            # whole collection run; only the names are printed, never values.
+            print(f"Pipeline not started: --send needs {', '.join(missing)} "
+                  "in this shell (see docs/notify.md); nothing collected or sent.",
+                  file=sys.stderr)
+            return 2
+
     if args.skip_collect:
         if args.dry_run:
             print("--skip-collect with --dry-run: nothing to plan.", file=sys.stderr)
@@ -132,7 +150,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     proc = subprocess.run(scan_command(), cwd=ROOT, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, text=True, encoding="utf-8")
+                          stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                          errors="replace", env=_child_env())
     stderr_text = proc.stderr or ""
     if stderr_text:
         sys.stderr.write(stderr_text)
@@ -152,7 +171,8 @@ def main(argv: list[str] | None = None) -> int:
         results.append(("scan", "0"))
 
     proc = subprocess.run(notify_command(as_of, args.send), cwd=ROOT,
-                          stderr=subprocess.PIPE, text=True, encoding="utf-8")
+                          stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                          errors="replace", env=_child_env())
     notify_err = proc.stderr or ""
     if notify_err:
         sys.stderr.write(notify_err)
