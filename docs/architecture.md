@@ -879,8 +879,8 @@ not hatası gönderilmiş bildirimi/çıkış kodunu değiştirmez. Çocuk `clau
 izolasyonu: `--tools ""`, `--strict-mcp-config`, `--disable-slash-commands`,
 `--setting-sources local`, `--no-session-persistence`, her çağrıda yeni boş geçici
 çalışma dizini, API anahtarı değişkenleri çıkarılmış ortam; `--bare` kullanılamaz
-(OAuth girişini okumaz). İzolasyon makinede `--probe-isolation` ile (tek evet/hayır
-sorusu, `llm_notes/_probes/` kaydı) doğrulanır; `isolation_probe` config bayrağı bunu
+(OAuth girişini okumaz). İzolasyon makinede `--probe-isolation` ile (tek kanarya
+sorusu: kanarya sözcükleri config'te, `llm_notes/_probes/` kaydı) doğrulanır; `isolation_probe` config bayrağı bunu
 her çalıştırmada fail-closed ön kontrol yapar.
 
 Sonuç: Bu adım AGENTS.md'de açıkça belirtilmiş bir istisnadır (yalnız kanıt

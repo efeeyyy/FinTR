@@ -295,8 +295,8 @@ class _Run:
 
 
 def run_probe(args, config, cli: str, env: dict, version: str) -> str:
-    """The isolation probe: one fixed yes/no question, no data. Returns
-    ``clean`` (hayır), ``not_isolated`` (evet), ``unclear`` or
+    """The isolation probe: one fixed canary question, no data. Returns
+    ``clean`` (YOK), ``not_isolated`` (a config canary named), ``unclear`` or
     ``unavailable:<category>``; the answer is recorded under
     ``<out-dir>/_probes/attempt-NNN/record.json`` (no overwrite)."""
     command = runner.build_command(
@@ -307,7 +307,7 @@ def run_probe(args, config, cli: str, env: dict, version: str) -> str:
     outcome = runner.run_claude(command, stdin_text=runner.PROBE_STDIN,
                                 timeout=args.timeout_seconds or config.timeout_seconds, env=env)
     result = (f"unavailable:{outcome.category}" if not outcome.ok
-              else runner.classify_probe_answer(outcome.result_text))
+              else runner.classify_probe_answer(outcome.result_text, config.probe_canaries))
     attempt_dir, attempt = new_attempt_dir(Path(args.out_dir) / "_probes")
     record = {
         "schema": "fintr_llm_note_probe_v1", "attempt": attempt, "result": result,
@@ -316,6 +316,8 @@ def run_probe(args, config, cli: str, env: dict, version: str) -> str:
         "duration_seconds": round(outcome.duration_seconds, 3), "usage": outcome.usage,
         "model_requested": config.model, "model_reported": outcome.model_reported,
         "setting_sources": config.setting_sources,
+        "canaries": {"count": len(config.probe_canaries), "sha256": config.probe_canaries_sha256},
+        "classification": result,
         "probe_prompt": {"path": config.probe_prompt_path.name, "sha256": config.probe_prompt_sha256},
         "config": {"path": config.path.name, "sha256": config.sha256},
         "code_commit": resolve_code_commit(PROJECT_ROOT),

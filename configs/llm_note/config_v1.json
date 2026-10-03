@@ -4,7 +4,8 @@
   "effort": "high",
   "prompt_file": "configs/llm_note/prompt_v1.md",
   "output_schema_file": "configs/llm_note/output_schema_v1.json",
-  "probe_prompt_file": "configs/llm_note/probe_prompt_v1.md",
+  "probe_prompt_file": "configs/llm_note/probe_prompt_v2.md",
+  "probe_canaries": ["Efe", "AvenoxBeyin", "İkinci Beyin", "Beynim"],
   "cli_path": {
     "windows": "%USERPROFILE%\\.local\\bin\\claude.exe",
     "default": "claude"

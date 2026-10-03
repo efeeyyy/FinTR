@@ -888,10 +888,23 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse(outcome.ok)
 
     def test_classify_probe_answer(self):
-        for text, result in (("hayır", "clean"), ("Hayır.", "clean"), (" HAYIR\n", "clean"), ("no", "clean"),
-                             ("evet", "not_isolated"), ("Evet, var", "not_isolated"), ("", "unclear"),
-                             ("bilmiyorum", "unclear"), ("hayırlı olsun ama evet", "unclear")):
-            self.assertEqual(runner.classify_probe_answer(text), result, text)
+        canaries = ["Efe", "AvenoxBeyin", "İkinci Beyin", "Beynim"]
+        for text, result in (("YOK", "clean"), ("yok.", "clean"), (" Yok\n", "clean"), ("None", "clean"),
+                             ("Efe", "not_isolated"), ("Kullanıcı: efe", "not_isolated"),
+                             ("EFE'nin notları", "not_isolated"), ("avenoxbeyin", "not_isolated"),
+                             ("ikinci beyin klasörü", "not_isolated"), ("İKİNCİ BEYİN", "not_isolated"),
+                             ("YOK ama Beynim", "not_isolated"),
+                             ("", "unclear"), ("bilmiyorum", "unclear"), ("evet", "unclear"),
+                             ("hayır", "unclear"), ("Efendi", "unclear"), ("yok yok yok", "unclear")):
+            self.assertEqual(runner.classify_probe_answer(text, canaries), result, text)
+
+    def test_probe_stdin_and_prompt_contain_no_canary(self):
+        config = load_config(REAL_CONFIG, project_root=ROOT)
+        hidden = runner._fold(runner.PROBE_STDIN + config.probe_prompt_path.read_text(encoding="utf-8"))
+        for canary in config.probe_canaries:
+            self.assertNotIn(runner._fold(canary), hidden, canary)
+        self.assertEqual(config.probe_prompt_path.name, "probe_prompt_v2.md")
+        self.assertTrue(config.probe_canaries_sha256)
 
     def test_build_command_flags_and_record_command(self):
         command = runner.build_command("claude", model="claude-opus-5-5", effort="high",
@@ -962,6 +975,7 @@ class ConfigTests(unittest.TestCase):
             for change in ({"schema": "x"}, {"model": ""}, {"timeout_seconds": 0}, {"max_symbol_packet_bytes": 1.5},
                            {"max_symbols_per_run": 0}, {"max_run_seconds": 0}, {"max_packet_bytes": None, "max_symbol_packet_bytes": 0},
                            {"setting_sources": ""}, {"isolation_probe": "yes"}, {"probe_prompt_file": "nope.md"},
+                           {"probe_canaries": []}, {"probe_canaries": "Efe"}, {"probe_canaries": ["Efe", ""]},
                            {"prompt_file": "nope.md"}, {"cli_path": {"default": "x"}}, {"strip_env": "x"}):
                 with self.assertRaises(ConfigError, msg=str(change)):
                     load_config(write({**document, **change}), project_root=ROOT)
@@ -1160,7 +1174,7 @@ class ScriptTests(Env, unittest.TestCase):
 
     def test_probe_isolation_records_the_answer_and_sends_no_data(self):
         probe, log = self.tmp / "probe.json", self.tmp / "calls.log"
-        code, out, err = self.run_note("ok", "--probe-isolation", probe=probe, log=log, probe_answer="Hayır.")
+        code, out, err = self.run_note("ok", "--probe-isolation", probe=probe, log=log, probe_answer="YOK.")
         self.assertEqual((code, self.status(out)), (0, "probe:clean"), err)
         self.assertEqual(log.read_text(encoding="utf-8").split("\n")[:-1], ["PROBE"])  # one call, no packet
         seen = json.loads(probe.read_text(encoding="utf-8"))
@@ -1172,18 +1186,21 @@ class ScriptTests(Env, unittest.TestCase):
         self.assertNotEqual(Path(seen["cwd"]).resolve(), ROOT.resolve())
         self.assertTrue((self.out_dir / "_probes" / "attempt-001" / "record.json").exists())
         record = json.loads((self.out_dir / "_probes" / "attempt-001" / "record.json").read_text(encoding="utf-8"))
-        self.assertEqual((record["result"], record["answer_text"]), ("clean", "Hayır."))
+        self.assertEqual((record["result"], record["answer_text"]), ("clean", "YOK."))
         self.assertEqual(record["setting_sources"], "local")
+        self.assertEqual(record["classification"], "clean")
+        self.assertEqual(record["canaries"]["sha256"],
+                         load_config(REAL_CONFIG, project_root=ROOT).probe_canaries_sha256)
         self.assertEqual(record["cli"]["version"], "fake-cli 0.0.1")
         self.assertEqual(record["question"], runner.PROBE_STDIN)
         self.assertNotIn("--json-schema", record["command"])
         self.assertFalse((self.out_dir / AS_OF).exists())  # no note records, no data read
         # a second probe never overwrites the first
-        self.run_note("ok", "--probe-isolation", probe_answer="hayır")
+        self.run_note("ok", "--probe-isolation", probe_answer="YOK")
         self.assertTrue((self.out_dir / "_probes" / "attempt-002" / "record.json").exists())
 
     def test_probe_isolation_answers_other_than_no_fail(self):
-        for answer, result in (("Evet", "not_isolated"), ("belki", "unclear"), ("", "unclear")):
+        for answer, result in (("Efe", "not_isolated"), ("belki", "unclear"), ("", "unclear")):
             with self.subTest(answer=answer):
                 code, out, _ = self.run_note("ok", "--probe-isolation", probe_answer=answer)
                 self.assertEqual((code, self.status(out)), (3, f"probe:{result}"))
@@ -1207,12 +1224,12 @@ class ScriptTests(Env, unittest.TestCase):
         probing = self.tmp / "probing.json"
         probing.write_text(json.dumps(document), encoding="utf-8")
         log = self.tmp / "calls.log"
-        code, out, err = self.run_note("ok", "--config", str(probing), log=log, probe_answer="evet")
+        code, out, err = self.run_note("ok", "--config", str(probing), log=log, probe_answer="Efe")
         self.assertEqual((code, self.status(out)), (1, "error:isolation_probe:not_isolated"))
         self.assertEqual(log.read_text(encoding="utf-8").split("\n")[:-1], ["PROBE"])  # no packet was sent
         self.assertFalse((self.out_dir / AS_OF).exists())
         log.unlink()
-        code, out, _ = self.run_note("ok", "--config", str(probing), log=log, probe_answer="hayır")
+        code, out, _ = self.run_note("ok", "--config", str(probing), log=log, probe_answer="YOK")
         self.assertEqual((code, self.status(out)), (0, "ok=2,rejected=0,failed=0"))
         self.assertEqual(log.read_text(encoding="utf-8").split("\n")[:-1],
                          ["PROBE"] + [f"{s} ok" for s in sorted(self.symbols)])

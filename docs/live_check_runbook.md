@@ -677,11 +677,12 @@ $env:PYTHONPATH = "$PWD\src"
   (`setting_sources`, varsayılan `local`). `--exclude-dynamic-system-prompt-sections`
   özel sistem istemiyle yok sayılır (zararsız).
 - **İzolasyon doğrulaması (CLI girişten sonra, bir kez):** `.\.venv\Scripts\python.exe
-  scripts\llm_note.py --probe-isolation` modele veri vermeden tek sabit evet/hayır
-  sorusu sorar (bağlamında kullanıcı/proje talimatı, CLAUDE.md, hook, MCP, skill veya
-  eklenti var mı?); cevabı `data\interim\llm_notes\_probes\attempt-NNN\record.json`'a
-  yazar. Çıkış 0 ve `LLM_NOTE_STATUS: probe:clean` = izole (`hayır`); `probe:not_isolated`
-  (`evet`) veya `probe:unclear` ise günlük çalıştırma açılmamalı (`setting_sources`/bayrakları
+  scripts\llm_note.py --probe-isolation` modele veri vermeden tek sabit kanarya
+  sorusu sorar (bağlamında anlatılmış kullanıcı adı / kişisel not klasörü adı var mı? yoksa
+  yalnızca `YOK`); kanarya sözcükleri yalnızca `probe_canaries` config'indedir, istemde yoktur;
+  cevabı `data\interim\llm_notes\_probes\attempt-NNN\record.json`'a
+  yazar. Çıkış 0 ve `LLM_NOTE_STATUS: probe:clean` = izole (`YOK`); `probe:not_isolated`
+  (cevapta bir kanarya sözcüğü geçti) veya `probe:unclear` ise günlük çalıştırma açılmamalı (`setting_sources`/bayrakları
   gözden geçir). `configs/llm_note/config_v1.json` içinde `"isolation_probe": true` her
   çalıştırmada sondayı fail-closed ön kontrol yapar (varsayılan kapalı). Not: cevap
   modelin kendi beyanıdır, kanıt değil; yine de bir kullanıcı talimatı sızıntısını yakalar.
