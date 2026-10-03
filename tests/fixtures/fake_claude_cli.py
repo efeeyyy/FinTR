@@ -12,6 +12,12 @@ import os
 import sys
 import time
 
+# The real CLI reads and writes UTF-8 on pipes; pin it here too so the
+# fake does not depend on the Windows ANSI code page or PYTHONUTF8.
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
 mode = os.environ.get("FAKE_CLAUDE_MODE", "ok")
 probe = os.environ.get("FAKE_CLAUDE_PROBE")
 if probe:
