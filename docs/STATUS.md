@@ -106,6 +106,18 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    gece yarısından sonra/sabah tek komutu çalıştırır; gözlem içerikleri finans sohbetinde. `tzdata` venv'de yok (UTC+3 yedeği
    çalışıyor). Açık kararlar: günlük dosya saklama/temizlik politikası, Aşama B (ayrı ADR).
    2027-03-31'e kadar H1–H4 için ara performans değerlendirmesi yok (K4).
+8. Günlük analiz notu (Efe kararı 2026-10-02; dal `daily-llm-note`, buluttan; henüz main'de
+   değil): `scripts/llm_note.py` + `src/fintr/llm_note/`, `run_daily_pipeline.py --llm-note`
+   (varsayılan kapalı) ve `notify_observations.py --llm-note-dir`. Claude Opus 5.5, Claude
+   Code CLI başsız mod; her `condition_met` gözlem için kuralın yönünü veri
+   `destekliyor`/`zayıflatıyor`/`belirsiz` diye değerlendirir, kodla fail-closed doğrulanır
+   (şema, kanıt yolları, yasak ifade, her rakam o gerekçenin kendi kanıt yolunda, işaret
+   eşleşir). Hisse başına bir çağrı/paket/kayıt (`llm_notes/<as_of>/<SYM>/attempt-NNN/`),
+   özet `ok=A,rejected=B,failed=C`. Al/sat/hedef/stop/pozisyon/getiri
+   tahmini/puan yok; not başarısız olursa deterministik bildirim gider. Ham veri
+   Anthropic'e gider (Efe kararı, lisans kapsamı doğrulanmadı). Gerçek CLI çağrısı ve
+   bayrak adları Efe'nin makinesinde doğrulanacak. Ayrıntı: DECISIONS.md, `docs/notify.md`,
+   runbook 6i.
 7. Telegram botu: Efe BotFather'dan açıp token/chat id'yi ortam değişkenine koyacak
    (`docs/notify.md`); ilk gerçek `--send` denemesi Efe'de.
 5. KAP erişimi tarayıcıda engelli; KAP belgeleri Efe'den gelir (indirme Java serileştirme

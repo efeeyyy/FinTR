@@ -817,3 +817,79 @@ Günlük sıra: `collect_daily` -> (ilk canlı çalıştırmadan sonra)
 `compare_daily_d0` -> `scan_observations --daily-root` ->
 `notify_observations` (varsayılan dry-run, `--send`);
 bkz. `docs/live_check_runbook.md` bölüm 6g.
+
+### Günlük analiz notu: Claude Opus 5.5, Claude Code CLI (`fintr.llm_note`, aşama 2 adım 4)
+
+Problem: Deterministik bildirim (`fintr.notify`) hangi kuralın koşulunun sağlandığını
+söylüyor; Efe'nin her gözlem için ham kurum bazlı AKD/takas verisine bakıp "veri bu
+hipotezin yönünü destekliyor mu?" sorusunu elle cevaplaması gerekiyordu. Bu bir
+kanıt değerlendirmesidir; işlem kararı değildir.
+
+Alternatifler: (a) modelin doğrudan "al/sat" kararı vermesi -- AGENTS.md sınırlarına
+aykırı ve doğrulanamaz; reddedildi (yönetici önerisi, Efe kabul etti). (b) özetlenmiş
+özellik paketi göndermek -- model yalnız tarayıcının hesabını tekrar ederdi, kurum
+bazlı kanıta bakamazdı; Efe ham veriyi seçti. (c) Anthropic API anahtarı -- ayrı
+faturalama/secret yönetimi; Efe aboneliğiyle Claude Code CLI başsız modu
+(`claude -p`) kullanılacak. (d) Modelin serbest metin üretmesi ve çıktıya güvenmek --
+rakam uydurma/yasak ifade riski; reddedildi: çıktı JSON şemalıdır ve kodla
+fail-closed doğrulanır.
+
+Karar: 2026-10-02 (Efe) -- `scripts/llm_note.py` (`src/fintr/llm_note/`),
+`run_daily_pipeline.py --llm-note` ile açılan (varsayılan kapalı) adım: tarama ile
+bildirim arasında çalışır, bildirim dosyasındaki `condition_met` hisseleri için
+`as_of` sonrası veri ve fiyat serisi içermeyen ham paket (`packet.py`;
+birleştirici ile aynı hash/bütünlük kontrollü yükleyiciler, holdout/DSTKF koruması)
+kurar. **Hisse başına bir paket ve bir model çağrısı**: ilk tasarımdaki tek paket
+(400 000 bayt sınırı, alfabetik sondan hisse atma) gerçek veride 13 hissenin 5'ini
+sessizce dışarıda bırakıyordu; reddedildi. Şimdi her hissenin paketi paylaşılan
+kural/sütun bağlamı + o hissenin verisidir; tek paket `max_symbol_packet_bytes`'ı
+aşarsa o hisse kırpılmadan "alınamadı (packet_too_large)" olur, `max_symbols_per_run`'ı
+aşan hisseler "alınamadı (symbol_limit)" olur, `usage_limit`/`cli_not_found` sonrası
+kalanlar çağrılmadan aynı kategoriyle, `max_run_seconds` sonrası `run_time_budget`
+ile kaydedilir (hiçbir hisse sessizce düşmez). Her çağrı Opus 5.5'e `--tools ""` ile
+verilir ve cevap doğrulanır (`validate.py`: şema, izinli değer, kapsam, kanıt yolu
+çözümü ve genişlik sınırı, yasak ifade, yazıyla sayı, rakam/tarih denetimi). Rakam
+denetimi gerekçe bazlıdır: gerekçedeki her rakam/tarih, o gerekçenin kendi
+`evidence_paths` altındaki değerlerden biri olmalıdır; işaret eşleşir; `%` için `p%`
+paketteki `p` ile aynen veya `p/100` yalnız `|v| <= 1` değerlerle eşleşir; yuvarlama
+toleransı yok (alternatif: yalnız büyüklük eşleşmesi + bütün paket -- işaret çevirme
+ve tesadüfi eşleşme riski nedeniyle reddedildi). Her gözlem için zorunlu `plain_explanation` (finans bilgisi olmayana 2-4 kısa cümle;
+koşulun gündelik karşılığı, bugünkü sayıların anlamı, hipotezin varsayımı ve gerekçesi --
+`docs/prereg/H*.md` "Hipotez"/"Gerekçe" bölümleri paylaşılan kural bağlamında pakete
+girer) aynı doğrulayıcıdan geçer; rakamları gerekçelerin yollarından veya kuralın kendi
+girdisinden gelmelidir. Yuvarlama yalnız yazılan hassasiyette kabul edilir (en az bir
+ondalık yazılmış sayı, o hassasiyette yuvarlanan paket değeriyle eşleşir; tam sayı
+aynen; >4 ondalık reddedilir), böylece mesajda ham 30 haneli sayı olmaz. Telegram:
+her notlu hisse kendi mesajı + kapanış mesajı. Kalan sınırlar: küçük tam sayılar
+yol altındaki başka değerle tesadüfen eşleşebilir; "bir"/"yarım" gibi sözcükler ve
+türetilmiş anlatımlar denetlenemez. Reddedilen not gösterilmez. Kayıtlar
+`data/interim/llm_notes/<as_of>/<SYM>/attempt-NNN/` altında no-overwrite saklanır
+(hisse başına paket, ham yanıt, doğrulama, çağrı süresi ve CLI'nin bildirdiği
+kullanım). Aynı gün yeniden çalıştırma yalnız doğrulanmış notu olmayan hisseleri
+tekrar dener. Yükleyici `as_of`'a duyarlıdır: `as_of`'tan sonra başlayan günlük
+kayıtlar açılmaz ve fiyat dosyasının yalnız `as_of`'a kadar kapsaması yeter (canlı
+çalışma ertesi günün kaydını fiyat dosyasından önce yazabilir; eski `as_of`'un yeniden
+çalıştırılması da bu yüzden başarısız olmamalı). `notify_observations.py
+--llm-note-dir` yalnız notu, kendi mesajı ve kendi makbuzuyla (`note_receipt.json`)
+yazar/gönderir (kayıt bütünlüğü yeniden doğrulanır; notu olmayan her hisse için kendi
+durum satırı ve sayı özeti). Boru hattı sırası: toplama, tarama, deterministik
+bildirim, not, not bildirimi -- deterministik bildirim modeli beklemez (ilk tasarımdaki
+"not önce, tek mesaj" sırası reddedildi: 13 sıralı çağrı bildirimi geciktirirdi) ve
+not hatası gönderilmiş bildirimi/çıkış kodunu değiştirmez. Çocuk `claude -p`
+izolasyonu: `--tools ""`, `--strict-mcp-config`, `--disable-slash-commands`,
+`--setting-sources local`, `--no-session-persistence`, her çağrıda yeni boş geçici
+çalışma dizini, API anahtarı değişkenleri çıkarılmış ortam; `--bare` kullanılamaz
+(OAuth girişini okumaz). İzolasyon makinede `--probe-isolation` ile (tek evet/hayır
+sorusu, `llm_notes/_probes/` kaydı) doğrulanır; `isolation_probe` config bayrağı bunu
+her çalıştırmada fail-closed ön kontrol yapar.
+
+Sonuç: Bu adım AGENTS.md'de açıkça belirtilmiş bir istisnadır (yalnız kanıt
+değerlendirmesi; emir, hedef, stop, pozisyon, getiri tahmini veya puan yok). Riskler:
+(1) ham verinin Anthropic'e gönderimi için lisans kapsamı doğrulanmadı (Efe kararı);
+(2) LLM çıktısı deterministik değildir -- tekrar üretilebilirlik kaydı attempt
+dizinidir; (3) rakam denetimi modelin uydurduğu sayıyı yakalar ama yorumun doğruluğunu
+kanıtlamaz; (4) "destekliyor/zayıflatıyor" doğrulanmamış hipotez yönüne göredir ve
+holdout sonucu bunu desteklemezse adım kapatılmalıdır; (5) CLI bayrakları sürüme
+bağlıdır (`runner.build_command` tek yerdedir) ve abonelik limitine takılırsa not
+"alınamadı" olur, deterministik bildirim etkilenmez. Ayrıntı `docs/notify.md`,
+`docs/live_check_runbook.md` 6i ve `docs/prereg/DECISIONS.md`.

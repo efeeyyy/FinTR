@@ -98,3 +98,59 @@ beklenen yönü doğrulamazsa etiket kaldırılmalıdır.
 **Kapsam dışı.** Bu karar tarayıcı çıktı şemasını veya LLM bileşenlerini
 kapsamaz; AGENTS.md "Güvenlik sınırları" bölümündeki istisna yalnız
 `fintr.notify` içindir.
+
+## 2026-10-02 — Günlük analiz notu: Claude Opus 5.5 kanıt değerlendirmesi (Efe kararı)
+
+Efe 2026-10-02'de sohbette doğrudan üç karar verdi. ("Nihai kararı da versin" dedi;
+yönetici kişisel al/sat kararı yerine kanıt değerlendirmesini önerdi ve karar bu
+biçimde kayda geçti.)
+
+1. **Günlük analiz notu adımı.** Günlük akışa Claude Opus 5.5 ile bir analiz notu adımı
+   eklenir. Not, `condition_met` olan her gözlem için kanıta dayalı **nihai
+   değerlendirme** içerir: dondurulmuş kuralın yönünü veri `destekliyor` /
+   `zayıflatıyor` / `belirsiz`. Bu bir hipotez değerlendirmesidir. Model "al/sat",
+   hedef fiyat, stop, pozisyon büyüklüğü, getiri tahmini veya 1–10 tarzı keyfi puan
+   üretmez. İşlem kararı Efe'dedir.
+2. **Ham veri girdisi.** Modele özet değil **ham veri** gider: yalnız `condition_met`
+   gözlemi olan hisselerin birleşik kayan pencere verisi (kurum bazlı AKD/takas
+   satırları, kurum adlarıyla, `as_of` ve öncesi), gözlem dosyası, hesaplanmış
+   özellikler, veri durumu sayımları ve kural spec metinleri. **Risk notu:** Mini App
+   lisans beyanı (`user_asserted_2026-09-28_not_independently_verified`) veri çekimi
+   içindi; üçüncü tarafa (Anthropic) gönderimi kapsadığı doğrulanmadı — bu Efe'nin
+   kararıdır.
+3. **Çağrı yolu.** Model çağrısı Efe'nin aboneliğiyle, **Claude Code CLI başsız mod**
+   (`claude -p`) ile yapılır; ayrı API anahtarı yoktur (kod, çocuk sürecin ortamından
+   `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` değişkenlerini çıkarır).
+
+**Kodla zorlanan sınırlar** (`fintr.llm_note`, `scripts/llm_note.py`):
+
+- Girdi paketi `as_of` sonrası hiçbir tarihli veri içermez (`truncate_period_capture`
+  + tarih süzgeci); fiyat serisi, getiri veya gözlem sonrası fiyat paketten çıkarılır
+  ve hesaplanmaz (K4 aynen geçerli). Holdout ve dışlanan hisseler (DSTKF) mevcut
+  `load_active_guards` ile reddedilir; model çağrılmaz.
+- Çıktı yapılandırılmış JSON'dur (şema `configs/llm_note/output_schema_v1.json`);
+  izinli değerlendirme değerleri `destekliyor`/`zayıflatıyor`/`belirsiz`.
+- Hisse başına bir paket ve bir model çağrısı; paket hiçbir zaman kırpılmaz (sınırı
+  aşan hisse "alınamadı (packet_too_large)", hisse sayısı sınırını aşan
+  "alınamadı (symbol_limit)"; her hisse kendi sonucunu alır).
+- Doğrulayıcı fail-closed'dur: şema, izinli değer, kapsam (her gözlem için tam bir
+  değerlendirme), kanıt yolları (pakette çözülmek ve dar olmak zorunda), yasak ifade
+  listesi (al/almalı, sat/satmalı, hedef, stop, pozisyon, kesin, kâr/zarar, getiri,
+  tahmin, öneri, tavsiye, puan/skor, fırsat, garanti, manipülasyon, niyet,
+  yükselecek/düşecek/bekleniyor…), yazıyla sayı ve gerekçedeki her rakamın/tarihin o
+  gerekçenin kendi kanıt yolları altında bulunması (işaret eşleşir; `%` için `p` aynen
+  veya `p/100` yalnız `|v| <= 1`). Biri başarısızsa not reddedilir ("analiz notu
+  doğrulamadan geçemedi (<kategori>)"); model reddi/limit/zaman aşımı "analiz notu
+  alınamadı (<kategori>)" olur. Not başarısız olursa deterministik bildirim yine
+  gönderilir.
+- Prompt, şema ve config Git'tedir; sha256'ları ile model kimliği, CLI sürümü, komut
+  satırı, ham yanıt, çağrı süresi/kullanımı ve doğrulama sonucu
+  `data/interim/llm_notes/<as_of>/<SYM>/attempt-NNN/` altına no-overwrite kaydedilir.
+  LLM çıktısı deterministik değildir.
+
+**Değişmeyen.** Spec hash'leri, eşikler, tarayıcı kuralları ve çıktı şeması, holdout
+planı ve K4 aynen geçerlidir; deterministik bildirim metni (`--llm-note-dir` verilmediğinde)
+bayt düzeyinde aynıdır; adım `run_daily_pipeline.py --llm-note` ile açılır, varsayılan
+kapalıdır. Not bir avantaj (edge) iddiası değildir: kuralın yönü doğrulanmamış bir
+hipotezdir (holdout testi 2027 Nisan) ve değerlendirme yalnız ham verinin o hipotezle
+ilişkisini anlatır. Holdout sonucu yönü doğrulamazsa bu adım kapatılmalıdır.
