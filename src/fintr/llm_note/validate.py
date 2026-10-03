@@ -18,7 +18,12 @@ rejects the whole note. Categories (stable slugs, shown to Efe as
                         ``plain_explanation`` is under none of the
                         assessment's cited paths nor the rule's own packet
                         entry; one in ``data_caveats`` is absent from the
-                        packet
+                        packet. The one exception: an assessment's own
+                        ``as_of`` (exact ISO string, already matched to
+                        ``required_assessments``) may appear in that
+                        assessment's reasons and ``plain_explanation``
+                        without a path; no other date or number, and no
+                        other assessment's ``as_of``, is exempt
 ``number_format``       a quoted number with more than ``numbers.MAX_DECIMALS``
                         decimals (a raw, unrounded value)
 ``sensitive_content``   ``validate_context_contains_no_secrets`` rejected the note
@@ -241,7 +246,7 @@ def validate_note(note: object, packet: dict) -> Validation:
                 path_values, path_dates = under_path(path)
                 values |= path_values
                 dates |= path_dates
-            failure = audit(reason["text"], values, dates, "not under the reason's evidence_paths")
+            failure = audit(reason["text"], values, dates | {item["as_of"]}, "not under the reason's evidence_paths")
             if failure is not None:
                 return failure
             assessment_values |= values
@@ -250,7 +255,7 @@ def validate_note(note: object, packet: dict) -> Validation:
         # the rule's own entry (condition, thresholds, hypothesis text).
         rule_values, rule_dates = under_path(f"/rules/{item['rule_id']}")
         failure = audit(item["plain_explanation"], assessment_values | rule_values,
-                        assessment_dates | rule_dates,
+                        assessment_dates | rule_dates | {item["as_of"]},
                         "plain_explanation: not under the reasons' evidence_paths or the rule entry")
         if failure is not None:
             return failure
