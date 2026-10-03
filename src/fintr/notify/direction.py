@@ -26,3 +26,17 @@ def load_rule_directions(rules_file: Path, *, project_root: Path) -> dict[str, s
     any spec is unreadable, unfrozen or fails its hash check."""
     rules = load_scanner_rules(Path(rules_file), project_root=Path(project_root))
     return {rule.rule_id: rule.spec.preregistration.predicted_direction for rule in rules}
+
+
+def load_rule_horizons(rules_file: Path, *, project_root: Path) -> dict[str, int]:
+    """rule_id -> ``primary_horizon_trading_days`` of the frozen, hash-verified
+    spec (layout v2's "Vade" line). Same loader and failure mode as
+    ``load_rule_directions``; entries that are not plain positive integers are
+    left out rather than guessed."""
+    rules = load_scanner_rules(Path(rules_file), project_root=Path(project_root))
+    horizons: dict[str, int] = {}
+    for rule in rules:
+        value = rule.spec.preregistration.primary_horizon_trading_days
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            horizons[rule.rule_id] = value
+    return horizons
