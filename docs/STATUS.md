@@ -118,21 +118,16 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    --exclude-dynamic-system-prompt-sections`, boş temp cwd, CLAUDE*/ANTHROPIC* env silinir)
    elle tuzak soruyla doğrulandı (bayraksız: CLAUDE.md görülüyor; bayraklı: görülmüyor).
    **DEVİR DURUMU (2026-10-03 öğleden sonra, yönetici oturumu kapandı):**
-   - Yerel `main` origin'den 2 commit ileride, PUSH EDİLMEDİ: `e809608` (daily-llm-note
-     birleşmesi), `2d84894` (sahte CLI UTF-8 test düzeltmesi; 1027 test OK). Push etmeden önce
-     aşağıdaki iki maddeyi kontrol et.
-   - Yerel dal `llm-probe-canary` (worktree `.claude/worktrees/agent-a823b6df1ed898f1a`,
-     sonnet-medium yazıyordu, bitmiş olmayabilir): `--probe-isolation` sorusu hatalıydı (soru
-     kendisi kullanıcı talimatı olduğundan model "evet" diyor → yanlış `not_isolated`);
-     tuzak yöntemi: model kullanıcı adını/vault adını yazar ya da `YOK`; config `probe_canaries`
-     (Efe, AvenoxBeyin, İkinci Beyin, Beynim). Bitmemişse aynı görevi yeniden ver; testleri kontrol
-     et, main'e birleştir, sonra `llm_note.py --probe-isolation` gerçek çalıştır → `probe:clean`.
-   - İlk gerçek not çalıştırması arka planda başlatıldı: `llm_note.py --as-of 2026-10-02
-     --scanner-dir data\interim\scanner_daily`; konsol çıktısı `%TEMP%\llm_note_run.txt`,
-     kayıtlar `data/interim/llm_notes/2026-10-02/<SYM>/attempt-NNN/`. Yalnız sayıları oku:
-     ok/rejected/failed ve red kategorileri, süre/usage (not içeriği finans sohbetine). Risk:
-     yasak liste "getiri/beklenir/tahmin" içeriyor; sade açıklamalar fazla reddedilebilir →
-     gerekirse prompt/yasak liste ayarı (yalnız tavsiye ifadeleri yasak kalmalı).
+   - Main'e birleşti ve push edildi: `daily-llm-note`, sahte CLI UTF-8 düzeltmesi,
+     `llm-probe-canary` (tuzak yöntemli yalıtım sınaması); 1028 test OK. Gerçek
+     `llm_note.py --probe-isolation` → `probe:clean`.
+   - İlk gerçek not çalıştırması (as_of 2026-10-02, 5 hisse, `llm_notes/2026-10-02/`):
+     `ok=2,rejected=3,failed=0`; redler: `number_word`, `number_not_in_input`, `schema`
+     (birer hisse). Çağrı başına ~40 sn, CLI'ın raporladığı eşdeğer maliyet ~0,35 USD
+     (abonelikten düşer). SIRADAKİ İŞ: her reddin ayrıntısını `record.json` → doğrulama
+     alanından oku (içerik değil, yalnız neden), prompt'u (`configs/llm_note/prompt_v1.md`)
+     ve gerekirse doğrulayıcıyı ayarla; yalnız tavsiye ifadeleri yasak kalmalı. Ayar sonrası
+     `llm_note.py` yeniden çalıştırılınca yalnız kabul edilmemiş hisseler denenir.
    - Bulut görevi `notify-layout-v2` (Efe yapıştırdı; özet + hisse başına mesaj, okunur yüzde,
      sabit "Ne demek" açıklamaları `configs/notify/rule_explanations_v1.json`): dal gelince
      doğrula (açıklama metinlerini H*.md'ye karşı gözden geçir), main'le birleştir.
