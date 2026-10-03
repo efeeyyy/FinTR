@@ -133,6 +133,8 @@ yazar. Bir kuralın `meaning` alanı yoksa "Ne demek" satırı atlanır (uydurul
 `--message-delay-seconds N`; mevcut `--no-direction-label`, `--skip-empty`, `--send`,
 `--resend`, `--rules-file` aynen çalışır.
 
+Analiz notu çalıştırması (`--llm-note-dir`, yalnız not mesajları, `note_receipt.json`) bu düzenden etkilenmez: v2 ve kısmi gönderim devamı yalnız deterministik bildirim içindir; not yolu önceki gibi çalışır.
+
 ## Bu bir yatırım tavsiyesi değildir
 
 Bildirim, tarayıcının ürettiği gözlemin aynen özetidir. `docs/scanner.md`'deki
