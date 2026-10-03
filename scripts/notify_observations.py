@@ -49,6 +49,8 @@ DEFAULT_RULES_FILE = Path("configs/scanner/rules_v1.json")
 
 RULE_TEXTS_SCHEMA = "fintr_notify_rule_texts_v1"
 RECEIPT_SCHEMA = "fintr_notify_receipt_v1"
+NOTE_RECEIPT_SCHEMA = "fintr_notify_note_receipt_v1"
+NOTE_RECEIPT_NAME = "note_receipt"
 
 
 def _date(value: str) -> date:
@@ -83,8 +85,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--llm-note-dir", type=Path, default=None,
         help="default: off. Root of the analysis notes written by scripts/llm_note.py "
-             "(<dir>/<as-of>/attempt-NNN/); a verified note is added as separate message(s) "
-             "after the deterministic notice, otherwise one status line (docs/notify.md)",
+             "(<dir>/<as-of>/<SYM>/attempt-NNN/). With it, ONLY the analysis note is printed/sent, "
+             "as its own message(s) with its own receipt (note_receipt.json); the deterministic "
+             "notice is a separate run without this flag (docs/notify.md)",
     )
     parser.add_argument(
         "--skip-empty", action="store_true",
@@ -116,20 +119,20 @@ def load_rule_texts(path: Path) -> dict[str, str]:
     return {str(key): str(value) for key, value in rules.items()}
 
 
-def _receipt_target(receipt_dir: Path, *, resend: bool) -> Path:
+def _receipt_target(receipt_dir: Path, *, resend: bool, name: str = "receipt") -> Path:
     """The receipt path to write to; never an existing file. Without
-    ``--resend``, only the primary ``receipt.json`` is ever offered, and
+    ``--resend``, only the primary ``<name>.json`` is ever offered, and
     the caller must treat its existence as a rejection."""
-    primary = receipt_dir / "receipt.json"
+    primary = receipt_dir / f"{name}.json"
     if not primary.exists():
         return primary
     if not resend:
         raise FileExistsError(primary)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    candidate = receipt_dir / f"receipt-{stamp}.json"
+    candidate = receipt_dir / f"{name}-{stamp}.json"
     suffix = 2
     while candidate.exists():
-        candidate = receipt_dir / f"receipt-{stamp}-{suffix}.json"
+        candidate = receipt_dir / f"{name}-{stamp}-{suffix}.json"
         suffix += 1
     return candidate
 
@@ -213,14 +216,19 @@ def main(argv: list[str] | None = None) -> int:
             )
             directions = {}
 
-    messages = fmt.render_notification(document, rule_texts, directions)
-    note_messages: list[str] = []
-    if args.llm_note_dir is not None:
-        note_messages = llm_render.note_messages(
+    note_mode = args.llm_note_dir is not None
+    if note_mode:
+        # The analysis note ONLY, as its own message(s) with its own receipt;
+        # the deterministic notice is never part of (or waits for) this call.
+        if not positive:
+            print("Notify: bu taramada gözlem yok; analiz notu mesajı yok.", file=sys.stderr)
+            return 0
+        messages = llm_render.note_messages(
             args.llm_note_dir, args.as_of.isoformat(), directions=directions,
             has_observations=positive, expected_symbols=llm_packet.positive_symbols(document),
         )
-        messages = messages + note_messages
+    else:
+        messages = fmt.render_notification(document, rule_texts, directions)
 
     if not args.send:
         for index, message in enumerate(messages, start=1):
@@ -228,12 +236,14 @@ def main(argv: list[str] | None = None) -> int:
             print(message)
         return 0
 
+    receipt_name = NOTE_RECEIPT_NAME if note_mode else "receipt"
     receipt_dir = args.out_dir / args.as_of.isoformat()
     try:
-        receipt_target = _receipt_target(receipt_dir, resend=args.resend)
+        receipt_target = _receipt_target(receipt_dir, resend=args.resend, name=receipt_name)
     except FileExistsError:
+        what = "analiz notu receipt" if note_mode else "receipt"
         print(
-            f"Notify failed: bu as_of için receipt zaten var ({receipt_dir / 'receipt.json'}); "
+            f"Notify failed: bu as_of için {what} zaten var ({receipt_dir / (receipt_name + '.json')}); "
             "--resend ile yeniden gönder",
             file=sys.stderr,
         )
@@ -259,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     receipt = {
-        "schema": RECEIPT_SCHEMA,
+        "schema": NOTE_RECEIPT_SCHEMA if note_mode else RECEIPT_SCHEMA,
         "as_of": args.as_of.isoformat(),
         "sent_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "observations_path": str(obs_path),
@@ -268,8 +278,6 @@ def main(argv: list[str] | None = None) -> int:
         "telegram_message_ids": sent_ids,
         "resend": bool(args.resend),
     }
-    if args.llm_note_dir is not None:
-        receipt["llm_note_messages"] = len(note_messages)
     receipt_payload = (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     try:
         _write_receipt(receipt_target, receipt_payload)

@@ -863,8 +863,18 @@ tekrar dener. Yükleyici `as_of`'a duyarlıdır: `as_of`'tan sonra başlayan gü
 kayıtlar açılmaz ve fiyat dosyasının yalnız `as_of`'a kadar kapsaması yeter (canlı
 çalışma ertesi günün kaydını fiyat dosyasından önce yazabilir; eski `as_of`'un yeniden
 çalıştırılması da bu yüzden başarısız olmamalı). `notify_observations.py
---llm-note-dir` doğrulanmış notları ayrı mesaj olarak ekler (kayıt bütünlüğü yeniden
-doğrulanır), notu olmayan her hisse için kendi durum satırını ve sayı özetini yazar.
+--llm-note-dir` yalnız notu, kendi mesajı ve kendi makbuzuyla (`note_receipt.json`)
+yazar/gönderir (kayıt bütünlüğü yeniden doğrulanır; notu olmayan her hisse için kendi
+durum satırı ve sayı özeti). Boru hattı sırası: toplama, tarama, deterministik
+bildirim, not, not bildirimi -- deterministik bildirim modeli beklemez (ilk tasarımdaki
+"not önce, tek mesaj" sırası reddedildi: 13 sıralı çağrı bildirimi geciktirirdi) ve
+not hatası gönderilmiş bildirimi/çıkış kodunu değiştirmez. Çocuk `claude -p`
+izolasyonu: `--tools ""`, `--strict-mcp-config`, `--disable-slash-commands`,
+`--setting-sources local`, `--no-session-persistence`, her çağrıda yeni boş geçici
+çalışma dizini, API anahtarı değişkenleri çıkarılmış ortam; `--bare` kullanılamaz
+(OAuth girişini okumaz). İzolasyon makinede `--probe-isolation` ile (tek evet/hayır
+sorusu, `llm_notes/_probes/` kaydı) doğrulanır; `isolation_probe` config bayrağı bunu
+her çalıştırmada fail-closed ön kontrol yapar.
 
 Sonuç: Bu adım AGENTS.md'de açıkça belirtilmiş bir istisnadır (yalnız kanıt
 değerlendirmesi; emir, hedef, stop, pozisyon, getiri tahmini veya puan yok). Riskler:

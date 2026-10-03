@@ -82,8 +82,14 @@ def _parser() -> argparse.ArgumentParser:
                     "through the Claude Code CLI (subscription, no API key). Fail-closed "
                     "validation; never blocks the deterministic notification."
     )
-    parser.add_argument("--as-of", type=_date, required=True,
-                        help="reads <scanner-dir>/<as-of>/observations.json")
+    parser.add_argument("--as-of", type=_date, default=None,
+                        help="reads <scanner-dir>/<as-of>/observations.json (required unless "
+                             "--probe-isolation)")
+    parser.add_argument("--probe-isolation", action="store_true",
+                        help="ask the model ONE fixed yes/no question (does its context contain "
+                             "user/project instructions, hooks, MCP, skills or plugins?) and record "
+                             "the answer under <out-dir>/_probes/; reads no data, sends no data. "
+                             "Exit 0 only if the answer is 'hayır' (isolated)")
     parser.add_argument("--scanner-dir", type=Path, default=DEFAULT_SCANNER_DIR,
                         help=f"default: {DEFAULT_SCANNER_DIR}")
     parser.add_argument("--daily-root", type=Path, default=DEFAULT_DAILY_ROOT,
@@ -209,7 +215,7 @@ class _Run:
         stdin_text = runner.STDIN_HEADER + build.packet_bytes.decode("utf-8")
         command = runner.build_command(
             self.cli, model=config.model, effort=config.effort, prompt_path=config.prompt_path,
-            schema_text=config.schema_text,
+            schema_text=config.schema_text, setting_sources=config.setting_sources,
         )
         parent = symbol_dir(args.out_dir, as_of_text, symbol)
         attempt_dir, attempt = new_attempt_dir(parent)
@@ -288,8 +294,61 @@ class _Run:
         return self.call(build)
 
 
+def run_probe(args, config, cli: str, env: dict, version: str) -> str:
+    """The isolation probe: one fixed yes/no question, no data. Returns
+    ``clean`` (hayır), ``not_isolated`` (evet), ``unclear`` or
+    ``unavailable:<category>``; the answer is recorded under
+    ``<out-dir>/_probes/attempt-NNN/record.json`` (no overwrite)."""
+    command = runner.build_command(
+        cli, model=config.model, effort=config.effort, prompt_path=config.probe_prompt_path,
+        schema_text=None, setting_sources=config.setting_sources,
+    )
+    started = datetime.now(timezone.utc)
+    outcome = runner.run_claude(command, stdin_text=runner.PROBE_STDIN,
+                                timeout=args.timeout_seconds or config.timeout_seconds, env=env)
+    result = (f"unavailable:{outcome.category}" if not outcome.ok
+              else runner.classify_probe_answer(outcome.result_text))
+    attempt_dir, attempt = new_attempt_dir(Path(args.out_dir) / "_probes")
+    record = {
+        "schema": "fintr_llm_note_probe_v1", "attempt": attempt, "result": result,
+        "answer_text": _safe_excerpt(outcome.result_text),
+        "question": runner.PROBE_STDIN, "started_at_utc": _iso(started),
+        "duration_seconds": round(outcome.duration_seconds, 3), "usage": outcome.usage,
+        "model_requested": config.model, "model_reported": outcome.model_reported,
+        "setting_sources": config.setting_sources,
+        "probe_prompt": {"path": config.probe_prompt_path.name, "sha256": config.probe_prompt_sha256},
+        "config": {"path": config.path.name, "sha256": config.sha256},
+        "code_commit": resolve_code_commit(PROJECT_ROOT),
+        "cli": {"version": version, "configured_path": config.cli_path},
+        "command": runner.record_command(command, config.schema_sha256, _relative(config.probe_prompt_path)),
+        "response": {"returncode": outcome.returncode, "stderr_excerpt": _safe_excerpt(outcome.stderr_excerpt)},
+    }
+    try:
+        validate_context_contains_no_secrets(record)
+    except LivePilotCaptureError:
+        record["answer_text"] = "[withheld: sensitive_pattern]"
+        record["response"]["stderr_excerpt"] = "[withheld: sensitive_pattern]"
+    write_new(attempt_dir / "record.json", json_bytes(record))
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.probe_isolation:
+        try:
+            config = load_config(_under_root(args.config), project_root=PROJECT_ROOT)
+        except ConfigError as exc:
+            return _finish("error:config", f"Analiz notu: {exc}", 1)
+        cli = runner.resolve_cli(config.cli_path, args.claude_path)
+        env = runner.child_env(config.strip_env)
+        result = run_probe(args, config, cli, env,
+                           runner.cli_version(cli, config.version_timeout_seconds, env))
+        return _finish(f"probe:{result}",
+                       f"Analiz notu izolasyon sondası: {result} (kayıt: {(args.out_dir / '_probes').as_posix()})",
+                       0 if result == "clean" else 3)
+    if args.as_of is None:
+        parser.error("--as-of is required (unless --probe-isolation)")
     as_of_text = args.as_of.isoformat()
     obs_path = args.scanner_dir / as_of_text / "observations.json"
     try:
@@ -360,8 +419,13 @@ def main(argv: list[str] | None = None) -> int:
 
     cli = runner.resolve_cli(config.cli_path, args.claude_path)
     env = runner.child_env(config.strip_env)
-    run = _Run(args, config, obs_path=obs_path, obs_sha=obs_sha, cli=cli, env=env,
-               version=runner.cli_version(cli, config.version_timeout_seconds, env),
+    version = runner.cli_version(cli, config.version_timeout_seconds, env)
+    if config.isolation_probe:  # fail-closed: no data leaves unless the child reports no extra context
+        probe = run_probe(args, config, cli, env, version)
+        if probe != "clean":
+            return _finish(f"error:isolation_probe:{probe}",
+                           f"Analiz notu: izolasyon sondası '{probe}'; model verisi gönderilmedi", 1)
+    run = _Run(args, config, obs_path=obs_path, obs_sha=obs_sha, cli=cli, env=env, version=version,
                timeout=args.timeout_seconds or config.timeout_seconds)
     counts = {"ok": 0, "rejected": 0, "failed": 0}
     for outcome in outcomes:

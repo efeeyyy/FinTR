@@ -77,11 +77,14 @@ eklenmez.
 
 ### Analiz notu (`--llm-note-dir`, Efe kararı 2026-10-02; varsayılan kapalı)
 
-`--llm-note-dir data/interim/llm_notes` verilirse, deterministik mesaj(lar)ın
-ardından **ayrı bir mesaj** olarak Opus 5.5 analiz notu eklenir
-(`scripts/llm_note.py`, `src/fintr/llm_note/`; tasarım:
-`docs/architecture.md`, karar: `docs/prereg/DECISIONS.md`). Bayrak verilmezse
-bildirim metni ve alıcıya giden mesajlar bayt düzeyinde öncekiyle aynıdır.
+`notify_observations.py --llm-note-dir data/interim/llm_notes` verilirse **yalnız**
+Opus 5.5 analiz notu, kendi mesajı ve kendi makbuzuyla (`note_receipt.json`)
+yazdırılır/gönderilir (`scripts/llm_note.py`, `src/fintr/llm_note/`; tasarım:
+`docs/architecture.md`, karar: `docs/prereg/DECISIONS.md`). Deterministik bildirim
+ayrı, bayraksız bir çağrıdır; bayt düzeyinde öncekiyle aynıdır ve modeli beklemez.
+`run_daily_pipeline.py --llm-note` sırası: toplama, tarama, deterministik bildirim,
+`llm_note.py`, not bildirimi. Not adımının hatası gönderilmiş bildirimi veya çıkış
+kodunu değiştirmez; yalnız özette görünür.
 
 ```
 Opus 5.5 analiz notu — doğrulanmamış hipotez değerlendirmesi, yatırım tavsiyesi değildir
@@ -138,10 +141,14 @@ Durum: preregistered_hypothesis_holdout_test_pending
   tek satır `... bu as_of için not yok (adım çalıştırılmadı).`, gözlem yoksa `...
   bu taramada gözlem yok; not üretilmedi.` Reddedilen/eksik not deterministik
   mesajı hiçbir zaman engellemez.
-- **Receipt:** notla birlikte gönderilen mesajlar aynı makbuzdadır
-  (`message_sha256` hepsini kapsar; yalnız bu bayrakla `llm_note_messages`
-  alanı eklenir). Mevcut tekrar gönderim engeli aynen geçerlidir: makbuz varsa
-  not sonradan üretilse de yeniden gönderilmez (`--resend` bilinçli karar ister).
+- **Receipt:** not mesajları `data/interim/notify/<as_of>/note_receipt.json`
+  (şema `fintr_notify_note_receipt_v1`; `message_sha256`, mesaj kimlikleri) dosyasına
+  no-overwrite yazılır; deterministik bildirimin `receipt.json`'u ayrıdır ve
+  değişmez. Aynı tekrar gönderim engeli geçerlidir: not makbuzu varsa ikinci
+  gönderim reddedilir (`--resend` bilinçli karar ister, zaman damgalı
+  `note_receipt-<damga>.json` yazar). Notun makbuzu bildirimin gönderimine, bildirimin
+  makbuzu notun gönderimine bağlı değildir. Hiç `condition_met` yoksa not mesajı
+  gönderilmez.
 - **Veri Anthropic'e gider:** ham AKD/takas verisinin üçüncü tarafa gönderimi
   Efe'nin kararıdır; Mini App lisans beyanının bunu kapsadığı doğrulanmadı.
 

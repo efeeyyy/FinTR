@@ -8,14 +8,17 @@ every script keeps its own guards and exit codes:
 3. ``notify_observations.py --as-of <as_of>`` (only if 2 == 0; dry-run unless
    this script got ``--send``; ``--resend`` is never passed)
 
-Optional step 2b, only with ``--llm-note`` (default off; Efe's decision of
-2026-10-02): ``llm_note.py --as-of <as_of>`` between scan and notify, and
-``--llm-note-dir`` passed to notify. Its failure NEVER stops the pipeline
-(the deterministic notice still goes out); the summary shows
-``llm_note: <status>`` (the script's ``LLM_NOTE_STATUS`` line; one model call
-per symbol, so normally ``ok=A,rejected=B,failed=C``). A symbol with an
-accepted note for the same as_of is not regenerated on a same-day re-run. Without
-``--llm-note`` the behaviour is exactly as before.
+Optional steps 4-5, only with ``--llm-note`` (default off; Efe's decision of
+2026-10-02), AFTER the deterministic notice has been sent so it never waits
+for the model: 4. ``llm_note.py --as-of <as_of>``; 5. ``notify_observations.py
+--llm-note-dir`` = the note as its own Telegram message(s) with its own
+receipt (``note_receipt.json``, same no-overwrite/resend guard). Their
+failure never changes the already-sent notice or the exit code; the summary
+shows ``llm_note: <status>`` (the script's ``LLM_NOTE_STATUS`` line; one model
+call per symbol, so normally ``ok=A,rejected=B,failed=C``) and ``note_notify:
+<0|already_sent|skipped|failed:exit_N>``. A symbol with an accepted note for the
+same as_of is not regenerated on a same-day re-run. Without ``--llm-note`` the
+behaviour is exactly as before.
 
 Any other non-zero exit stops the pipeline with that exit code; nothing is sent.
 The scanner's stdout (the observation document) is captured and discarded;
@@ -40,6 +43,14 @@ LLM_STATUS_PREFIX = "LLM_NOTE_STATUS: "
 SAVED_PREFIX = "Observations saved:"
 EXISTS_PREFIX = "Scan failed: output file already exists (no overwrite):"
 RECEIPT_EXISTS_MARK = "receipt zaten var"
+TELEGRAM_ENV = ("FINTR_TELEGRAM_BOT_TOKEN", "FINTR_TELEGRAM_CHAT_ID")
+
+
+def _child_env() -> dict[str, str]:
+    """Children write UTF-8 to the pipes we read; otherwise a Windows child
+    uses the ANSI code page (cp1254) and a Turkish letter in an error line
+    breaks decoding after the child already ran."""
+    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,8 +69,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--send", action="store_true",
                         help="notify step actually sends to Telegram (default: notify dry-run)")
     parser.add_argument("--llm-note", action="store_true",
-                        help="add the Opus 5.5 analysis note step (llm_note.py) between scan and "
-                             "notify; default off; its failure does not stop the pipeline")
+                        help="after the deterministic notice: run the Opus 5.5 analysis note step "
+                             "(llm_note.py) and send the note as its own message with its own "
+                             "receipt; default off; its failure changes neither the notice nor "
+                             "the exit code")
     return parser
 
 
@@ -90,12 +103,15 @@ def llm_note_command(as_of: str) -> list[str]:
             "--scanner-dir", SCANNER_DIR, "--daily-root", DAILY_ROOT, "--out-dir", LLM_NOTES_DIR]
 
 
-def notify_command(as_of: str, send: bool, llm_note: bool = False) -> list[str]:
+def notify_command(as_of: str, send: bool, note: bool = False) -> list[str]:
+    """``note=True``: the analysis note as its own message(s) with its own
+    receipt (``notify_observations.py --llm-note-dir``); the deterministic
+    command (``note=False``) is exactly what it was without the note step."""
     cmd = [sys.executable, _script("notify_observations.py"), "--as-of", as_of,
            "--scanner-dir", SCANNER_DIR]
     if send:
         cmd.append("--send")
-    if llm_note:
+    if note:
         cmd += ["--llm-note-dir", LLM_NOTES_DIR]
     return cmd
 
@@ -105,7 +121,8 @@ def run_llm_note(as_of: str) -> str:
     decides the pipeline's exit code."""
     try:
         proc = subprocess.run(llm_note_command(as_of), cwd=ROOT, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, text=True, encoding="utf-8")
+                              stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                              errors="replace", env=_child_env())
     except Exception as exc:  # the note must never stop the deterministic notice
         return f"error:{type(exc).__name__}"
     if proc.stderr:
@@ -114,6 +131,33 @@ def run_llm_note(as_of: str) -> str:
         if line.startswith(LLM_STATUS_PREFIX):
             return line[len(LLM_STATUS_PREFIX):].strip() or f"error:exit_{proc.returncode}"
     return f"error:exit_{proc.returncode}"
+
+
+def run_note_notify(as_of: str, send: bool) -> str:
+    """Send (or dry-run) the note as its own Telegram message(s); returns a
+    status string. Never raises."""
+    try:
+        proc = subprocess.run(notify_command(as_of, send, note=True), cwd=ROOT,
+                              stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                              errors="replace", env=_child_env())
+    except Exception as exc:
+        return f"error:{type(exc).__name__}"
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    if proc.returncode == 1 and send and RECEIPT_EXISTS_MARK in (proc.stderr or ""):
+        return "already_sent"
+    return "0" if proc.returncode == 0 else f"failed:exit_{proc.returncode}"
+
+
+def run_note_steps(as_of: str, send: bool) -> list[tuple[str, str]]:
+    """The note step and the separate note notice; results for the summary."""
+    status = run_llm_note(as_of)
+    results = [("llm_note", status)]
+    if status == "no_observations":
+        results.append(("note_notify", "skipped"))
+    else:
+        results.append(("note_notify", run_note_notify(as_of, send)))
+    return results
 
 
 def extract_as_of(stderr_text: str, prefix: str = SAVED_PREFIX) -> tuple[str, str] | None:
@@ -152,6 +196,16 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     results: list[tuple[str, str]] = []
 
+    if args.send and not args.dry_run:
+        missing = [name for name in TELEGRAM_ENV if not os.environ.get(name)]
+        if missing:
+            # Checked before collect so a missing variable does not cost a
+            # whole collection run; only the names are printed, never values.
+            print(f"Pipeline not started: --send needs {', '.join(missing)} "
+                  "in this shell (see docs/notify.md); nothing collected or sent.",
+                  file=sys.stderr)
+            return 2
+
     if args.skip_collect:
         if args.dry_run:
             print("--skip-collect with --dry-run: nothing to plan.", file=sys.stderr)
@@ -169,7 +223,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     proc = subprocess.run(scan_command(), cwd=ROOT, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, text=True, encoding="utf-8")
+                          stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                          errors="replace", env=_child_env())
     stderr_text = proc.stderr or ""
     if stderr_text:
         sys.stderr.write(stderr_text)
@@ -188,24 +243,31 @@ def main(argv: list[str] | None = None) -> int:
         as_of, saved = found
         results.append(("scan", "0"))
 
-    if args.llm_note:
-        results.append(("llm_note", run_llm_note(as_of)))
-
-    proc = subprocess.run(notify_command(as_of, args.send, args.llm_note), cwd=ROOT,
-                          stderr=subprocess.PIPE, text=True, encoding="utf-8")
+    proc = subprocess.run(notify_command(as_of, args.send), cwd=ROOT,
+                          stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                          errors="replace", env=_child_env())
     notify_err = proc.stderr or ""
     if notify_err:
         sys.stderr.write(notify_err)
-    if proc.returncode == 1 and args.send and RECEIPT_EXISTS_MARK in notify_err:
+    already_sent = proc.returncode == 1 and args.send and RECEIPT_EXISTS_MARK in notify_err
+    if already_sent:
         print(f"Notice for as_of {as_of} was already sent (receipt exists); nothing resent.")
         results.append(("notify", "already_sent"))
-        _summary(results, as_of=as_of, saved=saved)
-        print("  sent: no (already sent earlier; no resend)")
-        return 0
-    if proc.returncode != 0:
+        summary = dict(as_of=as_of, saved=saved)
+    elif proc.returncode != 0:
         return _fail(results, "notify", proc.returncode)
-    results.append(("notify", "0"))
-    _summary(results, as_of=as_of, saved=saved, sent=args.send)
+    else:
+        results.append(("notify", "0"))
+        summary = dict(as_of=as_of, saved=saved, sent=args.send)
+
+    if args.llm_note:
+        # After the deterministic notice has gone out: nothing below can
+        # change it or the exit code; failures only show up in the summary.
+        results += run_note_steps(as_of, args.send)
+
+    _summary(results, **summary)
+    if already_sent:
+        print("  sent: no (already sent earlier; no resend)")
     return 0
 
 

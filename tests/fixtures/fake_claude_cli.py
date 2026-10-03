@@ -23,6 +23,19 @@ if probe:
         }, handle)
 
 text = sys.stdin.read()
+if not text.startswith("Aşağıdaki JSON"):
+    # the isolation probe: a free-text yes/no question (FAKE_CLAUDE_PROBE_ANSWER)
+    log = os.environ.get("FAKE_CLAUDE_LOG")
+    if log:
+        with open(log, "a", encoding="utf-8") as handle:
+            handle.write("PROBE\n")
+    if mode == "refusal":
+        print(json.dumps({"type": "result", "is_error": True, "stop_reason": "refusal", "result": "no"}))
+        sys.exit(0)
+    print(json.dumps({"type": "result", "is_error": False,
+                      "result": os.environ.get("FAKE_CLAUDE_PROBE_ANSWER", "hayır"),
+                      "modelUsage": {"claude-opus-5-5": {"inputTokens": 1}}, "duration_ms": 10}))
+    sys.exit(0)
 packet = json.loads(text.split("\n", 1)[1])
 
 

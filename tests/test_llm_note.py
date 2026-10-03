@@ -188,7 +188,7 @@ class Env(GuardEnvMixin):
         ]
 
     def run_note(self, mode: str = "ok", *extra: str, probe: Path | None = None, only: str | None = None,
-                 log: Path | None = None):
+                 log: Path | None = None, probe_answer: str | None = None):
         """llm_note.main with the fake CLI; returns (code, stdout, stderr).
         ``only``: the mode applies to that symbol's call only; ``log``: one
         line per model call."""
@@ -199,6 +199,8 @@ class Env(GuardEnvMixin):
             env["FAKE_CLAUDE_ONLY_SYMBOL"] = only
         if log is not None:
             env["FAKE_CLAUDE_LOG"] = str(log)
+        if probe_answer is not None:
+            env["FAKE_CLAUDE_PROBE_ANSWER"] = probe_answer
         real_build = runner.build_command
 
         def fake_build(cli, **kwargs):
@@ -788,6 +790,12 @@ class RunnerTests(unittest.TestCase):
         for outcome in (self.run_fake("refusal"), self.run_fake("limit")):
             self.assertFalse(outcome.ok)
 
+    def test_classify_probe_answer(self):
+        for text, result in (("hayır", "clean"), ("Hayır.", "clean"), (" HAYIR\n", "clean"), ("no", "clean"),
+                             ("evet", "not_isolated"), ("Evet, var", "not_isolated"), ("", "unclear"),
+                             ("bilmiyorum", "unclear"), ("hayırlı olsun ama evet", "unclear")):
+            self.assertEqual(runner.classify_probe_answer(text), result, text)
+
     def test_build_command_flags_and_record_command(self):
         command = runner.build_command("claude", model="claude-opus-5-5", effort="high",
                                        prompt_path=Path("p.md"), schema_text='{"a":1}')
@@ -797,6 +805,19 @@ class RunnerTests(unittest.TestCase):
                             ("--system-prompt-file", "p.md")):
             self.assertEqual(command[command.index(flag) + 1], value, flag)
         self.assertIn("--no-session-persistence", command)
+        # isolation: no MCP beyond an explicit config, no skills, only the local settings source
+        self.assertIn("--strict-mcp-config", command)
+        self.assertIn("--disable-slash-commands", command)
+        self.assertEqual(command[command.index("--setting-sources") + 1], "local")
+        self.assertIn("--exclude-dynamic-system-prompt-sections", command)
+        self.assertNotIn("--bare", command)  # --bare never reads the subscription (OAuth) login
+        for flag in ("--mcp-config", "--settings", "--plugin-dir", "--add-dir", "--dangerously-skip-permissions",
+                     "--api-key"):
+            self.assertNotIn(flag, command)
+        custom = runner.build_command("claude", model="m", effort="e", prompt_path=Path("p.md"),
+                                      schema_text=None, setting_sources="project")
+        self.assertEqual(custom[custom.index("--setting-sources") + 1], "project")
+        self.assertNotIn("--json-schema", custom)
         shown = runner.record_command(command, "abc", "configs/p.md")
         self.assertEqual(shown[0], "<claude-cli>")
         self.assertNotIn('{"a":1}', shown)
@@ -824,6 +845,10 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("\n", config.schema_text)
         self.assertEqual((config.max_symbol_packet_bytes, config.max_symbols_per_run, config.max_run_seconds),
                          (200_000, 30, 5400.0))
+        self.assertEqual((config.setting_sources, config.isolation_probe), ("local", False))
+        self.assertEqual(config.probe_prompt_sha256,
+                         hashlib.sha256(config.probe_prompt_path.read_bytes()).hexdigest())
+        self.assertEqual(config.strip_env, ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"])
 
     def test_bad_configs_are_rejected(self):
         document = json.loads(REAL_CONFIG.read_text(encoding="utf-8"))
@@ -834,6 +859,7 @@ class ConfigTests(unittest.TestCase):
                 return path
             for change in ({"schema": "x"}, {"model": ""}, {"timeout_seconds": 0}, {"max_symbol_packet_bytes": 1.5},
                            {"max_symbols_per_run": 0}, {"max_run_seconds": 0}, {"max_packet_bytes": None, "max_symbol_packet_bytes": 0},
+                           {"setting_sources": ""}, {"isolation_probe": "yes"}, {"probe_prompt_file": "nope.md"},
                            {"prompt_file": "nope.md"}, {"cli_path": {"default": "x"}}, {"strip_env": "x"}):
                 with self.assertRaises(ConfigError, msg=str(change)):
                     load_config(write({**document, **change}), project_root=ROOT)
@@ -912,7 +938,8 @@ class ScriptTests(Env, unittest.TestCase):
             command = record["command"]
             self.assertEqual(command[0], "<claude-cli>")
             for flag in ("--model", "--effort", "--tools", "--output-format", "--json-schema",
-                         "--no-session-persistence", "--system-prompt-file"):
+                         "--no-session-persistence", "--system-prompt-file", "--strict-mcp-config",
+                         "--disable-slash-commands", "--setting-sources"):
                 self.assertIn(flag, command)
             self.assertEqual(command[command.index("--system-prompt-file") + 1], "configs/llm_note/prompt_v1.md")
             self.assertNotIn(str(ROOT), json.dumps(record["command"][2:]))
@@ -1026,6 +1053,70 @@ class ScriptTests(Env, unittest.TestCase):
         record = self.record_of(second)
         self.assertEqual((record["status"], record["category"], record["called"]), ("unavailable", "usage_limit", False))
         self.assertIn(f"Analiz notu {second}: analiz notu alınamadı (usage_limit)", err)
+
+    def test_probe_isolation_records_the_answer_and_sends_no_data(self):
+        probe, log = self.tmp / "probe.json", self.tmp / "calls.log"
+        code, out, err = self.run_note("ok", "--probe-isolation", probe=probe, log=log, probe_answer="Hayır.")
+        self.assertEqual((code, self.status(out)), (0, "probe:clean"), err)
+        self.assertEqual(log.read_text(encoding="utf-8").split("\n")[:-1], ["PROBE"])  # one call, no packet
+        seen = json.loads(probe.read_text(encoding="utf-8"))
+        self.assertNotIn("--json-schema", seen["argv"])
+        self.assertEqual(seen["argv"][seen["argv"].index("--setting-sources") + 1], "local")
+        self.assertIn("--strict-mcp-config", seen["argv"])
+        self.assertIn("--disable-slash-commands", seen["argv"])
+        self.assertFalse(seen["has_api_key"] or seen["has_auth_token"])
+        self.assertNotEqual(Path(seen["cwd"]).resolve(), ROOT.resolve())
+        self.assertTrue((self.out_dir / "_probes" / "attempt-001" / "record.json").exists())
+        record = json.loads((self.out_dir / "_probes" / "attempt-001" / "record.json").read_text(encoding="utf-8"))
+        self.assertEqual((record["result"], record["answer_text"]), ("clean", "Hayır."))
+        self.assertEqual(record["setting_sources"], "local")
+        self.assertEqual(record["cli"]["version"], "fake-cli 0.0.1")
+        self.assertEqual(record["question"], runner.PROBE_STDIN)
+        self.assertNotIn("--json-schema", record["command"])
+        self.assertFalse((self.out_dir / AS_OF).exists())  # no note records, no data read
+        # a second probe never overwrites the first
+        self.run_note("ok", "--probe-isolation", probe_answer="hayır")
+        self.assertTrue((self.out_dir / "_probes" / "attempt-002" / "record.json").exists())
+
+    def test_probe_isolation_answers_other_than_no_fail(self):
+        for answer, result in (("Evet", "not_isolated"), ("belki", "unclear"), ("", "unclear")):
+            with self.subTest(answer=answer):
+                code, out, _ = self.run_note("ok", "--probe-isolation", probe_answer=answer)
+                self.assertEqual((code, self.status(out)), (3, f"probe:{result}"))
+        code, out, _ = self.run_note("refusal", "--probe-isolation")
+        self.assertEqual((code, self.status(out)), (3, "probe:unavailable:refusal"))
+
+    def test_probe_isolation_needs_no_as_of_or_observations(self):
+        out, err = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, {"FAKE_CLAUDE_MODE": "ok"}), \
+                patch.object(runner, "build_command", lambda cli, **kw: [sys.executable, str(FAKE_CLI)]), \
+                patch.object(runner, "cli_version", lambda *a, **k: "fake"), \
+                redirect_stdout(out), redirect_stderr(err):
+            code = llm_script.main(["--probe-isolation", "--out-dir", str(self.out_dir)])
+        self.assertEqual((code, self.status(out.getvalue())), (0, "probe:clean"))
+        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+            llm_script.main(["--out-dir", str(self.out_dir)])  # --as-of is required otherwise
+
+    def test_isolation_probe_in_the_config_is_fail_closed(self):
+        document = json.loads(REAL_CONFIG.read_text(encoding="utf-8"))
+        document["isolation_probe"] = True
+        probing = self.tmp / "probing.json"
+        probing.write_text(json.dumps(document), encoding="utf-8")
+        log = self.tmp / "calls.log"
+        code, out, err = self.run_note("ok", "--config", str(probing), log=log, probe_answer="evet")
+        self.assertEqual((code, self.status(out)), (1, "error:isolation_probe:not_isolated"))
+        self.assertEqual(log.read_text(encoding="utf-8").split("\n")[:-1], ["PROBE"])  # no packet was sent
+        self.assertFalse((self.out_dir / AS_OF).exists())
+        log.unlink()
+        code, out, _ = self.run_note("ok", "--config", str(probing), log=log, probe_answer="hayır")
+        self.assertEqual((code, self.status(out)), (0, "ok=2,rejected=0,failed=0"))
+        self.assertEqual(log.read_text(encoding="utf-8").split("\n")[:-1],
+                         ["PROBE"] + [f"{s} ok" for s in sorted(self.symbols)])
+
+    def test_the_probe_is_off_by_default(self):
+        log = self.tmp / "calls.log"
+        self.run_note("ok", log=log)
+        self.assertNotIn("PROBE", log.read_text(encoding="utf-8"))
 
     def test_timeout(self):
         code, out, err = self.run_note("timeout", "--timeout-seconds", "1")
@@ -1199,10 +1290,13 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         return [p for p in parts if p]
 
     def note_messages(self) -> list[str]:
-        base = self.messages()
-        with_note = self.messages("--llm-note-dir", str(self.out_dir))
-        self.assertEqual(with_note[:len(base)], base)
-        return with_note[len(base):]
+        """With ``--llm-note-dir`` ONLY the note is produced (its own message,
+        never appended to the deterministic notice)."""
+        messages = self.messages("--llm-note-dir", str(self.out_dir))
+        deterministic = self.messages()
+        self.assertTrue(all(m not in deterministic for m in messages))
+        self.assertTrue(messages[0].startswith("Opus 5.5 analiz notu") or messages[0].startswith(render.TITLE))
+        return messages
 
     def test_without_the_flag_output_is_unchanged(self):
         self.run_note("ok")  # verified notes exist on disk, but the flag is off
@@ -1336,9 +1430,8 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
             self.assertEqual(chunk.count(fmt.DIRECTION_WARNING_TR), 1)
         self.assertIn("Durum: preregistered_hypothesis_holdout_test_pending", chunks[-1])
 
-    def test_send_includes_note_messages_in_one_receipt(self):
-        self.run_note("ok")
-        sent = []
+    def send(self, *extra: str, sent: list | None = None, fail_on: int | None = None):
+        sent = sent if sent is not None else []
 
         def fake_send(token, chat_id, text, **kwargs):
             sent.append(text)
@@ -1347,41 +1440,76 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with patch.dict(os.environ, {"FINTR_TELEGRAM_BOT_TOKEN": "123:abc", "FINTR_TELEGRAM_CHAT_ID": "9"}), \
                 patch.object(notify, "send_message", fake_send), redirect_stdout(out), redirect_stderr(err):
-            code = notify.main(self.notify_argv("--send", "--llm-note-dir", str(self.out_dir)))
-        self.assertEqual(code, 0, err.getvalue())
-        self.assertTrue(sent[-1].startswith(render.TITLE))
-        receipt = json.loads((self.tmp / "receipts" / AS_OF / "receipt.json").read_text(encoding="utf-8"))
-        self.assertEqual(receipt["llm_note_messages"], 1)
-        self.assertEqual(len(receipt["message_sha256"]), len(sent))
-        self.assertEqual(receipt["message_sha256"][-1], hashlib.sha256(sent[-1].encode("utf-8")).hexdigest())
-        with patch.dict(os.environ, {"FINTR_TELEGRAM_BOT_TOKEN": "123:abc", "FINTR_TELEGRAM_CHAT_ID": "9"}), \
-                patch.object(notify, "send_message", fake_send), redirect_stdout(io.StringIO()), \
-                redirect_stderr(io.StringIO()) as again:
-            code = notify.main(self.notify_argv("--send", "--llm-note-dir", str(self.out_dir)))
-        self.assertEqual(code, 1)  # existing receipt still blocks a re-send
+            code = notify.main(self.notify_argv("--send", *extra))
+        return code, err.getvalue(), sent
+
+    def test_the_note_is_sent_as_its_own_message_with_its_own_receipt(self):
+        self.run_note("ok")
+        code, err, first = self.send()  # the deterministic notice, exactly as without the note step
+        self.assertEqual(code, 0, err)
+        receipt_path = self.tmp / "receipts" / AS_OF / "receipt.json"
+        before = receipt_path.read_bytes()
+        code, err, second = self.send("--llm-note-dir", str(self.out_dir))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(second), 1)
+        self.assertTrue(second[0].startswith(render.TITLE))
+        self.assertTrue(all(not m.startswith(render.TITLE) for m in first))
+        self.assertEqual(receipt_path.read_bytes(), before)  # the notice's receipt is untouched
+        note_receipt = json.loads(
+            (self.tmp / "receipts" / AS_OF / "note_receipt.json").read_text(encoding="utf-8"))
+        self.assertEqual(note_receipt["schema"], "fintr_notify_note_receipt_v1")
+        self.assertEqual(note_receipt["message_sha256"], [hashlib.sha256(second[0].encode("utf-8")).hexdigest()])
+        self.assertNotIn("llm_note_messages", json.loads(before))
+
+    def test_the_note_receipt_blocks_a_second_send_but_not_the_notice(self):
+        self.run_note("ok")
+        self.assertEqual(self.send("--llm-note-dir", str(self.out_dir))[0], 0)
+        code, err, sent = self.send("--llm-note-dir", str(self.out_dir))
+        self.assertEqual((code, sent), (1, []))
+        self.assertIn("analiz notu receipt zaten var", err)
+        self.assertIn(pipeline.RECEIPT_EXISTS_MARK, err)  # the pipeline recognises it
+        # --resend writes a timestamped note receipt; the notice's own guard is independent
+        code, _, sent = self.send("--llm-note-dir", str(self.out_dir), "--resend")
+        self.assertEqual((code, len(sent)), (0, 1))
+        names = sorted(p.name for p in (self.tmp / "receipts" / AS_OF).iterdir())
+        self.assertTrue(any(n.startswith("note_receipt-") for n in names), names)
+        self.assertIn("note_receipt.json", names)
+        self.assertEqual(self.send()[0], 0)  # the deterministic notice was never sent: still allowed
+
+    def test_note_mode_with_no_condition_met_sends_nothing(self):
+        document = json.loads(self.obs_path.read_bytes())
+        for block in document["symbols"].values():
+            for obs in block["scans"][0]["observations"]:
+                obs["condition_met"] = False
+        self.obs_path.write_text(json.dumps(document), encoding="utf-8")
+        code, err, sent = self.send("--llm-note-dir", str(self.out_dir))
+        self.assertEqual((code, sent), (0, []))
 
     def test_send_without_the_flag_has_no_llm_receipt_field(self):
-        sent = []
-        with patch.dict(os.environ, {"FINTR_TELEGRAM_BOT_TOKEN": "123:abc", "FINTR_TELEGRAM_CHAT_ID": "9"}), \
-                patch.object(notify, "send_message", lambda t, c, text, **k: (sent.append(text), SendResult(1))[1]), \
-                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(notify.main(self.notify_argv("--send")), 0)
+        code, err, sent = self.send()
+        self.assertEqual(code, 0, err)
         receipt = json.loads((self.tmp / "receipts" / AS_OF / "receipt.json").read_text(encoding="utf-8"))
         self.assertNotIn("llm_note_messages", receipt)
+        self.assertEqual(receipt["schema"], "fintr_notify_receipt_v1")
+
 
 
 # --- pipeline ------------------------------------------------------------------------------
 
 
 SAVED = os.path.join("data", "interim", "scanner_daily", AS_OF, "observations.json")
-STEP = {"collect_daily.py": 0, "scan_observations.py": 1, "llm_note.py": 2, "notify_observations.py": 3}
 
 
-def _go(argv, llm_stdout="LLM_NOTE_STATUS: ok=2,rejected=0,failed=0\n", llm_code=0, llm_raises=None, notify_code=0):
-    calls = []
+def _go(argv, llm_stdout="LLM_NOTE_STATUS: ok=2,rejected=0,failed=0\n", llm_code=0, llm_raises=None,
+        notify_code=0, notify_stderr="", note_notify_code=0, note_notify_stderr="", note_notify_raises=None,
+        env=None):
+    """Run the pipeline with every child replaced; returns (rc, calls, stdout,
+    stderr, kwargs of each call)."""
+    calls, kwargs_seen = [], []
 
     def run(cmd, **kwargs):
         calls.append(cmd)
+        kwargs_seen.append(kwargs)
         name = Path(cmd[1]).name
         if name == "scan_observations.py":
             return subprocess.CompletedProcess(cmd, 0, stdout="OBS", stderr=f"Observations saved: {SAVED}\n")
@@ -1390,13 +1518,18 @@ def _go(argv, llm_stdout="LLM_NOTE_STATUS: ok=2,rejected=0,failed=0\n", llm_code
                 raise llm_raises
             return subprocess.CompletedProcess(cmd, llm_code, stdout=llm_stdout, stderr="note stderr\n")
         if name == "notify_observations.py":
-            return subprocess.CompletedProcess(cmd, notify_code, stdout="", stderr="")
+            if "--llm-note-dir" in cmd:
+                if note_notify_raises:
+                    raise note_notify_raises
+                return subprocess.CompletedProcess(cmd, note_notify_code, stdout="", stderr=note_notify_stderr)
+            return subprocess.CompletedProcess(cmd, notify_code, stdout="", stderr=notify_stderr)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     out, err = io.StringIO(), io.StringIO()
-    with patch.object(pipeline.subprocess, "run", run), redirect_stdout(out), redirect_stderr(err):
+    with patch.object(pipeline.subprocess, "run", run), redirect_stdout(out), redirect_stderr(err), \
+            patch.dict(os.environ, env or {}):
         rc = pipeline.main(argv)
-    return rc, calls, out.getvalue(), err.getvalue()
+    return rc, calls, out.getvalue(), err.getvalue(), kwargs_seen
 
 
 class PipelineTests(unittest.TestCase):
@@ -1404,27 +1537,53 @@ class PipelineTests(unittest.TestCase):
         return [Path(c[1]).name for c in calls]
 
     def test_default_off_behaviour_is_unchanged(self):
-        rc, calls, out, _ = _go(["--allow-session-takeover"])
+        rc, calls, out, _, _ = _go(["--allow-session-takeover"])
         self.assertEqual(rc, 0)
         self.assertEqual(self.names(calls), ["collect_daily.py", "scan_observations.py", "notify_observations.py"])
         self.assertEqual(calls[2][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR])
         self.assertNotIn("llm_note", out)
+        self.assertNotIn("note_notify", out)
         self.assertEqual(pipeline.build_parser().parse_args([]).llm_note, False)
 
-    def test_flag_adds_the_step_between_scan_and_notify(self):
-        rc, calls, out, err = _go(["--allow-session-takeover", "--send", "--llm-note"])
+    def test_default_off_summary_is_the_same_text_as_before(self):
+        rc, _, out, _, _ = _go(["--allow-session-takeover"])
+        self.assertEqual(out.splitlines(), [
+            "Pipeline summary:", "  collect: 0", "  scan: 0", "  notify: 0", f"  as_of: {AS_OF}",
+            f"  scanner output: {SAVED}", "  sent: no (notify dry-run)"])
+        rc, _, out, _, _ = _go(["--skip-collect", "--send"], notify_code=1,
+                               notify_stderr="Notify failed: bu as_of için receipt zaten var (x)\n",
+                               env={"FINTR_TELEGRAM_BOT_TOKEN": "t", "FINTR_TELEGRAM_CHAT_ID": "c"})
         self.assertEqual(rc, 0)
-        self.assertEqual(self.names(calls),
-                         ["collect_daily.py", "scan_observations.py", "llm_note.py", "notify_observations.py"])
-        self.assertEqual(calls[2][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR,
+        self.assertEqual(out.splitlines()[-1], "  sent: no (already sent earlier; no resend)")
+        self.assertIn("  notify: already_sent", out)
+
+    def test_the_deterministic_notice_goes_first_then_the_note_then_the_note_notice(self):
+        rc, calls, out, err, kwargs = _go(["--allow-session-takeover", "--send", "--llm-note"],
+                                          env={"FINTR_TELEGRAM_BOT_TOKEN": "t", "FINTR_TELEGRAM_CHAT_ID": "c"})
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.names(calls), ["collect_daily.py", "scan_observations.py", "notify_observations.py",
+                                             "llm_note.py", "notify_observations.py"])
+        # the deterministic call is exactly what it is without --llm-note
+        self.assertEqual(calls[2][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR, "--send"])
+        self.assertEqual(calls[3][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR,
                                         "--daily-root", pipeline.DAILY_ROOT, "--out-dir", pipeline.LLM_NOTES_DIR])
-        self.assertEqual(calls[3][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR, "--send",
+        self.assertEqual(calls[4][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR, "--send",
                                         "--llm-note-dir", pipeline.LLM_NOTES_DIR])
-        self.assertNotIn("--resend", calls[3])
-        self.assertIn("llm_note: ok=2,rejected=0,failed=0", out)
+        self.assertNotIn("--resend", calls[4])
+        self.assertIn("  llm_note: ok=2,rejected=0,failed=0", out)
+        self.assertIn("  note_notify: 0", out)
         self.assertIn("note stderr", err)
 
-    def test_note_failure_never_stops_the_pipeline(self):
+    def test_captured_children_get_utf8_env_and_replace_errors_including_the_note_children(self):
+        _, calls, _, _, kwargs = _go(["--llm-note"])
+        for cmd, seen in zip(calls, kwargs):
+            if Path(cmd[1]).name == "collect_daily.py":
+                continue  # inherits stdio: it prompts itself
+            self.assertEqual(seen["env"]["PYTHONIOENCODING"], "utf-8", cmd)
+            self.assertEqual(seen["errors"], "replace", cmd)
+            self.assertEqual(seen["encoding"], "utf-8", cmd)
+
+    def test_note_failure_never_changes_the_notice_or_the_exit_code(self):
         cases = [
             dict(llm_stdout="LLM_NOTE_STATUS: ok=0,rejected=0,failed=2\n", llm_code=3),
             dict(llm_stdout="LLM_NOTE_STATUS: ok=0,rejected=2,failed=0\n", llm_code=3),
@@ -1433,36 +1592,67 @@ class PipelineTests(unittest.TestCase):
             dict(llm_stdout="garbage\n", llm_code=0),
             dict(llm_raises=OSError("boom")),
             dict(llm_raises=RuntimeError("boom")),
+            dict(note_notify_code=1),
+            dict(note_notify_code=2, note_notify_stderr="Notify failed: x\n"),
+            dict(note_notify_raises=OSError("boom")),
         ]
         for case in cases:
             with self.subTest(case=case):
-                rc, calls, out, _ = _go(["--llm-note", "--send"], **case)
+                rc, calls, out, _, _ = _go(["--llm-note", "--send"], **case,
+                                           env={"FINTR_TELEGRAM_BOT_TOKEN": "t", "FINTR_TELEGRAM_CHAT_ID": "c"})
                 self.assertEqual(rc, 0)
-                self.assertEqual(self.names(calls)[-1], "notify_observations.py")
-                self.assertIn("--send", calls[-1])
+                self.assertEqual(self.names(calls)[:3], ["collect_daily.py", "scan_observations.py",
+                                                         "notify_observations.py"])
+                self.assertIn("--send", calls[2])
+                self.assertNotIn("--llm-note-dir", calls[2])  # the notice ran before and without the note
                 self.assertRegex(out, r"llm_note: \S+")
+                self.assertRegex(out, r"note_notify: \S+")
                 self.assertIn("notify: 0", out)
 
+    def test_note_notice_status_in_the_summary(self):
+        env = {"FINTR_TELEGRAM_BOT_TOKEN": "t", "FINTR_TELEGRAM_CHAT_ID": "c"}
+        _, _, out, _, _ = _go(["--llm-note", "--send"], note_notify_code=1, env=env,
+                              note_notify_stderr="Notify failed: bu as_of için analiz notu receipt zaten var (x)\n")
+        self.assertIn("note_notify: already_sent", out)
+        _, _, out, _, _ = _go(["--llm-note", "--send"], note_notify_code=1, env=env)
+        self.assertIn("note_notify: failed:exit_1", out)
+        _, calls, out, _, _ = _go(["--llm-note"], llm_stdout="LLM_NOTE_STATUS: no_observations\n")
+        self.assertIn("note_notify: skipped", out)
+        self.assertEqual(self.names(calls)[-1], "llm_note.py")
+
     def test_status_is_taken_from_the_status_line(self):
-        _, _, out, _ = _go(["--llm-note"], llm_stdout="x\nLLM_NOTE_STATUS: already_noted\n")
+        _, _, out, _, _ = _go(["--llm-note"], llm_stdout="x\nLLM_NOTE_STATUS: already_noted\n")
         self.assertIn("llm_note: already_noted", out)
-        _, _, out, _ = _go(["--llm-note"], llm_stdout="", llm_code=5)
+        _, _, out, _, _ = _go(["--llm-note"], llm_stdout="", llm_code=5)
         self.assertIn("llm_note: error:exit_5", out)
 
-    def test_notify_failure_is_still_reported_with_the_note_step(self):
-        rc, calls, out, _ = _go(["--llm-note"], notify_code=4)
+    def test_notify_failure_stops_before_the_note_step(self):
+        rc, calls, out, _, _ = _go(["--llm-note"], notify_code=4)
         self.assertEqual(rc, 4)
-        self.assertIn("llm_note: ok=2,rejected=0,failed=0", out)
+        self.assertNotIn("llm_note.py", self.names(calls))
         self.assertIn("failed with exit code 4", out)
 
-    def test_same_day_rerun_with_existing_note_is_idempotent(self):
-        rc, calls, out, _ = _go(["--skip-collect", "--llm-note"], llm_stdout="LLM_NOTE_STATUS: already_noted\n")
+    def test_already_sent_notice_still_runs_the_note_steps(self):
+        env = {"FINTR_TELEGRAM_BOT_TOKEN": "t", "FINTR_TELEGRAM_CHAT_ID": "c"}
+        rc, calls, out, _, _ = _go(["--skip-collect", "--llm-note", "--send"], notify_code=1, env=env,
+                                   notify_stderr="Notify failed: bu as_of için receipt zaten var (x)\n")
         self.assertEqual(rc, 0)
-        self.assertEqual(self.names(calls), ["scan_observations.py", "llm_note.py", "notify_observations.py"])
+        self.assertEqual(self.names(calls), ["scan_observations.py", "notify_observations.py", "llm_note.py",
+                                             "notify_observations.py"])
+        self.assertIn("  notify: already_sent", out)
+        self.assertIn("  note_notify: 0", out)
+        self.assertEqual(out.splitlines()[-1], "  sent: no (already sent earlier; no resend)")
+
+    def test_same_day_rerun_with_existing_note_is_idempotent(self):
+        rc, calls, out, _, _ = _go(["--skip-collect", "--llm-note"], llm_stdout="LLM_NOTE_STATUS: already_noted\n")
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.names(calls), ["scan_observations.py", "notify_observations.py", "llm_note.py",
+                                             "notify_observations.py"])
 
     def test_dry_run_and_scan_failure_skip_the_note(self):
-        rc, calls, _, _ = _go(["--dry-run", "--llm-note"])
+        rc, calls, _, _, _ = _go(["--dry-run", "--llm-note"])
         self.assertEqual(self.names(calls), ["collect_daily.py"])
+
 
 
 class RealPipelineSmokeTests(Env, unittest.TestCase):

@@ -649,25 +649,41 @@ $env:PYTHONPATH = "$PWD\src"
 .\.venv\Scripts\python.exe scripts\run_daily_pipeline.py --allow-session-takeover --llm-note
 ```
 
-- **Sıra:** toplama -> tarama -> `llm_note.py` -> bildirim (`--llm-note-dir
-  data\interim\llm_notes` ile). Not adımının hatası boru hattını **durdurmaz**;
-  deterministik mesaj yine gider. Hisse başına bir model çağrısı yapılır; özette
-  `llm_note: <durum>` görünür: `ok=A,rejected=B,failed=C` (+ `,already=D`:
-  zaten doğrulanmış notu olan hisseler; `rejected` = doğrulamadan geçemedi,
-  `failed` = alınamadı), `already_noted`, `no_observations`, `error:<kategori>`.
-  Adım hisse sayısı x çağrı süresi kadar sürer (varsayılan: çağrı başına 900 sn
-  zaman aşımı, tüm adım için `max_run_seconds` 5400); bildirim not adımından sonra
-  gider.
+- **Sıra:** toplama -> tarama -> **deterministik bildirim** (modeli beklemez) ->
+  `llm_note.py` -> not bildirimi (`notify_observations.py --llm-note-dir
+  data\interim\llm_notes`: kendi Telegram mesajı, kendi makbuzu
+  `note_receipt.json`, aynı no-overwrite/`--resend` koruması). Not adımının veya not
+  bildiriminin hatası gönderilmiş bildirimi ve çıkış kodunu değiştirmez; yalnız
+  özette görünür. Hisse başına bir model çağrısı yapılır; özette `llm_note:
+  <durum>`: `ok=A,rejected=B,failed=C` (+ `,already=D`: zaten doğrulanmış notu
+  olan hisseler; `rejected` = doğrulamadan geçemedi, `failed` = alınamadı),
+  `already_noted`, `no_observations`, `error:<kategori>`; ve `note_notify: 0 |
+  already_sent | skipped | failed:exit_N`. Adım hisse sayısı x çağrı süresi kadar
+  sürer (çağrı başına 900 sn zaman aşımı, tüm adım için `max_run_seconds` 5400).
 - **Ön koşul:** Claude Code CLI Efe'nin aboneliğiyle giriş yapmış olmalı
   (`%USERPROFILE%\.local\bin\claude.exe`; farklı yol için
   `configs/llm_note/config_v1.json` `cli_path` ya da `scripts\llm_note.py
   --claude-path`). `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` çocuk sürece
   geçirilmez (abonelik kullanılır). Çağrı: `claude -p --model claude-opus-5-5
-  --effort high --tools "" --output-format json --json-schema <şema>
-  --no-session-persistence --system-prompt-file configs\llm_note\prompt_v1.md`,
-  veri stdin'den; çalışma dizini boş geçici dizin. Bayrak adları CLI sürümüne
-  göre `src/fintr/llm_note/runner.py` `build_command` içinde tek yerde
-  değiştirilir (`claude --help` ile doğrula).
+  --effort high --tools "" --strict-mcp-config --disable-slash-commands
+  --setting-sources local --exclude-dynamic-system-prompt-sections
+  --output-format json --json-schema <şema> --no-session-persistence
+  --system-prompt-file configs\llm_note\prompt_v1.md`, veri stdin'den; çalışma
+  dizini her çağrıda yeni boş geçici dizin. `--bare` kullanılmaz (abonelik/OAuth
+  girişini hiç okumaz). Bayrak adları CLI sürümüne göre
+  `src/fintr/llm_note/runner.py` `build_command` içinde tek yerde değiştirilir
+  (`claude --help` ile doğrula). `--setting-sources` değeri config'te
+  (`setting_sources`, varsayılan `local`). `--exclude-dynamic-system-prompt-sections`
+  özel sistem istemiyle yok sayılır (zararsız).
+- **İzolasyon doğrulaması (CLI girişten sonra, bir kez):** `.\.venv\Scripts\python.exe
+  scripts\llm_note.py --probe-isolation` modele veri vermeden tek sabit evet/hayır
+  sorusu sorar (bağlamında kullanıcı/proje talimatı, CLAUDE.md, hook, MCP, skill veya
+  eklenti var mı?); cevabı `data\interim\llm_notes\_probes\attempt-NNN\record.json`'a
+  yazar. Çıkış 0 ve `LLM_NOTE_STATUS: probe:clean` = izole (`hayır`); `probe:not_isolated`
+  (`evet`) veya `probe:unclear` ise günlük çalıştırma açılmamalı (`setting_sources`/bayrakları
+  gözden geçir). `configs/llm_note/config_v1.json` içinde `"isolation_probe": true` her
+  çalıştırmada sondayı fail-closed ön kontrol yapar (varsayılan kapalı). Not: cevap
+  modelin kendi beyanıdır, kanıt değil; yine de bir kullanıcı talimatı sızıntısını yakalar.
 - **Önce dry-run:** `.\.venv\Scripts\python.exe scripts\llm_note.py --as-of
   <as_of> --scanner-dir data\interim\scanner_daily --dry-run` paketi kurar,
   hisse başına boyutunu/sha256'sını, en büyük ve ortanca bayt sayısını yazar;

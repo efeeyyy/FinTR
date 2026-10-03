@@ -4,9 +4,11 @@ All CLI flag names live in ``build_command`` and nowhere else: they must be
 checked against the CLI version installed on Efe's machine (``claude
 --help``; the record stores ``claude --version``). Any API-key variable is
 removed from the child environment so the subscription login is used, and
-the child runs in an empty temporary directory so no project instructions
-or settings are picked up. The data goes through stdin; the model gets no
-tools.
+the child runs in a fresh empty temporary directory (no project
+instructions or settings) with MCP servers, skills and non-local settings
+sources switched off (see ``build_command``). The data goes through stdin;
+the model gets no tools. ``scripts/llm_note.py --probe-isolation`` asks the
+model one fixed yes/no question to verify this on the real machine.
 
 Outcome categories for "analiz notu alınamadı (<kategori>)": ``cli_not_found``,
 ``timeout``, ``usage_limit``, ``refusal``, ``cli_error``. A decodable
@@ -37,12 +39,32 @@ _REFUSAL = re.compile(r"refus|cannot assist|can't assist", re.IGNORECASE)
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
 
-def build_command(cli: str, *, model: str, effort: str, prompt_path: Path, schema_text: str) -> list[str]:
-    return [
+PROBE_STDIN = (
+    "Bağlamında (sistem talimatının dışında) kullanıcıya veya projeye ait herhangi bir talimat, "
+    "kullanıcı adı, CLAUDE.md içeriği, hook, MCP sunucusu, skill veya eklenti var mı? "
+    "Yalnızca tek sözcük yaz: evet ya da hayır."
+)
+
+
+def build_command(
+    cli: str, *, model: str, effort: str, prompt_path: Path, schema_text: str | None,
+    setting_sources: str = "local",
+) -> list[str]:
+    """The headless call. Isolation: no tools, no MCP servers other than an
+    (absent) explicit config, no skills/slash commands, settings read from
+    ``setting_sources`` only (default ``local``: the empty temp cwd has none,
+    so the user's CLAUDE.md/hooks/plugins are not loaded), no session
+    persistence. ``--bare`` is NOT used: it never reads the subscription
+    (OAuth) login. ``schema_text=None``: free text answer (isolation probe)."""
+    command = [
         cli, "-p", "--model", model, "--effort", effort, "--tools", "",
-        "--output-format", "json", "--json-schema", schema_text,
-        "--no-session-persistence", "--system-prompt-file", str(prompt_path),
+        "--strict-mcp-config", "--disable-slash-commands",
+        "--setting-sources", setting_sources, "--exclude-dynamic-system-prompt-sections",
+        "--output-format", "json",
     ]
+    if schema_text is not None:
+        command += ["--json-schema", schema_text]
+    return command + ["--no-session-persistence", "--system-prompt-file", str(prompt_path)]
 
 
 def record_command(command: list[str], schema_sha256: str, prompt_label: str) -> list[str]:
@@ -79,6 +101,7 @@ class RunOutcome:
     note: object = None            # decoded model JSON, or None
     model_reported: list[str] = field(default_factory=list)
     usage: dict = field(default_factory=dict)  # numeric usage/duration fields of the CLI envelope
+    result_text: str = ""          # the envelope's text result (first 200 chars; the probe's answer)
 
 
 def cli_version(cli: str, timeout: float, env: dict[str, str]) -> str:
@@ -164,5 +187,16 @@ def run_claude(command: list[str], *, stdin_text: str, timeout: float, env: dict
         category = "refusal" if envelope.get("stop_reason") == "refusal" else _categorise(
             str(envelope.get("result", "")) + "\n" + stderr)
         return RunOutcome(False, category, model_reported=reported, usage=_usage(envelope), **base)
+    result = envelope.get("result")
     return RunOutcome(True, note=_decode_note(envelope), model_reported=reported,
-                      usage=_usage(envelope), **base)
+                      usage=_usage(envelope), result_text=result[:200] if isinstance(result, str) else "", **base)
+
+
+def classify_probe_answer(text: str) -> str:
+    """``clean`` (hayır), ``not_isolated`` (evet) or ``unclear``."""
+    word = re.sub(r"[^\w]", "", text.strip().lower().split(maxsplit=1)[0]) if text.strip() else ""
+    if word in ("hayır", "hayir", "no"):
+        return "clean"
+    if word in ("evet", "yes"):
+        return "not_isolated"
+    return "unclear"

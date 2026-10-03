@@ -20,8 +20,13 @@ SAVED = os.path.join("data", "interim", "scanner_daily", "2026-10-01", "observat
 STEP_INDEX = {"collect_daily.py": 0, "scan_observations.py": 1, "notify_observations.py": 2}
 
 
-def _go(argv, codes=(0, 0, 0), saved=True, scan_err=None, notify_err=""):
+TELEGRAM_ENV = {"FINTR_TELEGRAM_BOT_TOKEN": "test-token", "FINTR_TELEGRAM_CHAT_ID": "1"}
+
+
+def _go(argv, codes=(0, 0, 0), saved=True, scan_err=None, notify_err="", env=None):
     calls = []
+    if env is None:
+        env = TELEGRAM_ENV if "--send" in argv else {}
 
     def run(cmd, **kwargs):
         calls.append((cmd, kwargs))
@@ -34,7 +39,10 @@ def _go(argv, codes=(0, 0, 0), saved=True, scan_err=None, notify_err=""):
         return subprocess.CompletedProcess(cmd, codes[idx], stdout="SECRET-OBSERVATION", stderr=err)
 
     out, err = io.StringIO(), io.StringIO()
-    with patch.object(rdp.subprocess, "run", run), redirect_stdout(out), redirect_stderr(err):
+    with patch.dict(os.environ, env, clear=False), patch.object(rdp.subprocess, "run", run),             redirect_stdout(out), redirect_stderr(err):
+        for name in rdp.TELEGRAM_ENV:
+            if name not in env:
+                os.environ.pop(name, None)
         rc = rdp.main(argv)
     return rc, calls, out.getvalue(), err.getvalue()
 
@@ -124,6 +132,30 @@ class PipelineTests(unittest.TestCase):
     def test_other_notify_failure_with_send_still_fails(self):
         rc, calls, out, _ = _go(["--send"], codes=(0, 0, 1), notify_err="Notify failed: token\n")
         self.assertEqual(rc, 1)
+
+    def test_send_without_telegram_env_stops_before_collect(self):
+        rc, calls, _, err = _go(["--allow-session-takeover", "--send"], env={})
+        self.assertEqual(rc, 2)
+        self.assertEqual(calls, [])
+        self.assertIn("FINTR_TELEGRAM_BOT_TOKEN", err)
+        self.assertNotIn("test-token", err)
+
+    def test_send_with_partial_env_names_only_missing_variable(self):
+        rc, calls, _, err = _go(["--send"], env={"FINTR_TELEGRAM_BOT_TOKEN": "test-token"})
+        self.assertEqual((rc, calls), (2, []))
+        self.assertIn("FINTR_TELEGRAM_CHAT_ID", err)
+        self.assertNotIn("test-token", err)
+
+    def test_dry_run_send_does_not_need_telegram_env(self):
+        rc, calls, _, _ = _go(["--dry-run", "--send"], env={})
+        self.assertEqual(rc, 0)
+        self.assertEqual(_names(calls), ["collect_daily.py"])
+
+    def test_captured_children_get_utf8_and_tolerant_decoding(self):
+        _, calls, _, _ = _go(["--allow-session-takeover"])
+        for cmd, kwargs in calls[1:]:
+            self.assertEqual(kwargs["env"]["PYTHONIOENCODING"], "utf-8")
+            self.assertEqual(kwargs["errors"], "replace")
 
     def test_extract_as_of(self):
         self.assertEqual(rdp.extract_as_of(f"x\nObservations saved: {SAVED}\n"), ("2026-10-01", SAVED))

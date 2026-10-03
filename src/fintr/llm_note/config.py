@@ -37,6 +37,10 @@ class NoteConfig:
     schema_path: Path
     schema_text: str
     schema_sha256: str
+    setting_sources: str = "local"       # --setting-sources value: user CLAUDE.md/hooks/plugins stay out
+    isolation_probe: bool = False        # true: every run first checks the isolation, fail-closed
+    probe_prompt_path: Path | None = None
+    probe_prompt_sha256: str = ""
 
 
 def _positive(document: dict, key: str, kind: type) -> float | int:
@@ -67,10 +71,21 @@ def load_config(path: Path, *, project_root: Path) -> NoteConfig:
     strip_env = document.get("strip_env", [])
     if not isinstance(strip_env, list) or not all(isinstance(item, str) for item in strip_env):
         raise ConfigError("strip_env: expected a list of strings")
+    setting_sources = document.get("setting_sources", "local")
+    if not isinstance(setting_sources, str) or not setting_sources:
+        raise ConfigError("setting_sources: expected a non-empty string")
+    isolation_probe = document.get("isolation_probe", False)
+    if not isinstance(isolation_probe, bool):
+        raise ConfigError("isolation_probe: expected true or false")
+    probe_file = document.get("probe_prompt_file", "configs/llm_note/probe_prompt_v1.md")
+    if not isinstance(probe_file, str) or not probe_file:
+        raise ConfigError("probe_prompt_file: expected a non-empty string")
     prompt_path = Path(project_root) / document["prompt_file"]
     schema_path = Path(project_root) / document["output_schema_file"]
+    probe_prompt_path = Path(project_root) / probe_file
     try:
         prompt_bytes = prompt_path.read_bytes()
+        probe_prompt_sha256 = hashlib.sha256(probe_prompt_path.read_bytes()).hexdigest()
         schema_bytes = schema_path.read_bytes()
         schema_text = json.dumps(json.loads(schema_bytes), ensure_ascii=False, separators=(",", ":"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -87,4 +102,6 @@ def load_config(path: Path, *, project_root: Path) -> NoteConfig:
         strip_env=list(strip_env), prompt_path=prompt_path,
         prompt_sha256=hashlib.sha256(prompt_bytes).hexdigest(), schema_path=schema_path,
         schema_text=schema_text, schema_sha256=hashlib.sha256(schema_bytes).hexdigest(),
+        setting_sources=setting_sources, isolation_probe=isolation_probe,
+        probe_prompt_path=probe_prompt_path, probe_prompt_sha256=probe_prompt_sha256,
     )
