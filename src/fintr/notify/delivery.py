@@ -289,7 +289,10 @@ def build_receipt(
     observations_sha256: str, rules_file_sha256: str | None, layout: str,
     explanations_path: str | None, explanations_sha256: str | None,
     delivery_path: str, delivery_sha256: str, delay_seconds: float,
+    extra: dict | None = None,
 ) -> dict:
+    """``extra``: optional layout-specific provenance fields (layout v3's
+    ``note_assessments``); absent when None, so earlier receipts are unchanged."""
     return {
         "schema": RECEIPT_SCHEMA_V2,
         "as_of": as_of,
@@ -305,6 +308,7 @@ def build_receipt(
             "path": delivery_path, "sha256": delivery_sha256,
             "inter_message_delay_seconds": delay_seconds,
         },
+        **(extra or {}),
         **_progress_fields(plan, messages, outcome),
     }
 

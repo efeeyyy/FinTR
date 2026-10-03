@@ -876,6 +876,16 @@ faturalama/secret yönetimi; Efe aboneliğiyle Claude Code CLI başsız modu
 rakam uydurma/yasak ifade riski; reddedildi: çıktı JSON şemalıdır ve kodla
 fail-closed doğrulanır.
 
+Karar (2026-10-03, Efe; ADR kaydı `docs/prereg/DECISIONS.md`): Telegram "sinyal chati" düzeni v3
+(`fintr.notify.layout_v3`). Problem: v2'nin çok mesajı ve uzun metinleri okunmuyor; ayrı not
+mesajları da dağınık. Alternatifler: (a) v2'yi kısaltmak -- reddedildi, v1/v2 baytları korunmalı;
+(b) notu v3 mesajından ayrı göndermek -- reddedildi, tek mesaj istendi; (c) bildirimi nota
+beklettirmek -- reddedildi, AGENTS.md deterministik bildirimin nota bağlı düşmemesini şart
+koşar. Karar: v3 tek mesaj, hisse başına tek satır; satıra yalnız kabul edilmiş notun kanıt
+kelimesi (yoksa `—`) girer; pipeline notu mesajdan önce çalıştırır (zaman sınırlı) ve sonucu ne
+olursa olsun mesajı gönderir; receipt/devam v2 ile aynı. Sonuç: not metni artık telefonda
+görünmez (kayıt `data/interim/llm_notes` altında kalır); `--layout v2` eski akışı korur.
+
 Karar: 2026-10-02 (Efe) -- `scripts/llm_note.py` (`src/fintr/llm_note/`),
 `run_daily_pipeline.py --llm-note` ile açılan (varsayılan kapalı) adım: tarama ile
 bildirim arasında çalışır, bildirim dosyasındaki `condition_met` hisseleri için

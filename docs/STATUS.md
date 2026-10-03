@@ -147,6 +147,11 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
 7. Telegram botu: çalışıyor; ilk gerçek gönderim 2026-10-03 (as_of 10-02). Token/chat id Efe'nin
    Windows User ortam değişkenlerinde. `run_daily_pipeline.py --send` değişken yoksa toplamadan
    önce durur (`b7c0373`). Efe'nin geri bildirimi: tek uzun mesaj okunmuyor → `notify-layout-v2`.
+   Efe kararı 2026-10-03 ("sinyal chati"): varsayılan düzen v3 (günde tek mesaj, hisse başına
+   tek satır, `↑ al yönlü`/`↓ sat yönlü`, `Opus: <kelime|—>`); `run_daily_pipeline.py --llm-note`
+   v3'te sırası collect → scan → llm_note → tek mesaj, not hatası/zaman aşımı mesajı düşürmez
+   (`—`); analiz notu istemi prompt v3 (`getiri/kazanç/kâr` yasağı açık). v1/v2 ve `--llm-note-dir`
+   yolu aynen duruyor (`--layout v2`). Bkz. `docs/notify.md`, `docs/prereg/DECISIONS.md` 2026-10-03.
 5. KAP erişimi tarayıcıda engelli; KAP belgeleri Efe'den gelir (indirme Java serileştirme
    sarmalıdır, 27 bayt başlık atılınca PDF).
 6. Canlı yanıtlarda bilinmeyen olay tipleri görüldü; fiyat/derinlik protokolü keşfedilmedi.

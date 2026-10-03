@@ -17,9 +17,14 @@ hypothesised direction label ("beklenen yön: yukarı (al yönlü)" / "aşağı
 (v2, ``fintr.notify.layout``): one summary message, then one message per
 stock with a met condition, sent in order with a short pause and recorded
 in a resumable receipt (``fintr.notify.delivery``); ``--layout v1`` keeps
-the previous single flat text. The analysis note (``--llm-note-dir``) is
-sent and recorded the same way in its own ``note_receipt*.json`` files. See
-``docs/notify.md`` and ``docs/scanner.md``.
+the previous single flat text. Layout v3 (the default since Efe's decision
+of 2026-10-03, ``fintr.notify.layout_v3``): the Telegram signal chat -- one
+short message a day, one line per stock, with the accepted analysis note's
+evidence word (``--note-assessments-dir``) in the same line; same receipt
+family and resume rules as v2, so a same-day re-run sends nothing again. The
+analysis note as its own messages (``--llm-note-dir``) is sent and recorded
+the same way in its own ``note_receipt*.json`` files, whatever the layout.
+See ``docs/notify.md`` and ``docs/scanner.md``.
 
 Safe defaults: dry-run unless ``--send`` is passed (no network call, the
 message(s) are only printed to stdout); the token and chat id are read
@@ -47,6 +52,7 @@ from fintr.notify import format as fmt
 from fintr.notify.direction import load_rule_directions, load_rule_horizons
 from fintr.notify.explanations import RuleExplanationsError, load_rule_explanations
 from fintr.notify.layout import render_layout_v2
+from fintr.notify.layout_v3 import render_layout_v3
 from fintr.notify.telegram import TelegramSendError, send_message
 from fintr.scanner.rules import ScannerRulesError
 
@@ -87,8 +93,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--rules-file", type=Path, default=DEFAULT_RULES_FILE,
                          help="frozen scanner rule file the direction label is read from "
                               f"(resolved against the repo root); default: {DEFAULT_RULES_FILE}")
-    parser.add_argument("--layout", choices=("v1", "v2"), default="v2",
-                         help="v2 (default): summary message + one message per stock with a met "
+    parser.add_argument("--layout", choices=("v1", "v2", "v3"), default="v3",
+                         help="v3 (default): the signal chat, one short message a day with one line "
+                              "per stock; v2: summary message + one message per stock with a met "
                               "condition; v1: the previous single flat text")
     parser.add_argument("--rule-explanations", type=Path, default=DEFAULT_RULE_EXPLANATIONS_FILE,
                          help=f"layout v2 fixed rule texts; default: {DEFAULT_RULE_EXPLANATIONS_FILE}")
@@ -109,6 +116,13 @@ def _parser() -> argparse.ArgumentParser:
              "as its own message(s) with its own resumable receipt (note_receipt.json; a partly "
              "sent note is completed by re-running, changed content needs --resend); the "
              "deterministic notice is a separate run without this flag (docs/notify.md)",
+    )
+    parser.add_argument(
+        "--note-assessments-dir", type=Path, default=None,
+        help="layout v3 only; default: off (every Opus field prints the dash). Root of the "
+             "analysis notes written by scripts/llm_note.py; the evidence word of each stock's "
+             "ACCEPTED note is shown in its line, a missing/rejected/failed note prints the dash. "
+             "Unlike --llm-note-dir this sends no note message",
     )
     parser.add_argument(
         "--skip-empty", action="store_true",
@@ -179,6 +193,26 @@ class _V2:
         self.explanations = explanations
         self.delay_seconds = delay_seconds
         self.delivery_sha256 = delivery_sha256
+        self.extra = None
+
+
+def _prepare_v3(args, document: dict, directions: dict | None, positive_symbols: list[str]) -> _V2:
+    """Layout v3: one signal message; the receipt/delay machinery is v2's."""
+    delay_seconds, delivery_sha256 = delivery.load_delivery_config(args.delivery_config)
+    if args.message_delay_seconds is not None:
+        delay_seconds = max(0.0, args.message_delay_seconds)
+    assessments: dict = {}
+    if args.note_assessments_dir is not None:
+        assessments = llm_render.accepted_assessments(
+            args.note_assessments_dir, args.as_of.isoformat(), positive_symbols,
+        )
+    messages = render_layout_v3(document, directions, assessments, as_of=args.as_of.isoformat())
+    v3 = _V2(messages, None, delay_seconds, delivery_sha256)
+    v3.extra = (
+        {"note_assessments": {"dir": str(args.note_assessments_dir), "shown": len(assessments)}}
+        if args.note_assessments_dir is not None else None
+    )
+    return v3
 
 
 def _prepare_v2(args, document: dict, rule_texts: dict, directions: dict | None) -> _V2:
@@ -281,7 +315,7 @@ def _deliver(
 
 
 def _send_v2(args, v2: _V2, receipt_dir: Path, obs_path: Path, obs_bytes: bytes, document: dict) -> int:
-    """Layout v2: the deterministic notice (``receipt*.json`` family)."""
+    """Layouts v2 and v3: the deterministic notice (``receipt*.json`` family)."""
     obs_sha256 = hashlib.sha256(obs_bytes).hexdigest()
     return _deliver(
         args, v2.messages, receipt_dir, obs_sha256,
@@ -291,10 +325,10 @@ def _send_v2(args, v2: _V2, receipt_dir: Path, obs_path: Path, obs_bytes: bytes,
             plan, v2.messages, outcome, as_of=args.as_of.isoformat(),
             observations_path=str(obs_path), observations_sha256=obs_sha256,
             rules_file_sha256=document.get("rules_file_sha256"), layout=args.layout,
-            explanations_path=str(args.rule_explanations),
-            explanations_sha256=v2.explanations.sha256,
+            explanations_path=str(args.rule_explanations) if v2.explanations is not None else None,
+            explanations_sha256=v2.explanations.sha256 if v2.explanations is not None else None,
             delivery_path=str(args.delivery_config), delivery_sha256=v2.delivery_sha256,
-            delay_seconds=v2.delay_seconds,
+            delay_seconds=v2.delay_seconds, extra=v2.extra,
         ),
     )
 
@@ -318,7 +352,10 @@ def _send_note(args, messages: list[str], receipt_dir: Path, obs_path: Path, obs
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.note_assessments_dir is not None and args.layout != "v3":
+        parser.error("--note-assessments-dir needs --layout v3")
 
     obs_path = args.scanner_dir / args.as_of.isoformat() / "observations.json"
     try:
@@ -396,9 +433,12 @@ def main(argv: list[str] | None = None) -> int:
             args.llm_note_dir, args.as_of.isoformat(), directions=directions,
             has_observations=positive, expected_symbols=llm_packet.positive_symbols(document),
         )
-    elif args.layout == "v2":
+    elif args.layout in ("v2", "v3"):
         try:
-            v2 = _prepare_v2(args, document, rule_texts, directions)
+            if args.layout == "v3":
+                v2 = _prepare_v3(args, document, directions, llm_packet.positive_symbols(document))
+            else:
+                v2 = _prepare_v2(args, document, rule_texts, directions)
         except (RuleExplanationsError, delivery.DeliveryConfigError) as exc:
             print(f"Notify failed: {exc}", file=sys.stderr)
             return 1
