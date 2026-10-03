@@ -214,14 +214,19 @@ Opus 5.5 analiz notu, kendi mesajı ve kendi makbuzuyla (`note_receipt.json`)
 yazdırılır/gönderilir (`scripts/llm_note.py`, `src/fintr/llm_note/`; tasarım:
 `docs/architecture.md`, karar: `docs/prereg/DECISIONS.md`). Deterministik bildirim
 ayrı, bayraksız bir çağrıdır (varsayılan düzen v2; `--layout v1` önceki tek metni verir)
-ve modeli beklemez. Not modu `--layout`'u yok sayar: not mesajları kendi biçimindedir, tek
-seferlik gönderilir ve yalnız `note_receipt.json` yazar (v2'nin kısmi-devam receipt'i yalnız
-deterministik bildirimdir; ikisinin receipt'leri birbirinden bağımsızdır, `receipt*.json`
-deseni `note_receipt*.json` dosyalarını görmez). Notun gönderimi yarıda hata verirse receipt
-yazılmaz ve aynı komut notu baştan gönderir (`--resend` gerekmez; çift gönderim mümkündür).
+ve modeli beklemez. Not modu `--layout`'u yok sayar: not mesajları kendi biçimindedir ve
+yalnız `note_receipt*.json` dosyalarını yazar. Not gönderimi, deterministik bildirimin
+düzen v2 yoluyla aynı devam edebilir mekanizmayı kullanır (`src/fintr/notify/delivery.py`;
+aşağıdaki "Receipt" maddesi); iki bildirimin receipt'leri birbirinden bağımsızdır
+(`receipt*.json` deseni `note_receipt*.json` dosyalarını görmez).
 `run_daily_pipeline.py --llm-note` sırası: toplama, tarama, deterministik bildirim,
 `llm_note.py`, not bildirimi. Not adımının hatası gönderilmiş bildirimi veya çıkış
-kodunu değiştirmez; yalnız özette görünür.
+kodunu değiştirmez; yalnız özette görünür (`note_notify: 0 | already_sent | partial |
+content_changed | skipped | failed:exit_N`). Aynı gün yeniden çalıştırmada tamamlanmış not
+tekrar gönderilmez (`already_sent`), yarım kalmış notun yalnız gönderilmemiş mesajları
+gider (`0`); yarıda kalan bu çalıştırma `partial`, içerik değiştiği için reddedilen
+`content_changed` görünür. Pipeline `--resend` geçmez; tam yeniden gönderim elle
+`notify_observations.py --llm-note-dir ... --resend` ile yapılır.
 
 ```
 Opus 5.5 analiz notu — doğrulanmamış hipotez değerlendirmesi, yatırım tavsiyesi değildir
@@ -295,14 +300,33 @@ Durum: preregistered_hypothesis_holdout_test_pending
   tek satır `... bu as_of için not yok (adım çalıştırılmadı).`, gözlem yoksa `...
   bu taramada gözlem yok; not üretilmedi.` Reddedilen/eksik not deterministik
   mesajı hiçbir zaman engellemez.
-- **Receipt:** not mesajları `data/interim/notify/<as_of>/note_receipt.json`
-  (şema `fintr_notify_note_receipt_v1`; `message_sha256`, mesaj kimlikleri) dosyasına
-  no-overwrite yazılır; deterministik bildirimin `receipt.json`'u ayrıdır ve
-  değişmez. Aynı tekrar gönderim engeli geçerlidir: not makbuzu varsa ikinci
-  gönderim reddedilir (`--resend` bilinçli karar ister, zaman damgalı
-  `note_receipt-<damga>.json` yazar). Notun makbuzu bildirimin gönderimine, bildirimin
-  makbuzu notun gönderimine bağlı değildir. Hiç `condition_met` yoksa not mesajı
-  gönderilmez.
+- **Receipt (devam edebilir, şema `fintr_notify_note_receipt_v2`):** not mesajları
+  sırayla gider; her çalıştırma `data/interim/notify/<as_of>/` altına create-only
+  (`O_EXCL`, hiç yeniden yazılmaz) bir dosya bırakır: oturumu başlatan çalıştırma
+  `note_receipt.json` (`--resend` için `note_receipt-<damga>.json`), aynı oturumu
+  sürdüren her sonraki çalıştırma `note_receipt.part-NNN.json`. Her dosya o çalıştırma
+  sonrası mesajların tamamının SHA-256'sını (`message_sha256`) ve mesaj başına durumu
+  (`message_status`: `sent` + Telegram `message_id`, ya da `not_sent`), ayrıca
+  `complete`, `failed_at_index`, `error_kind` (yalnız istisna sınıf adı; token/chat id
+  hiçbir yere yazılmaz) taşır. Gönderim yarıda kalırsa (ağ/Telegram hatası ya da Ctrl-C)
+  o ana kadar gidenler yine kaydedilir; aynı as_of için komut tekrar çalıştırılınca
+  **yalnız gönderilmemiş** not mesajları gider (`--resend` gerekmez). Devam, yalnız
+  yeni not mesajları oturumunkilerle aynı hash'e ve aynı observations SHA-256'ya
+  sahipse yapılır; içerik farklıysa (ör. aynı gün not yeniden üretildi) hiçbir şey
+  gönderilmez ve `--resend` istenir (`--resend` baştan tam gönderimdir, yeni oturum
+  başlatır). Tamamlanmış oturum varken ikinci gönderim reddedilir ("analiz notu
+  receipt zaten var"). **Eski `fintr_notify_note_receipt_v1` dosyaları** devam edilebilir
+  oturum sayılmaz; tamamlanmış gönderim gibi davranır: sessizce yeniden gönderim olmaz,
+  gönderim reddedilir, yalnız `--resend` yeniden gönderir. Notun gönderimi deterministik
+  bildirime, bildirimin gönderimi nota bağlı değildir; deterministik bildirim `receipt.json`
+  ailesinde kalır. Not modunda mesajlar arası bekleme yoktur (`--message-delay-seconds`
+  verilirse uygulanır). Hiç `condition_met` yoksa not mesajı gönderilmez.
+- **Kalan risk (not ve bildirim için aynı):** Telegram isteği zaman aşımına uğrar ama
+  mesaj aslında iletilmişse, istemci bunu bilemez; o mesaj `not_sent` kalır ve devam
+  çalıştırması tek mesajı bir kez daha gönderir (yalnız o mesaj; tamamlanmış diğerleri
+  tekrarlanmaz). Mesaj gönderildikten sonra receipt yazılamazsa (disk hatası) devam
+  durumu da yazılamaz; hata mesajı bunu ve gönderilen mesaj sayısını bildirir ve o
+  çalıştırmanın mesajları sonraki çalıştırmada tekrar gidebilir.
 - **Veri Anthropic'e gider:** ham AKD/takas verisinin üçüncü tarafa gönderimi
   Efe'nin kararıdır; Mini App lisans beyanının bunu kapsadığı doğrulanmadı.
 

@@ -12,13 +12,19 @@ Optional steps 4-5, only with ``--llm-note`` (default off; Efe's decision of
 2026-10-02), AFTER the deterministic notice has been sent so it never waits
 for the model: 4. ``llm_note.py --as-of <as_of>``; 5. ``notify_observations.py
 --llm-note-dir`` = the note as its own Telegram message(s) with its own
-receipt (``note_receipt.json``, same no-overwrite/resend guard). Their
-failure never changes the already-sent notice or the exit code; the summary
-shows ``llm_note: <status>`` (the script's ``LLM_NOTE_STATUS`` line; one model
-call per symbol, so normally ``ok=A,rejected=B,failed=C``) and ``note_notify:
-<0|already_sent|skipped|failed:exit_N>``. A symbol with an accepted note for the
-same as_of is not regenerated on a same-day re-run. Without ``--llm-note`` the
-behaviour is exactly as before.
+resumable receipt (``note_receipt.json``; per-message sent state, like the
+notice's). Their failure never changes the already-sent notice or the exit
+code; the summary shows ``llm_note: <status>`` (the script's ``LLM_NOTE_STATUS``
+line; one model call per symbol, so normally ``ok=A,rejected=B,failed=C``) and
+``note_notify: <0|already_sent|partial|content_changed|skipped|failed:exit_N>``.
+A symbol with an accepted note for the same as_of is not regenerated on a
+same-day re-run. On a same-day re-run a completely sent note is not sent again
+(``already_sent``); a partly sent note is completed (only the unsent note
+messages go out, ``0``); ``partial`` = this run stopped part-way (re-run to
+finish), ``content_changed`` = a partial note receipt exists but the note's
+content differs, so nothing was sent (a full resend needs ``notify_observations.py
+--llm-note-dir ... --resend`` by hand; this script never passes ``--resend``).
+Without ``--llm-note`` the behaviour is exactly as before.
 
 Any other non-zero exit stops the pipeline with that exit code; nothing is sent.
 The scanner's stdout (the observation document) is captured and discarded;
@@ -43,6 +49,8 @@ LLM_STATUS_PREFIX = "LLM_NOTE_STATUS: "
 SAVED_PREFIX = "Observations saved:"
 EXISTS_PREFIX = "Scan failed: output file already exists (no overwrite):"
 RECEIPT_EXISTS_MARK = "receipt zaten var"
+NOTE_PARTIAL_MARK = "analiz notu kısmi gönderim ("
+NOTE_CHANGED_MARK = "mesaj içeriği ondan farklı"
 TELEGRAM_ENV = ("FINTR_TELEGRAM_BOT_TOKEN", "FINTR_TELEGRAM_CHAT_ID")
 
 
@@ -135,7 +143,7 @@ def run_llm_note(as_of: str) -> str:
 
 def run_note_notify(as_of: str, send: bool) -> str:
     """Send (or dry-run) the note as its own Telegram message(s); returns a
-    status string. Never raises."""
+    status string (see the module docstring). Never raises."""
     try:
         proc = subprocess.run(notify_command(as_of, send, note=True), cwd=ROOT,
                               stderr=subprocess.PIPE, text=True, encoding="utf-8",
@@ -144,8 +152,19 @@ def run_note_notify(as_of: str, send: bool) -> str:
         return f"error:{type(exc).__name__}"
     if proc.stderr:
         sys.stderr.write(proc.stderr)
-    if proc.returncode == 1 and send and RECEIPT_EXISTS_MARK in (proc.stderr or ""):
-        return "already_sent"
+    note_err = proc.stderr or ""
+    if proc.returncode == 1 and send:
+        if RECEIPT_EXISTS_MARK in note_err:
+            return "already_sent"
+        if NOTE_CHANGED_MARK in note_err:
+            print("Note receipt for this as_of is incomplete but the note content changed; "
+                  "nothing sent. To send the whole note again run notify_observations.py "
+                  "--llm-note-dir ... --resend by hand.")
+            return "content_changed"
+        if NOTE_PARTIAL_MARK in note_err:
+            print("Note was only partly sent; re-running the same command sends only the "
+                  "note messages not yet sent (see note_receipt.json).")
+            return "partial"
     return "0" if proc.returncode == 0 else f"failed:exit_{proc.returncode}"
 
 

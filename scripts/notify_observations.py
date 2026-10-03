@@ -17,7 +17,9 @@ hypothesised direction label ("beklenen yön: yukarı (al yönlü)" / "aşağı
 (v2, ``fintr.notify.layout``): one summary message, then one message per
 stock with a met condition, sent in order with a short pause and recorded
 in a resumable receipt (``fintr.notify.delivery``); ``--layout v1`` keeps
-the previous single flat text. See ``docs/notify.md`` and ``docs/scanner.md``.
+the previous single flat text. The analysis note (``--llm-note-dir``) is
+sent and recorded the same way in its own ``note_receipt*.json`` files. See
+``docs/notify.md`` and ``docs/scanner.md``.
 
 Safe defaults: dry-run unless ``--send`` is passed (no network call, the
 message(s) are only printed to stdout); the token and chat id are read
@@ -59,8 +61,6 @@ DEFAULT_DELIVERY_CONFIG_FILE = Path("configs/notify/delivery_v1.json")
 
 RULE_TEXTS_SCHEMA = "fintr_notify_rule_texts_v1"
 RECEIPT_SCHEMA = "fintr_notify_receipt_v1"
-NOTE_RECEIPT_SCHEMA = "fintr_notify_note_receipt_v1"
-NOTE_RECEIPT_NAME = "note_receipt"
 
 
 def _date(value: str) -> date:
@@ -95,8 +95,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--delivery-config", type=Path, default=DEFAULT_DELIVERY_CONFIG_FILE,
                          help=f"layout v2 delivery settings; default: {DEFAULT_DELIVERY_CONFIG_FILE}")
     parser.add_argument("--message-delay-seconds", type=float, default=None,
-                         help="pause between two messages of one send (layout v2); "
-                              "default: the delivery config's value")
+                         help="pause between two messages of one send (layout v2: default is the "
+                              "delivery config's value; analysis note: default is no pause)")
     parser.add_argument(
         "--no-direction-label", action="store_true",
         help="do not label observations with the frozen rule's hypothesised direction; "
@@ -106,8 +106,9 @@ def _parser() -> argparse.ArgumentParser:
         "--llm-note-dir", type=Path, default=None,
         help="default: off. Root of the analysis notes written by scripts/llm_note.py "
              "(<dir>/<as-of>/<SYM>/attempt-NNN/). With it, ONLY the analysis note is printed/sent, "
-             "as its own message(s) with its own receipt (note_receipt.json); the deterministic "
-             "notice is a separate run without this flag (docs/notify.md)",
+             "as its own message(s) with its own resumable receipt (note_receipt.json; a partly "
+             "sent note is completed by re-running, changed content needs --resend); the "
+             "deterministic notice is a separate run without this flag (docs/notify.md)",
     )
     parser.add_argument(
         "--skip-empty", action="store_true",
@@ -120,8 +121,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--resend", action="store_true",
-        help="send again, under a new receipt file, even though a receipt already exists "
-             "for this as_of",
+        help="send again in full, under a new receipt file, even though a receipt (complete or "
+             "partial) already exists for this as_of",
     )
     return parser
 
@@ -139,20 +140,20 @@ def load_rule_texts(path: Path) -> dict[str, str]:
     return {str(key): str(value) for key, value in rules.items()}
 
 
-def _receipt_target(receipt_dir: Path, *, resend: bool, name: str = "receipt") -> Path:
-    """The receipt path to write to; never an existing file. Without
-    ``--resend``, only the primary ``<name>.json`` is ever offered, and
+def _receipt_target(receipt_dir: Path, *, resend: bool) -> Path:
+    """The layout v1 receipt path to write to; never an existing file. Without
+    ``--resend``, only the primary ``receipt.json`` is ever offered, and
     the caller must treat its existence as a rejection."""
-    primary = receipt_dir / f"{name}.json"
+    primary = receipt_dir / "receipt.json"
     if not primary.exists():
         return primary
     if not resend:
         raise FileExistsError(primary)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    candidate = receipt_dir / f"{name}-{stamp}.json"
+    candidate = receipt_dir / f"receipt-{stamp}.json"
     suffix = 2
     while candidate.exists():
-        candidate = receipt_dir / f"{name}-{stamp}-{suffix}.json"
+        candidate = receipt_dir / f"receipt-{stamp}-{suffix}.json"
         suffix += 1
     return candidate
 
@@ -195,23 +196,27 @@ def _prepare_v2(args, document: dict, rule_texts: dict, directions: dict | None)
     return _V2(messages, explanations, delay_seconds, delivery_sha256)
 
 
-def _send_v2(args, v2: _V2, receipt_dir: Path, obs_path: Path, obs_bytes: bytes, document: dict) -> int:
-    """Send layout v2 messages in order; record sent/not-sent per message in a
-    create-only receipt and, on a re-run for the same as_of, send only what
-    was not sent (``fintr.notify.delivery``)."""
-    obs_sha256 = hashlib.sha256(obs_bytes).hexdigest()
+def _deliver(
+    args, messages: list[str], receipt_dir: Path, obs_sha256: str, *,
+    family: delivery.ReceiptFamily, what: str, label: str, delay_seconds: float, build_receipt,
+) -> int:
+    """Send ``messages`` in order; record sent/not-sent per message in a
+    create-only receipt of ``family`` and, on a re-run for the same as_of,
+    send only what was not sent (``fintr.notify.delivery``). ``what`` and
+    ``label`` word the messages ("receipt" / "analiz notu receipt");
+    ``build_receipt(plan, outcome)`` returns the receipt document."""
     try:
-        plan = delivery.plan_delivery(receipt_dir, v2.messages, obs_sha256, resend=args.resend)
+        plan = delivery.plan_delivery(receipt_dir, messages, obs_sha256, resend=args.resend, family=family)
     except FileExistsError:
         print(
-            f"Notify failed: bu as_of için receipt zaten var ({receipt_dir / delivery.PRIMARY_RECEIPT}); "
+            f"Notify failed: bu as_of için {what} zaten var ({receipt_dir / family.primary}); "
             "--resend ile yeniden gönder",
             file=sys.stderr,
         )
         return 1
     except delivery.ResumeMismatch:
         print(
-            "Notify failed: bu as_of için tamamlanmamış (kısmi) bir receipt var, ama mesaj içeriği "
+            f"Notify failed: bu as_of için tamamlanmamış (kısmi) bir {what} var, ama mesaj içeriği "
             "ondan farklı; çift gönderimi önlemek için gönderim reddedildi. Baştan göndermek için "
             "--resend kullan",
             file=sys.stderr,
@@ -228,31 +233,24 @@ def _send_v2(args, v2: _V2, receipt_dir: Path, obs_path: Path, obs_bytes: bytes,
         )
         return 1
 
+    prefix = f"Notify: {label}" if label else "Notify: "
     if plan.continues is not None:
         print(
-            f"Notify: kısmi gönderim sürdürülüyor ({len(plan.already_sent)}/{len(v2.messages)} "
+            f"{prefix}kısmi gönderim sürdürülüyor ({len(plan.already_sent)}/{len(messages)} "
             f"mesaj daha önce gönderilmiş; yalnız kalanlar gönderilecek)",
             file=sys.stderr,
         )
     outcome = delivery.execute(
-        plan, v2.messages,
+        plan, messages,
         send=lambda text: send_message(token, chat_id, text).message_id,
-        sleep=time.sleep, delay_seconds=v2.delay_seconds,
+        sleep=time.sleep, delay_seconds=delay_seconds,
     )
     if outcome.failed_index is not None and not outcome.sent_now:
         # Nothing new was sent: no receipt, state unchanged; re-run is safe.
         print(f"Notify failed: {redact_text(str(outcome.error), token, chat_id)}", file=sys.stderr)
         return 1
 
-    receipt = delivery.build_receipt(
-        plan, v2.messages, outcome, as_of=args.as_of.isoformat(),
-        observations_path=str(obs_path), observations_sha256=obs_sha256,
-        rules_file_sha256=document.get("rules_file_sha256"), layout=args.layout,
-        explanations_path=str(args.rule_explanations),
-        explanations_sha256=v2.explanations.sha256,
-        delivery_path=str(args.delivery_config), delivery_sha256=v2.delivery_sha256,
-        delay_seconds=v2.delay_seconds,
-    )
+    receipt = build_receipt(plan, outcome)
     receipt_payload = (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     try:
         _write_receipt(plan.target, receipt_payload)
@@ -264,22 +262,59 @@ def _send_v2(args, v2: _V2, receipt_dir: Path, obs_path: Path, obs_bytes: bytes,
         )
         return 1
     if outcome.failed_index is not None:
-        total = len(v2.messages)
+        total = len(messages)
         done = sum(1 for item in receipt["message_status"] if item["status"] == "sent")
         print(f"Notify failed: {redact_text(str(outcome.error), token, chat_id)}", file=sys.stderr)
         print(
-            f"Notify: kısmi gönderim ({done}/{total} mesaj; {outcome.failed_index}. mesajda hata); "
+            f"{prefix}kısmi gönderim ({done}/{total} mesaj; {outcome.failed_index}. mesajda hata); "
             f"receipt: {plan.target}; aynı komutu tekrar çalıştırınca yalnız gönderilmemiş "
             "mesajlar gönderilir",
             file=sys.stderr,
         )
         return 1
     print(
-        f"Notify: {len(outcome.sent_now)} mesaj gönderildi "
-        f"(toplam {len(v2.messages)}); receipt: {plan.target}",
+        f"{prefix}{len(outcome.sent_now)} mesaj gönderildi "
+        f"(toplam {len(messages)}); receipt: {plan.target}",
         file=sys.stderr,
     )
     return 0
+
+
+def _send_v2(args, v2: _V2, receipt_dir: Path, obs_path: Path, obs_bytes: bytes, document: dict) -> int:
+    """Layout v2: the deterministic notice (``receipt*.json`` family)."""
+    obs_sha256 = hashlib.sha256(obs_bytes).hexdigest()
+    return _deliver(
+        args, v2.messages, receipt_dir, obs_sha256,
+        family=delivery.DETERMINISTIC_RECEIPTS, what="receipt", label="",
+        delay_seconds=v2.delay_seconds,
+        build_receipt=lambda plan, outcome: delivery.build_receipt(
+            plan, v2.messages, outcome, as_of=args.as_of.isoformat(),
+            observations_path=str(obs_path), observations_sha256=obs_sha256,
+            rules_file_sha256=document.get("rules_file_sha256"), layout=args.layout,
+            explanations_path=str(args.rule_explanations),
+            explanations_sha256=v2.explanations.sha256,
+            delivery_path=str(args.delivery_config), delivery_sha256=v2.delivery_sha256,
+            delay_seconds=v2.delay_seconds,
+        ),
+    )
+
+
+def _send_note(args, messages: list[str], receipt_dir: Path, obs_path: Path, obs_bytes: bytes) -> int:
+    """The analysis note (``note_receipt*.json`` family); same resumable
+    delivery as layout v2. No pause between messages unless
+    ``--message-delay-seconds`` is given."""
+    obs_sha256 = hashlib.sha256(obs_bytes).hexdigest()
+    delay_seconds = max(0.0, args.message_delay_seconds or 0.0)
+    return _deliver(
+        args, messages, receipt_dir, obs_sha256,
+        family=delivery.NOTE_RECEIPTS, what="analiz notu receipt", label="analiz notu ",
+        delay_seconds=delay_seconds,
+        build_receipt=lambda plan, outcome: delivery.build_note_receipt(
+            plan, messages, outcome, as_of=args.as_of.isoformat(),
+            observations_path=str(obs_path), observations_sha256=obs_sha256,
+            note_dir=str(args.llm_note_dir), delay_seconds=delay_seconds,
+        ),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -351,8 +386,8 @@ def main(argv: list[str] | None = None) -> int:
     note_mode = args.llm_note_dir is not None
     v2 = None
     if note_mode:
-        # The analysis note ONLY, as its own message(s) with its own receipt
-        # (note_receipt.json, single-shot send as before); the deterministic
+        # The analysis note ONLY, as its own message(s) with its own resumable
+        # receipt (note_receipt*.json, ``_send_note``); the deterministic
         # notice (layout v1/v2) is never part of (or waits for) this call.
         if not positive:
             print("Notify: bu taramada gözlem yok; analiz notu mesajı yok.", file=sys.stderr)
@@ -377,16 +412,16 @@ def main(argv: list[str] | None = None) -> int:
             print(message)
         return 0
 
-    receipt_name = NOTE_RECEIPT_NAME if note_mode else "receipt"
     receipt_dir = args.out_dir / args.as_of.isoformat()
+    if note_mode:
+        return _send_note(args, messages, receipt_dir, obs_path, obs_bytes)
     if v2 is not None:
         return _send_v2(args, v2, receipt_dir, obs_path, obs_bytes, document)
     try:
-        receipt_target = _receipt_target(receipt_dir, resend=args.resend, name=receipt_name)
+        receipt_target = _receipt_target(receipt_dir, resend=args.resend)
     except FileExistsError:
-        what = "analiz notu receipt" if note_mode else "receipt"
         print(
-            f"Notify failed: bu as_of için {what} zaten var ({receipt_dir / (receipt_name + '.json')}); "
+            f"Notify failed: bu as_of için receipt zaten var ({receipt_dir / 'receipt.json'}); "
             "--resend ile yeniden gönder",
             file=sys.stderr,
         )
@@ -412,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     receipt = {
-        "schema": NOTE_RECEIPT_SCHEMA if note_mode else RECEIPT_SCHEMA,
+        "schema": RECEIPT_SCHEMA,
         "as_of": args.as_of.isoformat(),
         "sent_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "observations_path": str(obs_path),

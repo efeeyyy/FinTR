@@ -623,6 +623,57 @@ class DeliveryPlanTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 delivery.plan_delivery(root, self.MESSAGES, "o" * 64, resend=False)
 
+    def _note_receipt(self, path: Path, hashes: list[str], sent: dict[int, int]) -> None:
+        _v2_receipt(path, hashes, sent)
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["schema"] = delivery.NOTE_RECEIPT_SCHEMA_V2
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    def test_note_family_has_its_own_files_and_never_matches_the_notice_glob(self):
+        family = delivery.NOTE_RECEIPTS
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertFalse(list(root.glob("receipt*.json")))
+            plan = delivery.plan_delivery(root, self.MESSAGES, "o" * 64, resend=False, family=family)
+            self.assertEqual(plan.target.name, "note_receipt.json")
+            self._note_receipt(root / "note_receipt.json", self.HASHES, {1: 10})
+            self._note_receipt(root / "note_receipt.part-002.json", self.HASHES, {1: 10, 2: 11})
+            self.assertEqual(list(root.glob("receipt*.json")), [])  # the notice's glob sees nothing
+            self.assertIsNone(delivery.find_latest_session(root))
+            plan = delivery.plan_delivery(root, self.MESSAGES, "o" * 64, resend=False, family=family)
+            self.assertEqual((plan.to_send, plan.target.name, plan.continues),
+                             ((3,), "note_receipt.part-003.json", "note_receipt.json"))
+            with self.assertRaises(delivery.ResumeMismatch):
+                delivery.plan_delivery(root, ["a", "b", "CHANGED"], "o" * 64, resend=False, family=family)
+
+    def test_note_family_resend_head_and_complete_rejection(self):
+        family = delivery.NOTE_RECEIPTS
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._note_receipt(root / "note_receipt.json", self.HASHES, {1: 1, 2: 2, 3: 3})
+            with self.assertRaises(FileExistsError):
+                delivery.plan_delivery(root, self.MESSAGES, "o" * 64, resend=False, family=family)
+            plan = delivery.plan_delivery(root, self.MESSAGES, "o" * 64, resend=True, family=family)
+            self.assertRegex(plan.target.name, r"^note_receipt-\d{8}T\d{6}Z\.json$")
+            self._note_receipt(root / "note_receipt-20261003T101010Z.json", self.HASHES, {1: 4})
+            session = delivery.find_latest_session(root, family)
+            self.assertEqual(session.head.name, "note_receipt-20261003T101010Z.json")
+            self.assertEqual(session.sent, {1: 4})
+
+    def test_legacy_v1_note_receipt_counts_as_a_complete_send(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "note_receipt.json").write_text(
+                json.dumps({"schema": "fintr_notify_note_receipt_v1"}), encoding="utf-8")
+            with self.assertRaises(FileExistsError):
+                delivery.plan_delivery(root, self.MESSAGES, "o" * 64, resend=False, family=delivery.NOTE_RECEIPTS)
+
+    def test_the_two_families_do_not_read_each_others_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _v2_receipt(root / "note_receipt.json", self.HASHES, {1: 1})  # notice schema in a note file
+            self.assertTrue(delivery.find_latest_session(root, delivery.NOTE_RECEIPTS).legacy)
+
     def test_latest_session_is_the_newest_resend_even_with_a_collision_suffix(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
