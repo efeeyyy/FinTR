@@ -1,6 +1,6 @@
 # Proje durumu (devir notu)
 
-Son güncelleme: 2026-10-03. Yeni bir yönetici oturumu uzun sohbet geçmişi yerine bu
+Son güncelleme: 2026-10-03 (akşam). Yeni bir yönetici oturumu uzun sohbet geçmişi yerine bu
 dosyayı ve vault notunu (`Beynim/İkinci Beyin/notes/fintr-llm.md`) okuyarak devam eder.
 Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulur.
 
@@ -117,22 +117,26 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    (`--tools "" --strict-mcp-config --disable-slash-commands --setting-sources local
    --exclude-dynamic-system-prompt-sections`, boş temp cwd, CLAUDE*/ANTHROPIC* env silinir)
    elle tuzak soruyla doğrulandı (bayraksız: CLAUDE.md görülüyor; bayraklı: görülmüyor).
-   **DEVİR DURUMU (2026-10-03 öğleden sonra, yönetici oturumu kapandı):**
-   - Main'e birleşti ve push edildi: `daily-llm-note`, sahte CLI UTF-8 düzeltmesi,
-     `llm-probe-canary` (tuzak yöntemli yalıtım sınaması); 1028 test OK. Gerçek
-     `llm_note.py --probe-isolation` → `probe:clean`.
-   - İlk gerçek not çalıştırması (as_of 2026-10-02, 5 hisse, `llm_notes/2026-10-02/`):
-     `ok=2,rejected=3,failed=0`; redler: `number_word`, `number_not_in_input`, `schema`
-     (birer hisse). Çağrı başına ~40 sn, CLI'ın raporladığı eşdeğer maliyet ~0,35 USD
-     (abonelikten düşer). SIRADAKİ İŞ: her reddin ayrıntısını `record.json` → doğrulama
-     alanından oku (içerik değil, yalnız neden), prompt'u (`configs/llm_note/prompt_v1.md`)
-     ve gerekirse doğrulayıcıyı ayarla; yalnız tavsiye ifadeleri yasak kalmalı. Ayar sonrası
-     `llm_note.py` yeniden çalıştırılınca yalnız kabul edilmemiş hisseler denenir.
-   - Bulut görevi `notify-layout-v2` (Efe yapıştırdı; özet + hisse başına mesaj, okunur yüzde,
-     sabit "Ne demek" açıklamaları `configs/notify/rule_explanations_v1.json`): dal gelince
-     doğrula (açıklama metinlerini H*.md'ye karşı gözden geçir), main'le birleştir.
-   - Temizlik: eski worktree `.claude/worktrees/agent-ab7784bb8e3a538bf` (dal `daily-llm-note`,
-     main'e birleşti) silinebilir.
+   **DEVİR DURUMU (2026-10-03 akşam):**
+   - Main'de (push edildi, `d3e6d83`): analiz notu, tuzak yöntemli yalıtım sınaması
+     (`probe:clean`) ve prompt v2 (`configs/llm_note/prompt_v2.md`; gerekçe 1..6, yazıyla
+     sayma yok, gözlemin kendi `as_of` tarihi serbest; doğrulayıcıda tek gevşetme bu tarih);
+     1032 test OK.
+   - İlk gerçek not (as_of 2026-10-02): `ok=2,rejected=3`; redler `number_word` ("iki"),
+     `number_not_in_input` (kendi as_of tarihi), `schema` (reasons 1..6) → prompt v2 ile ele
+     alındı. Kalan 3 hisse (KRDMD, PETKM, TRALT) için yeniden çalıştırma Efe'de
+     (`llm_note.py --as-of 2026-10-02`; yönetici çalıştıramıyor, izin sınıflandırıcısı
+     ham veri gönderimini engelliyor). Sonucu yalnız kategori düzeyinde oku.
+   - Bildirim düzeni v2: bulut dalı `notify-layout-v2` sonnet-high ile doğrulandı ve main'le
+     birleştirildi → `origin/notify-layout-v2-merge` (`a3e66df`, 1097 test OK). Düzeltilenler:
+     etiketli her hisse mesajında uyarı satırı (AGENTS.md), kural satırlarında %10 bant,
+     Ctrl-C sonrası receipt, v1/not hata yollarında chat id redaksiyonu. Efe kararları
+     (2026-10-03): yüzde = |v|*100, özne VWAP ("Ortalama fiyat (VWAP proxy) kapanışın %X
+     altında/üstünde", eşik tam %1); etiket AGENTS.md'deki gibi küçük harf. Bu iki değişiklik
+     bulut görevi `notify-layout-v2-pct` (Efe yapıştırdı). Dal gelince: yerel alt ajan test +
+     dry-run (yalnız yapı), sonra main'e `--no-ff` birleştir; Efe push eder.
+   - Kalan risk (belgeli): Telegram zaman aşımında tek mesaj devamda bir kez daha gidebilir;
+     `--llm-note-dir` yolu tek seferlik (yarıda kalırsa notlar tekrar gider).
    - Sonra Efe'ye günlük komut: `run_daily_pipeline.py --allow-session-takeover --send
      --llm-note` (Telegram değişkenleri kalıcı User ortam değişkeni olarak kayıtlı).
 7. Telegram botu: çalışıyor; ilk gerçek gönderim 2026-10-03 (as_of 10-02). Token/chat id Efe'nin
@@ -146,8 +150,10 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
 
 - Yönetici = Opus 5.5, Extra effort; iş alt ajanlarda (`.claude/agents/`, model açık,
   zorluk kriterleri tanımlarda). Testleri/kontrolleri alt ajan yapar, yönetici spot-check eder.
-- Geçici: 100 USD bulut kredisi sürdükçe (en geç 2026-11-05) yalnız-kod işleri claude.ai/code
-  bulut oturumunda (private `efeeyyy/FinTR`, yeni dal, main'e push yok).
+- Geçici: bulut kredisi sürdükçe (en geç 2026-11-05; 2026-10-03'te ~25 USD kaldı) BÜTÜN kod
+  yazımı claude.ai/code bulut oturumunda (private `efeeyyy/FinTR`, yeni dal, main'e push yok);
+  doğrulamada bulunan küçük düzeltmeler dahil. Yerel alt ajanlar yalnız doğrular/test/veri
+  çalıştırır, kod düzenlemez (Efe, 2026-10-03: "kendi limitim dolmasın").
 - Efe'ye verilen her komut önce yönetici tarafından çalıştırılır (canlı olanlar `--dry-run`).
 - Finansal sonuçlar yönetici sohbetinde gösterilmez.
 
