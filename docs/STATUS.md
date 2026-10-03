@@ -1,6 +1,6 @@
 # Proje durumu (devir notu)
 
-Son güncelleme: 2026-10-03 (akşam). Yeni bir yönetici oturumu uzun sohbet geçmişi yerine bu
+Son güncelleme: 2026-10-04. Yeni bir yönetici oturumu uzun sohbet geçmişi yerine bu
 dosyayı ve vault notunu (`Beynim/İkinci Beyin/notes/fintr-llm.md`) okuyarak devam eder.
 Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulur.
 
@@ -142,6 +142,24 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
    - Kalan risk (belgeli): Telegram zaman aşımında tek mesaj devamda bir kez daha gidebilir;
      not yolu (`--llm-note-dir`) da devam edebilir `note_receipt` (v2) kullanır; kalan risk aynı
      (zaman aşımında tek not mesajı bir kez daha gidebilir). Bkz. `docs/notify.md`.
+   - 2026-10-03/04: 3 red yeniden denendi → KRDMD, PETKM kabul; TRALT 2 kez daha
+     `forbidden_phrase: getiri` (hipotezi anlatırken). Cuma (as_of 10-02) bildirimi v2 düzeniyle
+     `--resend` ile, not mesajları ayrıca gönderildi (Efe).
+   - Efe isteği (2026-10-03): "Opus nihai karar versin, KCHOL: al desin" → REDDEDİLDİ (kişisel
+     al/sat tavsiyesi; AGENTS.md LLM'i istisnadan hariç tutar). Yerine Efe'nin seçtiği düzen:
+     tek mesaj, hisse başına 1 satır `SYM ↑ al yönlü · H1 · Opus: destekliyor` (yön kuraldan,
+     Opus yalnız kanıt kelimesi). Bulut görevi `notify-signal-v3` Efe'ye verildi: `--layout v3`
+     varsayılan, pipeline sırası collect → scan → llm_note → tek v3 mesajı (not başarısızsa `—`
+     ile yine gider), AGENTS.md istisna metni + DECISIONS.md kaydı (kısa etiket, başlıkta uyarı),
+     prompt v3 ("getiri/kazanç/kâr" yok). Dal 2026-10-04 itibarıyla origin'de yoktu; gelince
+     yerel alt ajan doğrular (kod düzenlemez), yönetici birleştirir + push eder. Sonra TRALT
+     notu yeniden denenir.
+   - İzinler (Efe, 2026-10-04): `.claude/settings.local.json` (git dışı) → env PYTHONPATH=src,
+     PYTHONIOENCODING=utf-8; allow: git merge, `git push origin *`, venv python ile
+     run_daily_pipeline/notify_observations/scan_observations/collect_daily/llm_note. Yeni
+     oturumda geçerli. `--send` öncesi Efe'ye yine sorulur.
+   - Pazartesi notu: run date R toplar E=R−1'e kadar; Pazartesi verisi Salı sabahı (gece
+     yarısından sonra) çalıştırmayla gelir.
    - Sonra Efe'ye günlük komut: `run_daily_pipeline.py --allow-session-takeover --send
      --llm-note` (Telegram değişkenleri kalıcı User ortam değişkeni olarak kayıtlı).
 7. Telegram botu: çalışıyor; ilk gerçek gönderim 2026-10-03 (as_of 10-02). Token/chat id Efe'nin
