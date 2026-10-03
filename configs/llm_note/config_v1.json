@@ -2,7 +2,7 @@
   "schema": "fintr_llm_note_config_v1",
   "model": "claude-opus-5-5",
   "effort": "high",
-  "prompt_file": "configs/llm_note/prompt_v1.md",
+  "prompt_file": "configs/llm_note/prompt_v2.md",
   "output_schema_file": "configs/llm_note/output_schema_v1.json",
   "probe_prompt_file": "configs/llm_note/probe_prompt_v2.md",
   "probe_canaries": ["Efe", "AvenoxBeyin", "İkinci Beyin", "Beynim"],
