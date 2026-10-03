@@ -669,6 +669,9 @@ class ScriptTests(GuardEnvMixin, unittest.TestCase):
             "--scanner-dir", str(scanner_dir),
             "--out-dir", str(out_dir),
             "--rule-texts", str(REAL_RULE_TEXTS_FILE),
+            # These tests pin the v1 (flat single text) behaviour byte for byte;
+            # layout v2 is covered by tests/test_notify_layout.py.
+            "--layout", "v1",
         ]
 
     def test_dry_run_never_touches_network(self):

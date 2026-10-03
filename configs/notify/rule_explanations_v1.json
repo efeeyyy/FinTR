@@ -1,0 +1,28 @@
+{
+  "schema": "fintr_notify_rule_explanations_v1",
+  "description": "Bildirim düzeni v2'de (fintr.notify.layout) koşulu sağlayan her hisse mesajındaki sabit 'Kural' ve 'Ne demek' metinleri. Metinler dosya Git'tedir ve SHA-256'sı receipt'e yazılır; çalışma anında üretilmez. Yeni rakam, tarih, oran veya iddia eklemez.",
+  "sources": [
+    "docs/prereg/H1.md, H2.md, H3.md, H4.md: 'Hipotez' ve 'Gerekçe' bölümleri",
+    "configs/studies/prereg/h1..h4_*.json: condition alanı (eşikler)",
+    "docs/features.md: vwap_proxy ve top1_akd_net_share_of_volume tanımları"
+  ],
+  "style": "1-2 cümle, sade Türkçe; akademik atıf yok; kimsenin niyetine veya manipülasyona dair ima yok; yön ifadesi yalnız ön kayıtlı, henüz doğrulanmamış hipotez olarak verilir. 'meaning' yalnız yön etiketi gösterilen mesajlarda kullanılır; metin bulunmayan kural için satır atlanır.",
+  "rules": {
+    "H1": {
+      "rule_line": "ortalama fiyat (VWAP proxy) kapanışın en az %1, en çok %10 altında (daha büyük sapmalar veri/ölçek uyumsuzluğu ihtimali nedeniyle kural dışı)",
+      "meaning": "Gün içinde lotlar ortalama olarak kapanıştan daha düşük fiyattan el değiştirdi; kapanış günün tipik fiyatına göre yüksek kaldı. Ön kayıtlı, henüz doğrulanmamış hipotez: böyle geçici sapmalar sonraki günlerde kısmen geri döner (bu, kimsenin niyetine kanıt değildir)."
+    },
+    "H2": {
+      "rule_line": "ortalama fiyat (VWAP proxy) kapanışın en az %1, en çok %10 üstünde (daha büyük sapmalar veri/ölçek uyumsuzluğu ihtimali nedeniyle kural dışı)",
+      "meaning": "Gün içinde lotlar ortalama olarak kapanıştan daha yüksek fiyattan el değiştirdi; kapanış günün tipik fiyatına göre zayıf kaldı. Ön kayıtlı, henüz doğrulanmamış hipotez: böyle geçici sapmalar sonraki günlerde kısmen geri döner (bu, kimsenin niyetine kanıt değildir)."
+    },
+    "H3": {
+      "rule_line": "tek bir aracı kurumun AKD net payı günlük toplamın en az %10'u ve ortalama fiyat (VWAP proxy) kapanışın en az %1, en çok %10 altında (daha büyük sapmalar veri/ölçek uyumsuzluğu ihtimali nedeniyle kural dışı)",
+      "meaning": "Tek bir aracı kurum günün işlem büyüklüğünde belirgin bir net paya sahip oldu ve kapanış günün tipik fiyatına göre yüksek kaldı. Ön kayıtlı, henüz doğrulanmamış hipotez: yoğun ve tek yönlü emir akışının geçici fiyat etkisi sonraki günlerde kısmen geri döner (bu, hiçbir kurumun kimliğine veya niyetine dair çıkarım değildir)."
+    },
+    "H4": {
+      "rule_line": "tek bir aracı kurumun AKD net payı günlük toplamın en az %10'u ve ortalama fiyat (VWAP proxy) kapanışın en az %1, en çok %10 üstünde (daha büyük sapmalar veri/ölçek uyumsuzluğu ihtimali nedeniyle kural dışı)",
+      "meaning": "Tek bir aracı kurum günün işlem büyüklüğünde belirgin bir net paya sahip oldu ve kapanış günün tipik fiyatına göre zayıf kaldı. Ön kayıtlı, henüz doğrulanmamış hipotez: yoğun ve tek yönlü emir akışının geçici fiyat etkisi sonraki günlerde kısmen geri döner (bu, hiçbir kurumun kimliğine veya niyetine dair çıkarım değildir)."
+    }
+  }
+}

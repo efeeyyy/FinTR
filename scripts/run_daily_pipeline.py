@@ -186,8 +186,15 @@ def _summary(results, as_of=None, saved=None, sent=None) -> None:
 
 def _fail(results: list[tuple[str, str]], step: str, code: int) -> int:
     results.append((step, str(code)))
-    print(f"Pipeline stopped: step '{step}' failed with exit code {code}; "
-          "later steps not run, nothing sent.")
+    if step == "notify":
+        # Layout v2 sends several messages: some may already be out. The
+        # notifier's receipt records them; a re-run sends only the rest.
+        print(f"Pipeline stopped: step '{step}' failed with exit code {code}; later steps not run. "
+              "If the notice was partly sent, re-running the same command sends only the "
+              "messages not yet sent (see the notify receipt).")
+    else:
+        print(f"Pipeline stopped: step '{step}' failed with exit code {code}; "
+              "later steps not run, nothing sent.")
     _summary(results)
     return code
 

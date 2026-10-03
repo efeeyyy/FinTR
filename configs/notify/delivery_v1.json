@@ -1,0 +1,5 @@
+{
+  "schema": "fintr_notify_delivery_v1",
+  "description": "Telegram teslimat ayarları (bildirim düzeni v2). Çok mesajlı gönderimde mesajlar sırayla gider; ardışık iki mesaj arasında bu kadar saniye beklenir (Telegram'ın aynı sohbete saniyede yaklaşık 1 mesaj sınırına saygı için). Değer değiştirilirse receipt'te SHA-256'sı değişir.",
+  "inter_message_delay_seconds": 1.0
+}

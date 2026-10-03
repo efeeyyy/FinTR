@@ -39,6 +39,9 @@ from fintr.llm_note.record import latest_accepted, latest_attempt, symbol_dir
 from fintr.llm_note.validate import resolve_pointer, validate_note
 from fintr.evaluation.symbol_guard import load_active_guards
 from fintr.notify import format as fmt
+from fintr.notify.direction import load_rule_horizons
+from fintr.notify.explanations import load_rule_explanations
+from fintr.notify.layout import render_layout_v2
 from fintr.notify.telegram import SendResult
 from fintr.scanner.rules import load_scanner_rules
 
@@ -51,6 +54,7 @@ FAKE_CLI = ROOT / "tests" / "fixtures" / "fake_claude_cli.py"
 REAL_RULES_FILE = ROOT / "configs" / "scanner" / "rules_v1.json"
 REAL_CONFIG = ROOT / "configs" / "llm_note" / "config_v1.json"
 REAL_RULE_TEXTS = ROOT / "configs" / "notify" / "rule_texts_v1.json"
+REAL_EXPLANATIONS = ROOT / "configs" / "notify" / "rule_explanations_v1.json"
 
 
 def _load_script(name: str):
@@ -1482,10 +1486,15 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         rule_texts = json.loads(REAL_RULE_TEXTS.read_text(encoding="utf-8"))["rules"]
         directions = {"H1": "negative", "H2": "positive", "H3": "negative", "H4": "positive"}
         expected = fmt.render_notification(document, rule_texts, directions)
-        self.assertEqual(self.messages(), [m + "\n" for m in expected])
+        self.assertEqual(self.messages("--layout", "v1"), [m + "\n" for m in expected])
         plain = fmt.render_notification(document, rule_texts, None)
-        self.assertEqual(self.messages("--no-direction-label"), [m + "\n" for m in plain])
+        self.assertEqual(self.messages("--layout", "v1", "--no-direction-label"), [m + "\n" for m in plain])
         self.assertNotIn("analiz notu", "".join(self.messages()).lower())
+        # default layout (v2): exactly the layout renderer's output, no note content
+        explanations = load_rule_explanations(REAL_EXPLANATIONS)
+        horizons = load_rule_horizons(REAL_RULES_FILE, project_root=ROOT)
+        v2 = render_layout_v2(document, rule_texts, directions, explanations, horizons)
+        self.assertEqual(self.messages(), [m + "\n" for m in v2])
 
     def test_verified_notes_are_one_message_per_symbol_plus_a_closing_message(self):
         self.run_note("ok")
@@ -1674,8 +1683,12 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         self.assertEqual(code, 0, err)
         receipt = json.loads((self.tmp / "receipts" / AS_OF / "receipt.json").read_text(encoding="utf-8"))
         self.assertNotIn("llm_note_messages", receipt)
-        self.assertEqual(receipt["schema"], "fintr_notify_receipt_v1")
-
+        self.assertEqual(receipt["schema"], "fintr_notify_receipt_v2")  # layout v2 (default)
+        code, err, _ = self.send("--layout", "v1", "--resend")
+        self.assertEqual(code, 0, err)
+        legacy = [p for p in (self.tmp / "receipts" / AS_OF).glob("receipt-*.json")]
+        self.assertEqual(len(legacy), 1)
+        self.assertEqual(json.loads(legacy[0].read_text(encoding="utf-8"))["schema"], "fintr_notify_receipt_v1")
 
 
 # --- pipeline ------------------------------------------------------------------------------
@@ -1815,6 +1828,9 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(rc, 4)
         self.assertNotIn("llm_note.py", self.names(calls))
         self.assertIn("failed with exit code 4", out)
+        # layout v2 may have sent part of the notice: the message must not claim "nothing sent"
+        self.assertNotIn("nothing sent", out)
+        self.assertIn("sends only the messages not yet sent", out)
 
     def test_already_sent_notice_still_runs_the_note_steps(self):
         env = {"FINTR_TELEGRAM_BOT_TOKEN": "t", "FINTR_TELEGRAM_CHAT_ID": "c"}
