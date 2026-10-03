@@ -639,3 +639,74 @@ $env:PYTHONPATH = "$PWD\src"
 
 Bu bölüm yalnız süreci anlatır; günlük toplamanın finansal sonuçları bu
 belgede veya yönetici sohbetinde tartışılmaz (`docs/STATUS.md`).
+
+### 6i. Günlük analiz notu: `--llm-note` (Opus 5.5, Claude Code CLI)
+
+Varsayılan **kapalı**. Açmak için 6h'deki tek komuta `--llm-note` ekle:
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\run_daily_pipeline.py --allow-session-takeover --llm-note
+```
+
+- **Sıra:** toplama -> tarama -> **deterministik bildirim** (modeli beklemez) ->
+  `llm_note.py` -> not bildirimi (`notify_observations.py --llm-note-dir
+  data\interim\llm_notes`: kendi Telegram mesajı, kendi makbuzu
+  `note_receipt.json`, aynı no-overwrite/`--resend` koruması). Not adımının veya not
+  bildiriminin hatası gönderilmiş bildirimi ve çıkış kodunu değiştirmez; yalnız
+  özette görünür. Hisse başına bir model çağrısı yapılır; özette `llm_note:
+  <durum>`: `ok=A,rejected=B,failed=C` (+ `,already=D`: zaten doğrulanmış notu
+  olan hisseler; `rejected` = doğrulamadan geçemedi, `failed` = alınamadı),
+  `already_noted`, `no_observations`, `error:<kategori>`; ve `note_notify: 0 |
+  already_sent | skipped | failed:exit_N`. Adım hisse sayısı x çağrı süresi kadar
+  sürer (çağrı başına 900 sn zaman aşımı, tüm adım için `max_run_seconds` 5400).
+- **Ön koşul:** Claude Code CLI Efe'nin aboneliğiyle giriş yapmış olmalı
+  (`%USERPROFILE%\.local\bin\claude.exe`; farklı yol için
+  `configs/llm_note/config_v1.json` `cli_path` ya da `scripts\llm_note.py
+  --claude-path`). `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` çocuk sürece
+  geçirilmez; `CLAUDE*`/`ANTHROPIC*` önekli bütün ortam değişkenleri de çıkarılır
+  (üst süreç Claude Code içinde çalışıyor olabilir; abonelik girişi kullanılır). Çağrı: `claude -p --model claude-opus-5-5
+  --effort high --tools "" --strict-mcp-config --disable-slash-commands
+  --setting-sources local --exclude-dynamic-system-prompt-sections
+  --output-format json --json-schema <şema> --no-session-persistence
+  --system-prompt-file configs\llm_note\prompt_v1.md`, veri stdin'den; çalışma
+  dizini her çağrıda yeni boş geçici dizin. `--bare` kullanılmaz (abonelik/OAuth
+  girişini hiç okumaz). Bayrak adları CLI sürümüne göre
+  `src/fintr/llm_note/runner.py` `build_command` içinde tek yerde değiştirilir
+  (`claude --help` ile doğrula). `--setting-sources` değeri config'te
+  (`setting_sources`, varsayılan `local`). `--exclude-dynamic-system-prompt-sections`
+  özel sistem istemiyle yok sayılır (zararsız).
+- **İzolasyon doğrulaması (CLI girişten sonra, bir kez):** `.\.venv\Scripts\python.exe
+  scripts\llm_note.py --probe-isolation` modele veri vermeden tek sabit kanarya
+  sorusu sorar (bağlamında anlatılmış kullanıcı adı / kişisel not klasörü adı var mı? yoksa
+  yalnızca `YOK`); kanarya sözcükleri yalnızca `probe_canaries` config'indedir, istemde yoktur;
+  cevabı `data\interim\llm_notes\_probes\attempt-NNN\record.json`'a
+  yazar. Çıkış 0 ve `LLM_NOTE_STATUS: probe:clean` = izole (`YOK`); `probe:not_isolated`
+  (cevapta bir kanarya sözcüğü geçti) veya `probe:unclear` ise günlük çalıştırma açılmamalı (`setting_sources`/bayrakları
+  gözden geçir). `configs/llm_note/config_v1.json` içinde `"isolation_probe": true` her
+  çalıştırmada sondayı fail-closed ön kontrol yapar (varsayılan kapalı). Not: cevap
+  modelin kendi beyanıdır, kanıt değil; yine de bir kullanıcı talimatı sızıntısını yakalar.
+- **Önce dry-run:** `.\.venv\Scripts\python.exe scripts\llm_note.py --as-of
+  <as_of> --scanner-dir data\interim\scanner_daily --dry-run` paketi kurar,
+  hisse başına boyutunu/sha256'sını, en büyük ve ortanca bayt sayısını yazar;
+  model çağırmaz, dosya yazmaz.
+- **Abonelik limiti:** limit/zaman aşımı/red durumunda o hisse için not "alınamadı
+  (usage_limit | timeout | refusal | cli_error | cli_not_found | packet_too_large |
+  symbol_limit | run_time_budget)" olur, bildirim etkilenmez. `usage_limit` veya
+  `cli_not_found` sonrası kalan hisseler çağrılmadan aynı kategoriyle kaydedilir.
+  Limit açıldığında aynı gün `--skip-collect --llm-note` ile yeniden çalıştırmak
+  yalnız doğrulanmış notu olmayan hisseler için yeni `attempt-NNN` üretir
+  (doğrulanmış notlu hisse için model **yeniden çağrılmaz**; makbuz varsa bildirim
+  yeniden gönderilmez, 6h).
+- **Kayıtlar:** `data\interim\llm_notes\<as_of>\<SYM>\attempt-NNN\` (hiçbir
+  dosyanın üzerine yazılmaz): `packet.json` (modele giden o hissenin ham paketi),
+  `response_raw.txt`, `note.json` (yalnız doğrulanmış not), `record.json`
+  (paket/prompt/şema/config sha256, model, CLI sürümü, komut satırı, çağrı süresi,
+  CLI'nin bildirdiği kullanım, doğrulama sonucu, determinizm notu). `record.json`
+  en son yazılır; olmayan attempt yarım sayılır. LLM çıktısı deterministik
+  değildir. Hisse başına paket sınırı `max_symbol_packet_bytes` (varsayılan
+  200 000 bayt), çalışma başına hisse sınırı `max_symbols_per_run` (30);
+  aşılırsa o hisse kırpılmaz, kendi "alınamadı" satırını alır.
+- **Gizlilik:** ham AKD/takas satırları Anthropic'e gönderilir (Efe kararı;
+  lisans kapsamı doğrulanmadı). Kayıtlarda secret yoktur (kayıt yazılmadan önce
+  `validate_context_contains_no_secrets`).

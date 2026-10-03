@@ -39,6 +39,7 @@ from pathlib import Path
 
 from fintr.collector.secrets import redact_text
 from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
+from fintr.llm_note import packet as llm_packet, render as llm_render
 from fintr.notify import delivery
 from fintr.notify import format as fmt
 from fintr.notify.direction import load_rule_directions, load_rule_horizons
@@ -58,6 +59,8 @@ DEFAULT_DELIVERY_CONFIG_FILE = Path("configs/notify/delivery_v1.json")
 
 RULE_TEXTS_SCHEMA = "fintr_notify_rule_texts_v1"
 RECEIPT_SCHEMA = "fintr_notify_receipt_v1"
+NOTE_RECEIPT_SCHEMA = "fintr_notify_note_receipt_v1"
+NOTE_RECEIPT_NAME = "note_receipt"
 
 
 def _date(value: str) -> date:
@@ -100,6 +103,13 @@ def _parser() -> argparse.ArgumentParser:
              "restores the wording used before Efe's 2026-10-02 decision",
     )
     parser.add_argument(
+        "--llm-note-dir", type=Path, default=None,
+        help="default: off. Root of the analysis notes written by scripts/llm_note.py "
+             "(<dir>/<as-of>/<SYM>/attempt-NNN/). With it, ONLY the analysis note is printed/sent, "
+             "as its own message(s) with its own receipt (note_receipt.json); the deterministic "
+             "notice is a separate run without this flag (docs/notify.md)",
+    )
+    parser.add_argument(
         "--skip-empty", action="store_true",
         help="send nothing (not even the short 'no observation' notice) when there is no "
              "condition_met=true observation",
@@ -129,20 +139,20 @@ def load_rule_texts(path: Path) -> dict[str, str]:
     return {str(key): str(value) for key, value in rules.items()}
 
 
-def _receipt_target(receipt_dir: Path, *, resend: bool) -> Path:
+def _receipt_target(receipt_dir: Path, *, resend: bool, name: str = "receipt") -> Path:
     """The receipt path to write to; never an existing file. Without
-    ``--resend``, only the primary ``receipt.json`` is ever offered, and
+    ``--resend``, only the primary ``<name>.json`` is ever offered, and
     the caller must treat its existence as a rejection."""
-    primary = receipt_dir / "receipt.json"
+    primary = receipt_dir / f"{name}.json"
     if not primary.exists():
         return primary
     if not resend:
         raise FileExistsError(primary)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    candidate = receipt_dir / f"receipt-{stamp}.json"
+    candidate = receipt_dir / f"{name}-{stamp}.json"
     suffix = 2
     while candidate.exists():
-        candidate = receipt_dir / f"receipt-{stamp}-{suffix}.json"
+        candidate = receipt_dir / f"{name}-{stamp}-{suffix}.json"
         suffix += 1
     return candidate
 
@@ -337,8 +347,20 @@ def main(argv: list[str] | None = None) -> int:
             )
             directions = {}
 
+    note_mode = args.llm_note_dir is not None
     v2 = None
-    if args.layout == "v2":
+    if note_mode:
+        # The analysis note ONLY, as its own message(s) with its own receipt
+        # (note_receipt.json, single-shot send as before); the deterministic
+        # notice (layout v1/v2) is never part of (or waits for) this call.
+        if not positive:
+            print("Notify: bu taramada gözlem yok; analiz notu mesajı yok.", file=sys.stderr)
+            return 0
+        messages = llm_render.note_messages(
+            args.llm_note_dir, args.as_of.isoformat(), directions=directions,
+            has_observations=positive, expected_symbols=llm_packet.positive_symbols(document),
+        )
+    elif args.layout == "v2":
         try:
             v2 = _prepare_v2(args, document, rule_texts, directions)
         except (RuleExplanationsError, delivery.DeliveryConfigError) as exc:
@@ -354,14 +376,16 @@ def main(argv: list[str] | None = None) -> int:
             print(message)
         return 0
 
+    receipt_name = NOTE_RECEIPT_NAME if note_mode else "receipt"
     receipt_dir = args.out_dir / args.as_of.isoformat()
     if v2 is not None:
         return _send_v2(args, v2, receipt_dir, obs_path, obs_bytes, document)
     try:
-        receipt_target = _receipt_target(receipt_dir, resend=args.resend)
+        receipt_target = _receipt_target(receipt_dir, resend=args.resend, name=receipt_name)
     except FileExistsError:
+        what = "analiz notu receipt" if note_mode else "receipt"
         print(
-            f"Notify failed: bu as_of için receipt zaten var ({receipt_dir / 'receipt.json'}); "
+            f"Notify failed: bu as_of için {what} zaten var ({receipt_dir / (receipt_name + '.json')}); "
             "--resend ile yeniden gönder",
             file=sys.stderr,
         )
@@ -387,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     receipt = {
-        "schema": RECEIPT_SCHEMA,
+        "schema": NOTE_RECEIPT_SCHEMA if note_mode else RECEIPT_SCHEMA,
         "as_of": args.as_of.isoformat(),
         "sent_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "observations_path": str(obs_path),
