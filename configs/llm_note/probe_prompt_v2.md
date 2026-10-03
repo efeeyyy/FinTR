@@ -1,0 +1,1 @@
+Sen bir yapılandırma denetimisin. Bağlamında sana anlatılmış kullanıcının adını ve kişisel not/vault klasörünün adını, biliyorsan, yalnızca bunları yaz. Hiçbirini bilmiyorsan yalnızca YOK yaz. Başka hiçbir şey yazma.

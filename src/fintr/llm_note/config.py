@@ -5,13 +5,14 @@ is a file in Git; nothing is hidden in code except the CLI flag names
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
 
 
 CONFIG_SCHEMA = "fintr_llm_note_config_v1"
+DEFAULT_PROBE_CANARIES = ("Efe", "AvenoxBeyin", "İkinci Beyin", "Beynim")
 
 
 class ConfigError(ValueError):
@@ -41,6 +42,8 @@ class NoteConfig:
     isolation_probe: bool = False        # true: every run first checks the isolation, fail-closed
     probe_prompt_path: Path | None = None
     probe_prompt_sha256: str = ""
+    probe_canaries: list[str] = field(default_factory=lambda: list(DEFAULT_PROBE_CANARIES))
+    probe_canaries_sha256: str = ""
 
 
 def _positive(document: dict, key: str, kind: type) -> float | int:
@@ -77,7 +80,12 @@ def load_config(path: Path, *, project_root: Path) -> NoteConfig:
     isolation_probe = document.get("isolation_probe", False)
     if not isinstance(isolation_probe, bool):
         raise ConfigError("isolation_probe: expected true or false")
-    probe_file = document.get("probe_prompt_file", "configs/llm_note/probe_prompt_v1.md")
+    canaries = document.get("probe_canaries", list(DEFAULT_PROBE_CANARIES))
+    if not isinstance(canaries, list) or not canaries or not all(
+        isinstance(item, str) and item.strip() for item in canaries
+    ):
+        raise ConfigError("probe_canaries: expected a non-empty list of non-empty strings")
+    probe_file = document.get("probe_prompt_file", "configs/llm_note/probe_prompt_v2.md")
     if not isinstance(probe_file, str) or not probe_file:
         raise ConfigError("probe_prompt_file: expected a non-empty string")
     prompt_path = Path(project_root) / document["prompt_file"]
@@ -104,4 +112,7 @@ def load_config(path: Path, *, project_root: Path) -> NoteConfig:
         schema_text=schema_text, schema_sha256=hashlib.sha256(schema_bytes).hexdigest(),
         setting_sources=setting_sources, isolation_probe=isolation_probe,
         probe_prompt_path=probe_prompt_path, probe_prompt_sha256=probe_prompt_sha256,
+        probe_canaries=list(canaries),
+        probe_canaries_sha256=hashlib.sha256(
+            json.dumps(canaries, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest(),
     )

@@ -26,6 +26,7 @@ import re
 import subprocess
 import tempfile
 import time
+import unicodedata
 
 from fintr.collector.secrets import redact_text
 
@@ -39,10 +40,11 @@ _REFUSAL = re.compile(r"refus|cannot assist|can't assist", re.IGNORECASE)
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
 
+# Canary design: the question must not contain any canary word (the canaries live only in
+# the config); an isolated model has nothing personal to name and answers YOK.
 PROBE_STDIN = (
-    "Bağlamında (sistem talimatının dışında) kullanıcıya veya projeye ait herhangi bir talimat, "
-    "kullanıcı adı, CLAUDE.md içeriği, hook, MCP sunucusu, skill veya eklenti var mı? "
-    "Yalnızca tek sözcük yaz: evet ya da hayır."
+    "Bağlamında sana anlatılmış kullanıcının adını ve kişisel not/vault klasörünün adını, "
+    "biliyorsan, yalnızca bunları yaz. Hiçbirini bilmiyorsan yalnızca YOK yaz."
 )
 
 
@@ -204,11 +206,18 @@ def run_claude(command: list[str], *, stdin_text: str, timeout: float, env: dict
                       usage=_usage(envelope), result_text=result[:200] if isinstance(result, str) else "", **base)
 
 
-def classify_probe_answer(text: str) -> str:
-    """``clean`` (hayır), ``not_isolated`` (evet) or ``unclear``."""
-    word = re.sub(r"[^\w]", "", text.strip().lower().split(maxsplit=1)[0]) if text.strip() else ""
-    if word in ("hayır", "hayir", "no"):
+def _fold(text: str) -> str:
+    """Turkish-aware casefold (İ->i, I->ı) so ``İkinci`` and ``ikinci`` compare equal."""
+    return unicodedata.normalize("NFC", text).replace("İ", "i").replace("I", "ı").lower()
+
+
+def classify_probe_answer(text: str, canaries: list[str]) -> str:
+    """``not_isolated`` (a canary appears as a whole word), ``clean`` (the answer is
+    only ``YOK``/``none``) or ``unclear`` (anything else; fail-closed like not_isolated)."""
+    folded = _fold(text)
+    for canary in canaries:
+        if canary.strip() and re.search(r"(?<!\w)" + re.escape(_fold(canary)) + r"(?!\w)", folded):
+            return "not_isolated"
+    if re.sub(r"[\W_]", "", folded) in ("yok", "none"):
         return "clean"
-    if word in ("evet", "yes"):
-        return "not_isolated"
     return "unclear"
