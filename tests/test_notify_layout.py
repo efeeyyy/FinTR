@@ -28,8 +28,8 @@ from fintr.notify.explanations import (
 )
 from fintr.notify.guard import find_forbidden_words
 from fintr.notify.layout import (
-    DIRECTION_LABELS_V2_TR, SUMMARY_WARNING_TR, close_vs_vwap_percent, format_percent_tr,
-    render_layout_v2, share_percent,
+    DIRECTION_LABELS_V2_TR, STOCK_WARNING_TR, SUMMARY_WARNING_TR, close_vs_vwap_percent,
+    format_percent_tr, render_layout_v2, share_percent,
 )
 from fintr.notify.telegram import SendResult, TelegramSendError
 from fintr.scanner.observe import NOTICE_TEXT_TR
@@ -201,20 +201,43 @@ class SummaryAndStockMessageTests(unittest.TestCase):
         )
         first = messages[1].split("\n")
         self.assertEqual(first[0], "▲ AKBNK1 — beklenen yön: YUKARI (al yönlü)")
-        self.assertEqual(first[1], "Kural H2: " + EXPLANATIONS.rule_lines["H2"])
-        self.assertEqual(first[2], "Bugün: kapanış ortalama fiyatın %1,51 altında")
-        self.assertEqual(first[3], "Ne demek: " + EXPLANATIONS.meanings["H2"])
-        self.assertEqual(first[4], "Vade: 5 işlem günü · kural sürümü 42fca88a")
-        self.assertEqual(len(first), 5)
+        self.assertEqual(first[1], STOCK_WARNING_TR)
+        self.assertEqual(first[2], "Kural H2: " + EXPLANATIONS.rule_lines["H2"])
+        self.assertEqual(first[3], "Bugün: kapanış ortalama fiyatın %1,51 altında")
+        self.assertEqual(first[4], "Ne demek: " + EXPLANATIONS.meanings["H2"])
+        self.assertEqual(first[5], "Vade: 5 işlem günü · kural sürümü 42fca88a")
+        self.assertEqual(len(first), 6)
 
-    def test_warning_only_in_the_summary_once_and_stock_messages_are_per_stock_in_symbol_order(self):
+    def test_every_labelled_message_carries_a_warning_once_and_stocks_are_in_symbol_order(self):
         messages = _render(_five_stock_doc())
-        self.assertEqual(sum(message.count("Yön etiketi doğrulanmamış") for message in messages), 1)
         self.assertEqual(messages[0].count(SUMMARY_WARNING_TR), 1)
+        for message in messages[1:]:
+            self.assertEqual(message.count(STOCK_WARNING_TR), 1)
+            self.assertEqual(message.split("\n")[1], STOCK_WARNING_TR)  # right under the label
+            self.assertEqual(find_forbidden_words(STOCK_WARNING_TR, LABELS), [])
         titles = [message.split("\n")[0].split(" — ")[0][2:] for message in messages[1:]]
         self.assertEqual(titles, ["AKBNK1", "BIMAS1", "CCOLA1", "DOAS1", "EREG1"])  # symbol order, no ranking
-        for message in messages[1:]:
-            self.assertNotIn("Uyarı", message)
+
+    def test_label_never_appears_without_a_warning_even_without_explanations(self):
+        for explanations in (None, EXPLANATIONS, load_rule_explanations_from({"H1": {"rule_line": "x"}})):
+            messages = _render(_five_stock_doc(), explanations=explanations)
+            for message in messages:
+                if any(label in message for label in LABELS):
+                    self.assertTrue(STOCK_WARNING_TR in message or SUMMARY_WARNING_TR in message, message)
+
+    def test_unlabelled_and_unknown_direction_messages_have_no_stock_warning(self):
+        for directions in (None, {}):
+            text = "\n".join(_render(_five_stock_doc(), directions=directions))
+            self.assertNotIn(STOCK_WARNING_TR, text)
+
+    def test_worst_case_stock_message_fits_telegram_limit(self):
+        # All rules at once for a long multi-day scan: each (symbol, day) is its own message.
+        document = _doc({"KCHOL1": _symbol_block(scans=[
+            _scan([_hit("H1", "-0.02"), _hit("H3", "-0.02", share="0.2")], f"2026-10-0{day}")
+            for day in range(1, 6)
+        ])})
+        for message in _render(document):
+            self.assertLessEqual(len(message), 4096)
 
     def test_single_stock(self):
         messages = _render(_doc({"KCHOL1": _block([_hit("H1", "-0.02")])}))
@@ -240,8 +263,8 @@ class SummaryAndStockMessageTests(unittest.TestCase):
         lines = messages[1].split("\n")
         self.assertEqual(lines[0], "▲ KCHOL1 — beklenen yön: YUKARI (al yönlü)")
         self.assertEqual([line.split(":")[0] for line in lines[1:]],
-                         ["Kural H2", "Kural H4", "Bugün", "Ne demek (H2)", "Ne demek (H4)", "Vade"])
-        self.assertEqual(lines[3], "Bugün: kapanış ortalama fiyatın %1,96 altında · tek kurum net payı %20,00 (günlük toplama oranı)")
+                         [STOCK_WARNING_TR, "Kural H2", "Kural H4", "Bugün", "Ne demek (H2)", "Ne demek (H4)", "Vade"])
+        self.assertEqual(lines[4], "Bugün: kapanış ortalama fiyatın %1,96 altında · tek kurum net payı %20,00 (günlük toplama oranı)")
         self.assertIn("Koşulu sağlanan: 1 hisse — 1 yukarı", messages[0])
 
     def test_rule_without_explanation_skips_the_line_not_invents_it(self):
@@ -457,6 +480,38 @@ class ExplanationsFileTests(unittest.TestCase):
         for meaning in EXPLANATIONS.meanings.values():
             self.assertIn("henüz doğrulanmamış hipotez", meaning)
             self.assertLessEqual(meaning.count(". "), 1)  # 1-2 sentences
+
+    def test_rule_lines_match_the_frozen_spec_conditions(self):
+        """Direction word, thresholds and the data-quality band come from the
+        frozen spec's ``condition`` and ``predicted_direction``, not from memory."""
+        for rule_id in ("H1", "H2", "H3", "H4"):
+            (spec_path,) = (ROOT / "configs" / "studies" / "prereg").glob(f"{rule_id.lower()}_*.json")
+            spec = json.loads(spec_path.read_text(encoding="utf-8"))
+            terms = spec["condition"]["terms"]
+            vwap = [(t["op"], Decimal(t["right"]["const"])) for t in terms
+                    if t["left"]["feature"] == "vwap_proxy_vs_close"]
+            share = [(t["op"], Decimal(t["right"]["const"])) for t in terms
+                     if t["left"]["feature"] == "top1_akd_net_share_of_volume"]
+            line = EXPLANATIONS.rule_lines[rule_id]
+            with self.subTest(rule=rule_id):
+                lower = max(c for op, c in vwap if op == "ge")
+                upper = min(c for op, c in vwap if op == "le")
+                above = upper < 0  # v <= -0.01 and v >= -0.10: close above the average price
+                self.assertEqual(("üstünde" in line), above)
+                self.assertEqual(("altında" in line), not above)
+                self.assertEqual(abs(upper if above else lower), Decimal("0.01"))
+                self.assertIn("~%1 ", line)
+                self.assertIn("aşırı sapmalar kural dışı", line)  # the other band edge exists in the spec
+                self.assertEqual(abs(lower if above else upper), Decimal("0.10"))
+                if share:
+                    self.assertEqual(share, [("ge", Decimal("0.10"))])
+                    self.assertIn("en az %10'u", line)
+                    self.assertIn("net payı", line)
+                else:
+                    self.assertNotIn("%10", line)
+                expected_direction = "negative" if above else "positive"
+                self.assertEqual(spec["preregistration"]["predicted_direction"], expected_direction)
+                self.assertEqual(spec["preregistration"]["primary_horizon_trading_days"], 5)
 
     def test_rejects_wrong_schema_unreadable_empty_and_non_object(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -813,6 +868,40 @@ class ScriptV2Tests(GuardEnvMixin, unittest.TestCase):
         last = json.loads((root / "out" / "2026-10-02" / "receipt.part-003.json").read_text(encoding="utf-8"))
         self.assertEqual([item["telegram_message_id"] for item in last["message_status"]], [1, 2, 3])
         self.assertTrue(last["complete"])
+
+    def test_v1_layout_send_error_is_redacted_of_token_and_chat_id(self):
+        root = self._prepare()
+        failure = TelegramSendError(f"HTTP 400: bot{FAKE_TOKEN} chat {FAKE_CHAT_ID}")
+        code, _out, err, _send, _time = self._run(root, "--layout", "v1", "--send", send_effects=[failure])
+        self.assertEqual(code, 1)
+        self.assertNotIn(FAKE_TOKEN, err)
+        self.assertNotIn(FAKE_CHAT_ID, err)
+
+    def test_ctrl_c_mid_send_still_records_what_was_sent(self):
+        root = self._prepare()
+        code, _out, err, send, _time = self._run(
+            root, "--send", send_effects=[SendResult(21), KeyboardInterrupt()])
+        self.assertEqual(code, 1)
+        self.assertEqual(send.call_count, 2)
+        receipt = json.loads((root / "out" / "2026-10-02" / "receipt.json").read_text(encoding="utf-8"))
+        self.assertEqual([item["status"] for item in receipt["message_status"]], ["sent", "not_sent", "not_sent"])
+        self.assertEqual(receipt["error_kind"], "KeyboardInterrupt")
+        self.assertNotIn(FAKE_TOKEN, err)
+        code, _out, _err, send, _time = self._run(root, "--send", send_effects=[SendResult(22), SendResult(23)])
+        self.assertEqual((code, send.call_count), (0, 2))  # messages 2 and 3 only, no duplicate of 1
+
+    def test_unwritable_receipt_after_sending_is_reported_without_a_traceback(self):
+        root = self._prepare()
+        stderr = io.StringIO()
+        with patch.dict(os.environ, self.ENV), \
+                patch.object(notify, "send_message", MagicMock(side_effect=[SendResult(1), SendResult(2), SendResult(3)])), \
+                patch.object(notify, "time", MagicMock()), \
+                patch.object(notify, "_write_receipt", side_effect=PermissionError("disk")), \
+                redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            code = notify.main(self._argv(root, "--send"))
+        self.assertEqual(code, 1)
+        self.assertIn("receipt yazılamadı (PermissionError)", stderr.getvalue())
+        self.assertIn("gönderilen mesaj sayısı: 3", stderr.getvalue())
 
     def test_failure_on_the_first_message_writes_no_receipt_and_the_rerun_sends_all(self):
         root = self._prepare()

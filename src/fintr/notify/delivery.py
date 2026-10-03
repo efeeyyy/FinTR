@@ -217,7 +217,9 @@ def execute(
             sleep(delay_seconds)
         try:
             sent_now[index] = send(messages[index - 1])
-        except Exception as exc:  # noqa: BLE001 -- recorded by class name only
+        except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 -- recorded by class name only
+            # KeyboardInterrupt too: Ctrl-C mid-send must still leave a receipt
+            # of what already went out, or the next run would send it again.
             return Outcome(sent_now, index, exc)
     return Outcome(sent_now, None, None)
 

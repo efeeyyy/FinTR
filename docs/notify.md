@@ -31,7 +31,8 @@ Koşulu sağlayan her hisse için bir mesaj (örnek, sentetik):
 
 ```
 ▲ ABCDE — beklenen yön: YUKARI (al yönlü)
-Kural H2: kapanış, günün ortalama işlem fiyatının (AKD VWAP) en az ~%1 altında
+⚠ Doğrulanmamış hipotez; yatırım tavsiyesi değildir.
+Kural H2: kapanış, günün ortalama işlem fiyatının (AKD VWAP) en az ~%1 altında (veri/ölçek uyumsuzluğu ihtimali nedeniyle aşırı sapmalar kural dışı)
 Bugün: kapanış ortalama fiyatın %1,48 altında
 Ne demek: Gün içinde lotlar ortalama olarak kapanıştan daha yüksek fiyattan el değiştirdi; ...
 Vade: 5 işlem günü · kural sürümü 42fca88a
@@ -72,9 +73,13 @@ sağlanmadı` + veri satırı (`--skip-empty` önceki gibi hiçbir şey gönderm
   yoksa ya da pencere yoksa bunu söyler. Eksik tazelik alanı, bastırılan ve
   değerlendirilemeyen gözlem satırları yalnız doluysa eklenir; T+2 takas satırı v2'de
   yoktur (H1–H4 takas kullanmaz; bilgi gözlem dosyasında durur).
-- **Uyarı yalnız özet mesajında, bir kez.** Hisse mesajlarında ayrı uyarı/dipnot
-  yoktur; bunun yerine "Ne demek" cümlesi her seferinde "Ön kayıtlı, henüz
-  doğrulanmamış hipotez:" ibaresini taşır. "Kural sürümü" = `rules_file_sha256`
+- **Uyarı etiket taşıyan her mesajda.** AGENTS.md istisnası etiketin "her mesajda
+  doğrulanmamış hipotez uyarısıyla" verilmesini ister: özet mesajı
+  `⚠ Yön etiketi doğrulanmamış hipotezdir (test: Nisan 2027); yatırım tavsiyesi değildir.`
+  satırını, etiketli her hisse mesajı başlığın hemen altında sabit
+  `⚠ Doğrulanmamış hipotez; yatırım tavsiyesi değildir.` satırını taşır (etiketsiz
+  düzen ve "yön bilinmiyor" mesajlarında yok). Ek olarak "Ne demek" cümlesi
+  "Ön kayıtlı, henüz doğrulanmamış hipotez:" ibaresini taşır. "Kural sürümü" = `rules_file_sha256`
   değerinin ilk 8 hanesi (tam hash receipt'te); "Vade" = dondurulmuş spec'in
   `primary_horizon_trading_days` alanı (hash doğrulamalı yükleyiciden).
 - **Sıra.** Hisse mesajları sembole göre alfabetiktir; büyüklüğe göre sıralama
@@ -115,6 +120,7 @@ yazar. Bir kuralın `meaning` alanı yoksa "Ne demek" satırı atlanır (uydurul
 - **Kısmi gönderim.** 3. mesajda hata olursa ilk iki mesajın kaydı `receipt.json`'a
   `complete: false` ile yazılır, komut hata koduyla çıkar. Aynı `as_of` için komut
   tekrar çalıştırılınca (`--resend` olmadan) yalnız gönderilmemiş mesajlar gönderilir
+  (Ctrl-C ile kesilen gönderim de aynı şekilde kaydedilir; `error_kind` = `KeyboardInterrupt`)
   ve `receipt.part-002.json` (sonra `-003`, ...) yazılır; her dosya o andaki tüm
   mesaj durumunu taşır. Receipt dosyalarının üzerine hiçbir zaman yazılmaz
   (`O_EXCL`). Tüm mesajlar gidince bir sonraki çalıştırma eskisi gibi "receipt zaten
@@ -205,7 +211,12 @@ eklenmez.
 Opus 5.5 analiz notu, kendi mesajı ve kendi makbuzuyla (`note_receipt.json`)
 yazdırılır/gönderilir (`scripts/llm_note.py`, `src/fintr/llm_note/`; tasarım:
 `docs/architecture.md`, karar: `docs/prereg/DECISIONS.md`). Deterministik bildirim
-ayrı, bayraksız bir çağrıdır; bayt düzeyinde öncekiyle aynıdır ve modeli beklemez.
+ayrı, bayraksız bir çağrıdır (varsayılan düzen v2; `--layout v1` önceki tek metni verir)
+ve modeli beklemez. Not modu `--layout`'u yok sayar: not mesajları kendi biçimindedir, tek
+seferlik gönderilir ve yalnız `note_receipt.json` yazar (v2'nin kısmi-devam receipt'i yalnız
+deterministik bildirimdir; ikisinin receipt'leri birbirinden bağımsızdır, `receipt*.json`
+deseni `note_receipt*.json` dosyalarını görmez). Notun gönderimi yarıda hata verirse receipt
+yazılmaz ve aynı komut notu baştan gönderir (`--resend` gerekmez; çift gönderim mümkündür).
 `run_daily_pipeline.py --llm-note` sırası: toplama, tarama, deterministik bildirim,
 `llm_note.py`, not bildirimi. Not adımının hatası gönderilmiş bildirimi veya çıkış
 kodunu değiştirmez; yalnız özette görünür.

@@ -1774,6 +1774,9 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(rc, 4)
         self.assertNotIn("llm_note.py", self.names(calls))
         self.assertIn("failed with exit code 4", out)
+        # layout v2 may have sent part of the notice: the message must not claim "nothing sent"
+        self.assertNotIn("nothing sent", out)
+        self.assertIn("sends only the messages not yet sent", out)
 
     def test_already_sent_notice_still_runs_the_note_steps(self):
         env = {"FINTR_TELEGRAM_BOT_TOKEN": "t", "FINTR_TELEGRAM_CHAT_ID": "c"}

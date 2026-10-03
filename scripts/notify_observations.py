@@ -256,9 +256,10 @@ def _send_v2(args, v2: _V2, receipt_dir: Path, obs_path: Path, obs_bytes: bytes,
     receipt_payload = (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     try:
         _write_receipt(plan.target, receipt_payload)
-    except FileExistsError:
+    except OSError as exc:  # FileExistsError (collision) or an unwritable disk
         print(
-            f"Notify: mesaj(lar) gönderildi ama receipt yazılamadı (çakışma): {plan.target}",
+            f"Notify: mesaj(lar) gönderildi ama receipt yazılamadı ({type(exc).__name__}): "
+            f"{plan.target}; gönderilen mesaj sayısı: {len(outcome.sent_now)}",
             file=sys.stderr,
         )
         return 1
@@ -407,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
             result = send_message(token, chat_id, message)
             sent_ids.append(result.message_id)
     except TelegramSendError as exc:
-        print(f"Notify failed: {exc}", file=sys.stderr)
+        print(f"Notify failed: {redact_text(str(exc), token, chat_id)}", file=sys.stderr)
         return 1
 
     receipt = {

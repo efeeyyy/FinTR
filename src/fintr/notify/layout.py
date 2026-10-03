@@ -55,6 +55,10 @@ DIRECTION_UNKNOWN_TR = "yön bilinmiyor"
 SUMMARY_WARNING_TR = (
     "⚠ Yön etiketi doğrulanmamış hipotezdir (test: Nisan 2027); yatırım tavsiyesi değildir."
 )
+# AGENTS.md (Efe, 2026-10-02): the label is given "in every message with the
+# unverified-hypothesis warning". Every stock message that carries a label
+# therefore has this fixed line right under its title.
+STOCK_WARNING_TR = "⚠ Doğrulanmamış hipotez; yatırım tavsiyesi değildir."
 
 _WEEKDAYS_TR = ("Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar")
 _FRESHNESS_FIELDS_TR = (
@@ -362,6 +366,8 @@ def _stock_message(
     else:
         title = f"{symbol}{where} — koşul sağlandı"
     lines = [title]
+    if direction is not None:
+        lines.append(STOCK_WARNING_TR)
     rule_lines = explanations.rule_lines if explanations is not None else {}
     for obs in observations:
         rule_id = str(obs.get("rule_id", "?"))
