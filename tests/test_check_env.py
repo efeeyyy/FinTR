@@ -25,6 +25,11 @@ ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("check_env_t", ROOT / "scripts" / "check_env.py")
 ce = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ce)
+_cd_spec = importlib.util.spec_from_file_location(
+    "collect_daily_for_check_env_t", ROOT / "scripts" / "collect_daily.py",
+)
+collect_daily = importlib.util.module_from_spec(_cd_spec)
+_cd_spec.loader.exec_module(collect_daily)
 
 SECRET_TOKEN = "SECRET-TOKEN-0123456789abcdef"
 SECRET_CHAT = "-1001234567890"
@@ -51,6 +56,15 @@ def _by_label(results, label):
 def _write_json(path: Path, document: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def _write_run(runs: Path, run_id: str, document: dict) -> Path:
+    """Write ``document`` under collect_daily's real run-record file name.
+
+    The name comes from ``collect_daily._write_run_record`` (``:`` -> ``-``),
+    so the tests never need a ``:`` in a file name (invalid on Windows).
+    """
+    return collect_daily._write_run_record({**document, "run_id": run_id}, runs)
 
 
 def _run_record(run_date: str, *, status="completed", saved=2, failed=0, end="2026-10-01") -> dict:
@@ -236,8 +250,8 @@ class RunStateTests(unittest.TestCase):
     def test_latest_run_record_shows_date_status_and_counts_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "_runs"
-            _write_json(runs / "2026-10-02T05:00:00Z.json", _run_record("2026-10-02", saved=3))
-            _write_json(runs / "2026-10-03T05:00:00Z.json", _run_record("2026-10-03", saved=18))
+            _write_run(runs, "2026-10-02T05:00:00Z", _run_record("2026-10-02", saved=3))
+            _write_run(runs, "2026-10-03T05:00:00Z", _run_record("2026-10-03", saved=18))
             result = ce.check_last_run(runs)
         self.assertEqual(result.level, ce.OK)
         self.assertEqual(
@@ -257,11 +271,23 @@ class RunStateTests(unittest.TestCase):
     def test_skips_corrupt_and_foreign_records(self):
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "_runs"
-            _write_json(runs / "2026-10-01T05:00:00Z.json", _run_record("2026-10-01"))
-            _write_json(runs / "2026-10-02T05:00:00Z.json", {"schema": "other"})
-            (runs / "2026-10-03T05:00:00Z.json").write_text("{not json", encoding="utf-8")
+            _write_run(runs, "2026-10-01T05:00:00Z", _run_record("2026-10-01"))
+            _write_run(runs, "2026-10-02T05:00:00Z", {"schema": "other"})
+            (runs / "2026-10-03T05-00-00Z.json").write_text("{not json", encoding="utf-8")
             result = ce.check_last_run(runs)
         self.assertIn("tarih=2026-10-01", result.detail)
+
+    def test_real_collect_daily_file_names_sort_chronologically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "_runs"
+            old = _write_run(runs, "2026-10-01T20:38:30.160803Z", _run_record("2026-10-02"))
+            _write_run(runs, "2026-10-04T05:01:02.500000Z", _run_record("2026-10-05", saved=7))
+            _write_run(runs, "2026-10-03T23:59:59.999999Z", _run_record("2026-10-04", saved=9))
+            result = ce.check_last_run(runs)
+        self.assertEqual(old.name, "2026-10-01T20-38-30.160803Z.json")
+        self.assertNotIn(":", old.name)
+        self.assertIn("tarih=2026-10-05", result.detail)
+        self.assertIn("saved=7", result.detail)
 
     def test_unsafe_status_text_is_not_echoed(self):
         with tempfile.TemporaryDirectory() as tmp:
