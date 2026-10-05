@@ -470,11 +470,20 @@ E=R-1g) bir pencerede toplar. Ayrıntılı tasarım için
 
 ### 6a. Efe'nin her sabah yapacakları
 
-1. **Mini App'i kapatın** (bölüm 1'deki tek-oturum uyarısı burada da geçerli).
-2. **Mini App'i son kez açıp `initData`'yı alın**, sonra tekrar kapatın.
+1. **Sabah: önce `check_env.py`** (ağ kullanmaz, hiçbir şey göndermez, hiçbir
+   şey yazmaz; ayrıntı 6j):
+
+   ```powershell
+   $env:PYTHONPATH = "$PWD\src"
+   .\.venv\Scripts\python.exe scripts\check_env.py
+   ```
+
+   Çıkış kodu 1 (`HATA` var) ise düzeltmeden devam etmeyin.
+2. **Mini App'i kapatın** (bölüm 1'deki tek-oturum uyarısı burada da geçerli).
+3. **Mini App'i son kez açıp `initData`'yı alın**, sonra tekrar kapatın.
    `initData` yalnız bir kez sorulacak ve yalnız bellekte tutulacak (diske
    yazılmaz, loglanmaz).
-3. **Tek komutu çalıştırın:**
+4. **Tek komutu çalıştırın:**
 
    ```powershell
    $env:PYTHONPATH = "$PWD\src"
@@ -492,7 +501,7 @@ E=R-1g) bir pencerede toplar. Ayrıntılı tasarım için
    .\.venv\Scripts\python.exe scripts\collect_daily.py --dry-run
    ```
 
-4. **Bitince exit code'a bakın:** `0` = her sembol `saved` veya beklenen bir
+5. **Bitince exit code'a bakın:** `0` = her sembol `saved` veya beklenen bir
    `skipped_*` durumunda; `1` = en az bir `failed:*` var ya da çalıştırma
    429/oturum hatası nedeniyle erken durdu (bölüm 6d); `2` = plan bir insan
    kararı istiyor (ör. bir sembol 90 günlük azami aralığı aşıyor) — bu durumda
@@ -602,6 +611,7 @@ Exit 1 = en az bir sembol `failed:<kategori>` (ör. `packet_hash_mismatch`,
 
 ### 6g. Günlük sıra (özet)
 
+0. Sabah, her şeyden önce: `check_env.py` (6j).
 1. `collect_daily.py --allow-session-takeover` (Mini App + fiyat adımı; 6a-6e).
 2. İlk canlı çalıştırmadan sonra, bir kez: `compare_daily_d0.py` (6f).
 3. `scan_observations.py --as-of YYYY-MM-DD --daily-root data\interim\daily_capture --format json --save`
@@ -712,3 +722,36 @@ $env:PYTHONPATH = "$PWD\src"
 - **Gizlilik:** ham AKD/takas satırları Anthropic'e gönderilir (Efe kararı;
   lisans kapsamı doğrulanmadı). Kayıtlarda secret yoktur (kayıt yazılmadan önce
   `validate_context_contains_no_secrets`).
+
+### 6j. Sabah ortam kontrolü: `check_env.py`
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\check_env.py            # bugün (Europe/Istanbul)
+.\.venv\Scripts\python.exe scripts\check_env.py --run-date 2026-10-05   # başka bir R günü için E
+```
+
+Salt okunur ve çevrimdışıdır: ağ bağlantısı açmaz, Telegram'a veya modele bir
+şey göndermez, dosya yazmaz, Claude CLI'ı çalıştırmaz. Her madde için tek satır
+(`OK` / `UYARI` / `HATA`) ve sonda özet basar; `HATA` varsa çıkış kodu 1'dir.
+
+| Madde | Ne denetlenir | Sorun olursa |
+|---|---|---|
+| python, paket | `pyproject.toml`'daki `requires-python` ve bağımlılıklar (`websockets`, `tzdata`) kurulu ve sürüm kısıtına uygun mu (`importlib.metadata`) | eksik/uyumsuz paket `HATA`; `tzdata` yoksa `UYARI` (Europe/Istanbul için UTC+3 sabit yedeği kullanılır; Türkiye'de 2016'dan beri DST yok, sonuç doğru) — kurmak için `pip install tzdata` |
+| ortam `FINTR_TELEGRAM_*` | `FINTR_TELEGRAM_BOT_TOKEN` ve `FINTR_TELEGRAM_CHAT_ID` tanımlı mı | yalnız `var`/`yok` yazılır; değer ve uzunluk hiçbir yerde basılmaz. Yoksa `UYARI` (gerçek gönderim `--send` için gerekir) |
+| Claude CLI | `configs/llm_note/config_v1.json` `cli_path` işaret ettiği dosya var mı | yalnız varlık denetlenir, CLI çalıştırılmaz; yoksa `UYARI` (yalnız `--llm-note` için gerekir) |
+| config, split, exclusions | etkin split, exclusions, toplama/analiz notu/bildirim config'leri okunuyor mu (mevcut yükleyiciler) | okunamıyorsa `HATA` |
+| hash | spec'ler `docs/prereg/FREEZE.md` (ham + kanonik), etkin split dondurulmuş spec'lerdeki kayıt, test planı `DECISIONS.md`, tarayıcı kuralları `rules_v1.json` ile eşleşiyor mu | eşleşmezse `HATA`; dondurulmuş dosyalar değiştirilmez, nedeni araştırın |
+| son çalıştırma | `daily_capture/_runs/` en yeni kaydın tarihi, durumu, `saved`/`failed` sayıları; son `scanner_daily` as_of; son notify receipt (tamamlandı/kısmi) | yalnız tarih, durum ve sayı yazılır, finansal içerik yazılmaz; `failed > 0`, kısmi receipt veya hiç kayıt yoksa `UYARI` |
+| pencere sonu (E) | bugünkü R için planlayıcının (`collect_daily.py --dry-run` ile aynı saf planlayıcı, ağsız) hedefleyeceği E | E hafta sonuysa veya tüm planlı semboller için zaten toplanmışsa `yeni veri beklenmiyor` yazar; azami aralığı aşan sembol varsa `UYARI` |
+| disk | proje diskinde boş alan | < 1 GiB `UYARI`, < 100 MiB `HATA` |
+
+**Sınır:** repoda borsa tatil takvimi yoktur; E'nin resmi tatil olup olmadığı
+`check_env.py` tarafından denetlenmez (satır bunu açıkça söyler). Tatil, E'ye
+ait yeni veri gelmemesi anlamına gelir; Borsa İstanbul resmi takviminden elle
+doğrulayın. Bu betik yeni bir eşik, kural veya spec eklemez.
+
+`tzdata` kurulduğunda yeni fiyat geçmişi capture'larında
+`normalized.date_source` alanı `gmtoffset_fallback` yerine
+`exchange_timezone_name` olur ([price_history.md](price_history.md)); yalnız
+kayıtlı yöntem alanı değişir.
