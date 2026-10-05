@@ -54,6 +54,19 @@ $env:PYTHONPATH = "$PWD\src"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
+Uzun uçtan uca holdout provası (`tests/test_holdout_rehearsal.py`, yaklaşık 4 dk)
+varsayılan olarak atlanır; **tam prova: `FINTR_SLOW_TESTS=1` ile**:
+
+```powershell
+$env:FINTR_SLOW_TESTS = "1"   # PowerShell; bitince: Remove-Item Env:FINTR_SLOW_TESTS
+```
+
+```bash
+FINTR_SLOW_TESTS=1 PYTHONPATH=src python -m unittest discover -s tests -v   # bash
+```
+
+Ayrıntı: [`docs/runbook/holdout_gunu.md`](docs/runbook/holdout_gunu.md).
+
 Fixture'larda gerçek token, cookie, session veya kimlik bilgisi bulunmaz.
 
 ## Kaydedilmiş dönem paketini analiz etme

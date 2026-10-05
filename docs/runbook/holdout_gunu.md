@@ -11,12 +11,28 @@ yalnız sırayı ve beklenen çıktıları toplar.
 `tests/test_holdout_rehearsal.py` gerçek dondurulmuş spec'leri, gerçek test
 planını ve gerçek ayrımı, `tests/holdout_fixtures.py`'nin geçici dizine ürettiği
 sentetik dönem kayıtları ve fiyat geçmişiyle uçtan uca çalıştırır (dry-run →
-`--execute` → kilit reddi → artefact şeması; yaklaşık 4 dk). Prova **hiçbir
-sonuç hakkında bilgi vermez**; yalnız aracın doğru çalıştığını gösterir:
+`--execute` → kilit reddi → artefact şeması). Prova **hiçbir sonuç hakkında
+bilgi vermez**; yalnız aracın doğru çalıştığını gösterir.
+
+Uzun uçtan uca kısım (gerçek `--execute`, 8 `run_study`; yaklaşık 4 dk)
+yalnız `FINTR_SLOW_TESTS=1` varken çalışır; yokken atlanır ve çıktıda
+`skipped` olarak sayılır. Fixture doğrulama ve reddetme testleri her zaman çalışır.
+
+**Tam prova: `FINTR_SLOW_TESTS=1` ile**
+
+```powershell
+# Windows PowerShell (repository kökünden)
+$env:PYTHONPATH = "$PWD\src"; $env:FINTR_SLOW_TESTS = "1"
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+Remove-Item Env:FINTR_SLOW_TESTS   # sonraki hızlı koşular için
+```
 
 ```bash
-PYTHONPATH=src python -m unittest test_holdout_rehearsal   # tests/ dizininden: -s tests
+# bash
+PYTHONPATH=src FINTR_SLOW_TESTS=1 python -m unittest discover -s tests -v
 ```
+
+Yalnız prova modülü için komuta `-k holdout_rehearsal` ekleyin.
 
 ## Değişmez kurallar (hiçbirini çalıştırma günü değiştirme)
 
@@ -50,7 +66,10 @@ PYTHONPATH=src python -m unittest test_holdout_rehearsal   # tests/ dizininden: 
   PYTHONPATH=src python -m unittest discover -s tests
   ```
 
-  Beklenen: son satır `OK`; test sayısı bir önceki yeşil sayıdan az değil.
+  Beklenen: son satır `OK` (uzun prova testleri `FINTR_SLOW_TESTS` olmadan atlanır;
+  `skipped=N` normaldir); test sayısı bir önceki yeşil sayıdan az değil. Atlama
+  olmadan tam doğrulama için yukarıdaki "Tam prova: `FINTR_SLOW_TESTS=1` ile"
+  komutunu kullanın.
 - [ ] Dondurulmuş dosya hash'leri (ham SHA-256) `docs/prereg/FREEZE.md` ve
   `DECISIONS.md` ile aynı:
 
