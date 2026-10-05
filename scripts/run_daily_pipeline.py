@@ -41,6 +41,18 @@ content differs, so nothing was sent (a full resend needs ``notify_observations.
 --llm-note-dir ... --resend`` by hand; this script never passes ``--resend``).
 Without ``--llm-note`` the behaviour is exactly as before.
 
+No-new-data guard (before step 1; no initData prompt, no connection): the
+planner's window end ``E = R - end_offset_days`` is checked offline
+(``fintr.collection.new_data_guard``). If no new trading day is expected
+(weekend; holiday per the saved price-history calendar; or every planned
+symbol's last saved window end is already ``>= E``) and no unsettled day is
+pending in the latest saved scan, the pipeline prints ``yeni veri beklenmiyor
+(son işlem günü X); toplama atlandı`` and exits 0 -- no collect, scan or
+notify, so nothing is sent (an already sent day is never sent again). An
+unsettled day (or an unreadable settlement state) keeps the collection, for
+custody settlement. ``--force-collect`` bypasses the guard; ``--dry-run`` and
+``--skip-collect`` are not guarded. Any guard error falls back to collecting.
+
 Any other non-zero exit stops the pipeline with that exit code; nothing is sent.
 The scanner's stdout (the observation document) is captured and discarded;
 only its stderr (saved path or error line) is read. This script prints no
@@ -50,11 +62,29 @@ financial value.
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+
+from fintr.collection.new_data_guard import (
+    NewDataDecision,
+    decide_new_data,
+    istanbul_today,
+    last_saved_end,
+    load_price_calendar,
+    scanner_unsettled_pending,
+)
+from fintr.collection.planner import (
+    CollectionPlannerError,
+    load_daily_collection_config,
+    plan_daily_collection,
+    scan_base_capture_ends,
+    scan_last_success,
+)
+from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -62,6 +92,8 @@ DAILY_ROOT = os.path.join("data", "interim", "daily_capture")
 SCANNER_DIR = os.path.join("data", "interim", "scanner_daily")
 LLM_NOTES_DIR = os.path.join("data", "interim", "llm_notes")
 NOTIFY_DIR = os.path.join("data", "interim", "notify")
+PRICE_DIR = os.path.join("data", "interim", "price_history")
+DAILY_CONFIG = ROOT / "configs" / "collection" / "daily_miniapp_v1.json"
 LLM_NOTE_CONFIG = ROOT / "configs" / "llm_note" / "config_v1.json"
 LLM_NOTE_DEFAULT_RUN_SECONDS = 1800  # the config's max_run_seconds, if the file cannot be read
 LLM_NOTE_TIMEOUT_MARGIN_SECONDS = 300
@@ -96,6 +128,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="start at the scan step (re-run scan+notify after a successful collect)")
     parser.add_argument("--send", action="store_true",
                         help="notify step actually sends to Telegram (default: notify dry-run)")
+    parser.add_argument("--force-collect", action="store_true",
+                        help="skip the no-new-data guard (weekend / holiday / already collected): "
+                             "always run collect_daily.py")
     parser.add_argument("--layout", choices=("v2", "v3"), default="v3",
                         help="v3 (default): one short signal message a day; v2: summary + one "
                              "message per stock (the note, if any, as separate messages after it)")
@@ -242,6 +277,44 @@ def extract_as_of(stderr_text: str, prefix: str = SAVED_PREFIX) -> tuple[str, st
     return None
 
 
+def new_data_decision(run_date_arg: str | None) -> NewDataDecision | None:
+    """The offline no-new-data check; ``None`` = could not decide (collect).
+
+    Uses the same config, active guards and planner as ``collect_daily.py``;
+    reads local files only (run records, price history, latest scan)."""
+    try:
+        run_date = date.fromisoformat(run_date_arg) if run_date_arg else istanbul_today()
+        config = load_daily_collection_config(DAILY_CONFIG)
+        guards = load_active_guards()
+        capture_root = ROOT / config.capture_root
+        development = [
+            symbol for symbol in guards.split.development_symbols if not guards.is_excluded(symbol)
+        ]
+        base_ends = {}
+        if config.base_capture_root is not None:
+            base_ends = scan_base_capture_ends(
+                ROOT / config.base_capture_root, config.base_capture_filename, development,
+            )
+        last_success = scan_last_success(capture_root / "_runs")
+        plan = plan_daily_collection(
+            run_date=run_date, guards=guards, last_success_by_symbol=last_success,
+            base_capture_end_by_symbol=base_ends, end_offset_days=config.end_offset_days,
+            lookback_calendar_days=config.lookback_calendar_days, max_span_days=config.max_span_days,
+        )
+        if plan.blocked():
+            return None  # collect_daily reports the decision the plan needs
+        planned = [entry.symbol for entry in plan.planned()]
+        return decide_new_data(
+            window_end=plan.window_end,
+            calendar=load_price_calendar(ROOT / PRICE_DIR, planned),
+            last_saved=last_saved_end(planned, last_success, base_ends),
+            unsettled_pending=scanner_unsettled_pending(ROOT / SCANNER_DIR),
+        )
+    except (CollectionPlannerError, SymbolGuardError, OSError, ValueError) as exc:
+        print(f"No-new-data check could not run ({type(exc).__name__}); collecting.", file=sys.stderr)
+        return None
+
+
 def _summary(results, as_of=None, saved=None, sent=None) -> None:
     print("Pipeline summary:")
     for step, code in results:
@@ -282,6 +355,16 @@ def main(argv: list[str] | None = None) -> int:
                   "in this shell (see docs/notify.md); nothing collected or sent.",
                   file=sys.stderr)
             return 2
+
+    if not (args.skip_collect or args.dry_run or args.force_collect):
+        decision = new_data_decision(args.run_date)
+        if decision is not None and not decision.expect_new_data:
+            last = decision.last_trading_day.isoformat() if decision.last_trading_day else "bilinmiyor"
+            print(f"yeni veri beklenmiyor (son işlem günü {last}); toplama atlandı")
+            results += [("collect", "skipped_no_new_data"), ("scan", "skipped"), ("notify", "skipped")]
+            _summary(results)
+            print(f"  reason: {decision.reason} (window end {decision.window_end.isoformat()})")
+            return 0
 
     if args.skip_collect:
         if args.dry_run:

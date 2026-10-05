@@ -39,7 +39,8 @@ def _go(argv, codes=(0, 0, 0), saved=True, scan_err=None, notify_err="", env=Non
         return subprocess.CompletedProcess(cmd, codes[idx], stdout="SECRET-OBSERVATION", stderr=err)
 
     out, err = io.StringIO(), io.StringIO()
-    with patch.dict(os.environ, env, clear=False), patch.object(rdp.subprocess, "run", run),             redirect_stdout(out), redirect_stderr(err):
+    with patch.dict(os.environ, env, clear=False), patch.object(rdp.subprocess, "run", run), \
+            patch.object(rdp, "new_data_decision", lambda *_: None), redirect_stdout(out), redirect_stderr(err):
         for name in rdp.TELEGRAM_ENV:
             if name not in env:
                 os.environ.pop(name, None)
