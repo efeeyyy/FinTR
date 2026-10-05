@@ -776,7 +776,7 @@ Salt okunur ve çevrimdışıdır: ağ bağlantısı açmaz, Telegram'a veya mod
 | Claude CLI | `configs/llm_note/config_v1.json` `cli_path` işaret ettiği dosya var mı | yalnız varlık denetlenir, CLI çalıştırılmaz; yoksa `UYARI` (yalnız `--llm-note` için gerekir) |
 | config, split, exclusions | etkin split, exclusions, toplama/analiz notu/bildirim config'leri okunuyor mu (mevcut yükleyiciler) | okunamıyorsa `HATA` |
 | hash | spec'ler `docs/prereg/FREEZE.md` (ham + kanonik), etkin split dondurulmuş spec'lerdeki kayıt, test planı `DECISIONS.md`, tarayıcı kuralları `rules_v1.json` ile eşleşiyor mu | eşleşmezse `HATA`; dondurulmuş dosyalar değiştirilmez, nedeni araştırın |
-| son çalıştırma | `daily_capture/_runs/` en yeni kaydın tarihi, durumu, `saved`/`failed` sayıları; son `scanner_daily` as_of; son notify receipt (tamamlandı/kısmi) | yalnız tarih, durum ve sayı yazılır, finansal içerik yazılmaz; `failed > 0`, kısmi receipt veya hiç kayıt yoksa `UYARI` |
+| son çalıştırma | `daily_capture/_runs/` en yeni kaydın tarihi, durumu, `saved`/`failed` sayıları; son `scanner_daily` as_of; `data/interim/notify/<as_of>/` altındaki son notify receipt (tamamlandı/kısmi) ve varsa not receipt'i (ayrı satır) | yalnız tarih, durum ve sayı yazılır, finansal içerik ve mesaj metni yazılmaz; `failed > 0`, kısmi receipt, hiç kayıt yoksa veya scanner as_of'u son receipt as_of'undan yeniyse (`gönderilmemiş tarama var`) `UYARI` |
 | pencere sonu (E) | bugünkü R için planlayıcının (`collect_daily.py --dry-run` ile aynı saf planlayıcı, ağsız) hedefleyeceği E | E hafta sonuysa veya tüm planlı semboller için zaten toplanmışsa `yeni veri beklenmiyor` yazar; azami aralığı aşan sembol varsa `UYARI` |
 | disk | proje diskinde boş alan | < 1 GiB `UYARI`, < 100 MiB `HATA` |
 

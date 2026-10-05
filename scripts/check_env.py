@@ -53,6 +53,9 @@ DECISIONS_DOC = Path("docs/prereg/DECISIONS.md")
 PREREG_DIR = Path("configs/studies/prereg")
 TEST_PLAN = PREREG_DIR / "test_plan_v1.json"
 SCANNER_DIR = Path("data/interim/scanner_daily")
+# Mirrors run_daily_pipeline.NOTIFY_DIR (a test pins the equality; the pipeline
+# script is not imported here). Receipts live here, not under scanner_daily.
+NOTIFY_DIR = Path("data/interim/notify")
 RUNS_SUBDIR = "_runs"
 
 # Mirrors fintr.collection.planner.RUN_RECORD_SCHEMA (a test pins the equality;
@@ -489,32 +492,62 @@ def check_last_scanner(scanner_dir: Path) -> tuple[Result, date | None]:
     return Result(OK, label, latest[0].isoformat()), latest[0]
 
 
-def check_last_receipt(scanner_dir: Path, scanner_as_of: date | None) -> Result:
+def _session_state(session: object) -> tuple[str, bool]:
+    """Fixed-format state text of a receipt session and whether it is complete."""
+    total = len(session.message_sha256)
+    if session.legacy:
+        return "tamamlandı (eski biçim)", True
+    if session.complete:
+        return f"tamamlandı ({len(session.sent)}/{total} mesaj)", True
+    return f"KISMİ ({len(session.sent)}/{total} mesaj gönderildi)", False
+
+
+def _unsent_scan_text(scanner_as_of: date | None, receipt_as_of: date | None) -> str | None:
+    if scanner_as_of is None or (receipt_as_of is not None and scanner_as_of <= receipt_as_of):
+        return None
+    return f"gönderilmemiş tarama var (son scanner as_of={scanner_as_of.isoformat()})"
+
+
+def check_last_receipt(notify_dir: Path, scanner_as_of: date | None) -> Result:
+    """Latest deterministic notify receipt (``receipt*.json``; note receipts excluded)."""
     from fintr.notify.delivery import find_latest_session
 
     label = "son notify receipt"
-    latest = _latest_dated_dir(scanner_dir, require="receipt*.json")
+    latest = _latest_dated_dir(notify_dir, require="receipt*.json")
     if latest is None:
+        unsent = _unsent_scan_text(scanner_as_of, None)
+        if unsent:
+            return Result(WARN, label, f"yok (henüz gönderim kaydı yok); {unsent}")
         return Result(WARN, label, "yok (henüz gönderim kaydı yok)")
     as_of, directory = latest
     session = find_latest_session(directory)
     if session is None:
         return Result(WARN, label, f"as_of={as_of.isoformat()}: receipt okunamadı")
-    total = len(session.message_sha256)
-    if session.legacy:
-        state = "tamamlandı (eski biçim)"
-    elif session.complete:
-        state = f"tamamlandı ({len(session.sent)}/{total} mesaj)"
-    else:
-        state = f"KISMİ ({len(session.sent)}/{total} mesaj gönderildi)"
+    state, complete = _session_state(session)
     detail = f"as_of={as_of.isoformat()}, {state}"
-    if not session.complete:
-        return Result(WARN, label, detail)
-    if scanner_as_of is not None and scanner_as_of > as_of:
-        return Result(WARN, label, (
-            f"{detail}; son scanner as_of={scanner_as_of.isoformat()} için receipt yok"
-        ))
-    return Result(OK, label, detail)
+    unsent = _unsent_scan_text(scanner_as_of, as_of)
+    if unsent:
+        return Result(WARN, label, f"{detail}; {unsent}")
+    return Result(OK if complete else WARN, label, detail)
+
+
+def check_last_note_receipt(notify_dir: Path) -> Result | None:
+    """Note receipt (``note_receipt*.json``) of the same as_of directory as the
+    latest deterministic receipt; None when there is none (nothing to show)."""
+    from fintr.notify.delivery import NOTE_RECEIPTS, find_latest_session
+
+    label = "son notify not receipt'i"
+    latest = _latest_dated_dir(notify_dir, require="receipt*.json")
+    if latest is None:
+        return None
+    as_of, directory = latest
+    if not any(directory.glob("note_receipt*.json")):
+        return None
+    session = find_latest_session(directory, NOTE_RECEIPTS)
+    if session is None:
+        return Result(WARN, label, f"as_of={as_of.isoformat()}: receipt okunamadı")
+    state, complete = _session_state(session)
+    return Result(OK if complete else WARN, label, f"as_of={as_of.isoformat()}, {state}")
 
 
 def check_window(
@@ -629,8 +662,11 @@ def collect_results(
     scanner_result, scanner_as_of = check_last_scanner(root / SCANNER_DIR)
     results.append(scanner_result)
     results.append(_guarded(
-        "son notify receipt", lambda: check_last_receipt(root / SCANNER_DIR, scanner_as_of),
+        "son notify receipt", lambda: check_last_receipt(root / NOTIFY_DIR, scanner_as_of),
     ))
+    note_result = _guarded("son notify not receipt'i", lambda: check_last_note_receipt(root / NOTIFY_DIR))
+    if note_result is not None:
+        results.append(note_result)
 
     if config is not None and guards is not None:
         results.append(_guarded(

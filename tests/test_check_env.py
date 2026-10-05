@@ -88,6 +88,17 @@ class SchemaPinTests(unittest.TestCase):
         self.assertEqual(ce.RUN_RECORD_SCHEMA, RUN_RECORD_SCHEMA)
 
 
+class NotifyDirPinTests(unittest.TestCase):
+    def test_notify_dir_matches_run_daily_pipeline(self):
+        spec = importlib.util.spec_from_file_location(
+            "run_daily_pipeline_for_check_env_t", ROOT / "scripts" / "run_daily_pipeline.py",
+        )
+        pipeline = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pipeline)
+        self.assertEqual(ce.NOTIFY_DIR, Path(pipeline.NOTIFY_DIR))
+        self.assertNotEqual(ce.NOTIFY_DIR, ce.SCANNER_DIR)
+
+
 class VersionHelperTests(unittest.TestCase):
     def test_satisfies(self):
         self.assertTrue(ce._satisfies("17.2", ">=17.1,<18"))
@@ -312,40 +323,114 @@ class RunStateTests(unittest.TestCase):
             ],
         }
 
+    def _note_receipt(self, sent: int, total: int = 2) -> dict:
+        return {**self._receipt(sent, total), "schema": "fintr_notify_note_receipt_v2"}
+
     def test_scanner_and_receipt(self):
         with tempfile.TemporaryDirectory() as tmp:
             scanner = Path(tmp) / "scanner_daily"
+            notify = Path(tmp) / "notify"
             self.assertEqual(ce.check_last_scanner(scanner)[0].level, ce.WARN)
-            self.assertEqual(ce.check_last_receipt(scanner, None).level, ce.WARN)
+            self.assertEqual(ce.check_last_receipt(notify, None).level, ce.WARN)
             for as_of in ("2026-10-01", "2026-10-02"):
                 _write_json(scanner / as_of / "observations.json", {"x": 1})
-            _write_json(scanner / "2026-10-01" / "receipt.json", self._receipt(2))
+            _write_json(notify / "2026-10-01" / "receipt.json", self._receipt(2))
             result, as_of = ce.check_last_scanner(scanner)
             self.assertEqual(
                 (result.level, result.detail, as_of), (ce.OK, "2026-10-02", date(2026, 10, 2)),
             )
             # newest scanner as_of has no receipt yet
-            stale = ce.check_last_receipt(scanner, as_of)
+            stale = ce.check_last_receipt(notify, as_of)
             self.assertEqual(stale.level, ce.WARN)
-            self.assertIn("2026-10-02 için receipt yok", stale.detail)
-            _write_json(scanner / "2026-10-02" / "receipt.json", self._receipt(2))
-            done = ce.check_last_receipt(scanner, as_of)
+            self.assertIn("gönderilmemiş tarama var", stale.detail)
+            self.assertIn("son scanner as_of=2026-10-02", stale.detail)
+            _write_json(notify / "2026-10-02" / "receipt.json", self._receipt(2))
+            done = ce.check_last_receipt(notify, as_of)
             self.assertEqual(done.level, ce.OK)
             self.assertEqual(done.detail, "as_of=2026-10-02, tamamlandı (2/2 mesaj)")
 
-    def test_partial_receipt_warns(self):
+    def test_receipt_in_scanner_directory_is_not_looked_at(self):
+        # the old (wrong) location: a receipt under scanner_daily must not count
         with tempfile.TemporaryDirectory() as tmp:
             scanner = Path(tmp) / "scanner_daily"
-            _write_json(scanner / "2026-10-02" / "receipt.json", self._receipt(1))
-            result = ce.check_last_receipt(scanner, date(2026, 10, 2))
+            notify = Path(tmp) / "notify"
+            _write_json(scanner / "2026-10-02" / "receipt.json", self._receipt(2))
+            self.assertEqual(ce.check_last_receipt(notify, None).detail, "yok (henüz gönderim kaydı yok)")
+
+    def test_no_receipt_but_scan_exists_warns_unsent_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = ce.check_last_receipt(Path(tmp) / "notify", date(2026, 10, 2))
+        self.assertEqual(result.level, ce.WARN)
+        self.assertIn("gönderilmemiş tarama var", result.detail)
+
+    def test_partial_receipt_warns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notify = Path(tmp) / "notify"
+            _write_json(notify / "2026-10-02" / "receipt.json", self._receipt(1))
+            result = ce.check_last_receipt(notify, date(2026, 10, 2))
         self.assertEqual(result.level, ce.WARN)
         self.assertIn("KISMİ (1/2 mesaj gönderildi)", result.detail)
+        self.assertNotIn("gönderilmemiş tarama", result.detail)
+
+    def test_partial_receipt_with_newer_scan_reports_both(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notify = Path(tmp) / "notify"
+            _write_json(notify / "2026-10-02" / "receipt.json", self._receipt(1))
+            result = ce.check_last_receipt(notify, date(2026, 10, 3))
+        self.assertEqual(result.level, ce.WARN)
+        self.assertIn("KISMİ", result.detail)
+        self.assertIn("gönderilmemiş tarama var", result.detail)
+
+    def test_resend_head_with_windows_safe_name_is_the_latest_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notify = Path(tmp) / "notify"
+            day = notify / "2026-10-02"
+            _write_json(day / "receipt.json", self._receipt(1))
+            _write_json(day / "receipt-20261002T101500Z.json", self._receipt(2))
+            self.assertNotIn(":", "receipt-20261002T101500Z.json")
+            result = ce.check_last_receipt(notify, date(2026, 10, 2))
+        self.assertEqual(result.level, ce.OK)
+        self.assertEqual(result.detail, "as_of=2026-10-02, tamamlandı (2/2 mesaj)")
 
     def test_note_receipt_is_not_counted_as_notice_receipt(self):
         with tempfile.TemporaryDirectory() as tmp:
-            scanner = Path(tmp) / "scanner_daily"
-            _write_json(scanner / "2026-10-02" / "note_receipt.json", self._receipt(2))
-            self.assertEqual(ce.check_last_receipt(scanner, None).level, ce.WARN)
+            notify = Path(tmp) / "notify"
+            _write_json(notify / "2026-10-02" / "note_receipt.json", self._note_receipt(2))
+            self.assertEqual(ce.check_last_receipt(notify, None).level, ce.WARN)
+            self.assertIsNone(ce.check_last_note_receipt(notify))
+
+    def test_note_receipt_is_shown_separately_without_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notify = Path(tmp) / "notify"
+            day = notify / "2026-10-02"
+            _write_json(day / "receipt.json", self._receipt(2))
+            self.assertIsNone(ce.check_last_note_receipt(notify))
+            _write_json(day / "note_receipt.json", self._note_receipt(1, total=3))
+            result = ce.check_last_note_receipt(notify)
+            self.assertEqual(result.level, ce.WARN)
+            self.assertEqual(result.detail, "as_of=2026-10-02, KISMİ (1/3 mesaj gönderildi)")
+            _write_json(day / "note_receipt-20261002T101500Z.json", self._note_receipt(3, total=3))
+            done = ce.check_last_note_receipt(notify)
+            self.assertEqual(done.level, ce.OK)
+            self.assertEqual(done.detail, "as_of=2026-10-02, tamamlandı (3/3 mesaj)")
+            # the deterministic line is unaffected by the note receipts
+            self.assertEqual(
+                ce.check_last_receipt(notify, None).detail, "as_of=2026-10-02, tamamlandı (2/2 mesaj)",
+            )
+
+    def test_collect_results_reads_notify_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_json(root / ce.SCANNER_DIR / "2026-10-03" / "observations.json", {"x": 1})
+            _write_json(root / ce.NOTIFY_DIR / "2026-10-02" / "receipt.json", self._receipt(2))
+            _write_json(root / ce.NOTIFY_DIR / "2026-10-02" / "note_receipt.json", self._note_receipt(2))
+            results = ce.collect_results(root, env={}, run_date=date(2026, 10, 6))
+        receipt = _by_label(results, "son notify receipt")
+        self.assertEqual(receipt.level, ce.WARN)
+        self.assertIn("as_of=2026-10-02, tamamlandı (2/2 mesaj)", receipt.detail)
+        self.assertIn("gönderilmemiş tarama var", receipt.detail)
+        note = _by_label(results, "son notify not receipt'i")
+        self.assertEqual(note.detail, "as_of=2026-10-02, tamamlandı (2/2 mesaj)")
 
 
 class WindowTests(unittest.TestCase):
