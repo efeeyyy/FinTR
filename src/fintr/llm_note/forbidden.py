@@ -44,6 +44,7 @@ _PATTERNS: tuple[tuple[str, str], ...] = (
     ("kesin", r"(?<!\w)kesin(?:lik\w*|likle)?(?!\w)"),
     ("kâr", r"(?<!\w)(?:kâr|kar|kârlı|karlı|profit)(?!\w)"),
     ("getiri", r"getiri\w*"),
+    ("kazanç", r"kazan[çc]\w*"),
     ("return", r"(?<!\w)returns?(?!\w)"),
     ("tahmin", r"tahmin\w*"),
     ("öneri", r"öneri\w*"),

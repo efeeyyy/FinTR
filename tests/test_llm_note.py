@@ -586,6 +586,11 @@ class ForbiddenTests(unittest.TestCase):
                      "manipülasyon", "niyetli", "kasıtlı", "buy now", "target price"):
             self.assertTrue(find_forbidden(text), text)
 
+    def test_flags_kazanc_and_its_inflections(self):
+        for text in ("kazanç", "Kazancı yüksek", "kazançlı hisse", "KAZANÇ", "kazançlar", "kazanc"):
+            self.assertIn("kazanç", find_forbidden(text), text)
+        self.assertEqual(find_forbidden("kazanç", allowed_phrases=("kazanç",)), [])
+
     def test_flags_inflected_advice_and_forecast_wording(self):
         for text in ("almalı", "Satmalı", "satılmalı", "alınmalı", "alınabilir", "elde tutmalı",
                      "tutulmalı", "yükselecek", "DÜŞECEK", "artacak", "bekleniyor", "garanti",
@@ -997,7 +1002,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("{", config.schema_text)
         self.assertNotIn("\n", config.schema_text)
         self.assertEqual((config.max_symbol_packet_bytes, config.max_symbols_per_run, config.max_run_seconds),
-                         (200_000, 30, 5400.0))
+                         (200_000, 30, 1800.0))
         self.assertEqual((config.setting_sources, config.isolation_probe), ("local", False))
         self.assertEqual(config.probe_prompt_sha256,
                          hashlib.sha256(config.probe_prompt_path.read_bytes()).hexdigest())
@@ -2346,8 +2351,11 @@ class PipelineV3Tests(unittest.TestCase):
 
     def test_the_note_step_has_a_wall_clock_limit_taken_from_the_config(self):
         config = json.loads(pipeline.LLM_NOTE_CONFIG.read_text(encoding="utf-8"))
+        self.assertEqual(config["max_run_seconds"], 1800)
+        self.assertEqual(config["timeout_seconds"], 900)  # the per-call timeout is unchanged
         self.assertEqual(pipeline.llm_note_timeout_seconds(),
                          config["max_run_seconds"] + pipeline.LLM_NOTE_TIMEOUT_MARGIN_SECONDS)
+        self.assertEqual(pipeline.llm_note_timeout_seconds(), 2100)
         _, calls, _, _, kwargs = _go_default(["--llm-note"])
         llm_kwargs = [k for c, k in zip(calls, kwargs) if Path(c[1]).name == "llm_note.py"]
         self.assertEqual([k["timeout"] for k in llm_kwargs], [pipeline.llm_note_timeout_seconds()])
@@ -2355,7 +2363,7 @@ class PipelineV3Tests(unittest.TestCase):
         _, calls, _, _, kwargs = _go_default(["--layout", "v2", "--llm-note"])
         self.assertTrue(all("timeout" not in k for c, k in zip(calls, kwargs) if Path(c[1]).name == "llm_note.py"))
         with patch.object(pipeline, "LLM_NOTE_CONFIG", Path("/nonexistent/config.json")):
-            self.assertEqual(pipeline.llm_note_timeout_seconds(), 5400 + 300)
+            self.assertEqual(pipeline.llm_note_timeout_seconds(), 1800 + 300)
 
     def test_notify_failure_stops_the_pipeline_as_before(self):
         rc, calls, out, _, _ = _go_default(["--llm-note", "--send"], notify_code=4, env=self.ENV)
