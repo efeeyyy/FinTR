@@ -399,6 +399,20 @@ class OneShotExecutionTests(RehearsalCase):
                 inputs[f"{symbol}:period_capture:{fixture.period_name}"],
                 hashlib.sha256((WORLD / "period_analysis" / symbol / fixture.period_name).read_bytes()).hexdigest())
 
+    def test_manifest_records_spec_hashes_and_seeds(self):
+        manifest = self.manifest
+        frozen = _frozen_canonical_hashes()
+        plan = load_test_plan(PLAN_PATH)
+        for ref in plan.specs:
+            spec_file = Path(ref.path).name
+            record = manifest["specs"][ref.spec_id]
+            self.assertEqual(record["raw_sha256"], ref.raw_sha256)
+            self.assertEqual(record["canonical_sha256"], frozen[spec_file])
+            self.assertEqual(record["bootstrap_seed"], FROZEN_SEED)
+            self.assertEqual(record["block_bootstrap_seed"], FROZEN_SEED)
+        split_hashes = {r["split_guard"]["split_file_sha256"] for r in self.results().values()}
+        self.assertEqual(split_hashes, {manifest["split_file_sha256"]})
+
     def test_every_result_records_spec_plan_hash_seed_commit_and_scope(self):
         frozen = _frozen_canonical_hashes()
         plan = load_test_plan(PLAN_PATH)
