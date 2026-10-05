@@ -154,6 +154,10 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      prompt v3 ("getiri/kazanç/kâr" yok). Dal 2026-10-04 itibarıyla origin'de yoktu; gelince
      yerel alt ajan doğrular (kod düzenlemez), yönetici birleştirir + push eder. Sonra TRALT
      notu yeniden denenir.
+   - 2026-10-05: `notify-signal-v3` sonnet-high ile doğrulandı (9/9), main'e birleşti
+     (`d3ac9c7`, 1170 test). TRALT prompt v3 ile kabul (10-02'nin 5 notu tamam). v3 dry-run:
+     tek mesaj ~290 karakter. Bulutta bekleyen: `env-doctor` (scripts/check_env.py, tzdata) ve
+     `llm-note-hardening` ("kazanç" yasak, max_run_seconds 1800). Gelince doğrula, birleştir.
    - İzinler (Efe, 2026-10-04): `.claude/settings.local.json` (git dışı) → env PYTHONPATH=src,
      PYTHONIOENCODING=utf-8; allow: git merge, `git push origin *`, venv python ile
      run_daily_pipeline/notify_observations/scan_observations/collect_daily/llm_note. Yeni
