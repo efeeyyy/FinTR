@@ -602,6 +602,11 @@ Exit 1 = en az bir sembol `failed:<kategori>` (ör. `packet_hash_mismatch`,
 
 ### 6g. Günlük sıra (özet)
 
+0. **Yeni veri var mı?** (yalnız `run_daily_pipeline.py`; ayrıntı 6h) Hiçbir
+   bağlantı açılmadan ve initData istenmeden, planlayıcının E=R−1 penceresi
+   için yeni işlem günü beklenip beklenmediği yerel dosyalardan kontrol edilir.
+   Beklenmiyorsa 1-4. adımların hiçbiri çalışmaz (toplama, tarama, bildirim
+   yok; gönderilmiş bir gün tekrar gönderilmez) ve çıkış kodu 0'dır.
 1. `collect_daily.py --allow-session-takeover` (Mini App + fiyat adımı; 6a-6e).
 2. İlk canlı çalıştırmadan sonra, bir kez: `compare_daily_d0.py` (6f).
 3. `scan_observations.py --as-of YYYY-MM-DD --daily-root data\interim\daily_capture --format json --save`
@@ -619,6 +624,31 @@ $env:PYTHONPATH = "$PWD\src"
 .\.venv\Scripts\python.exe scripts\run_daily_pipeline.py --allow-session-takeover
 ```
 
+- **Yeni veri koruması (ilk adım, `--force-collect` ile atlanır):** boru hattı
+  `collect_daily.py`'yi başlatmadan, yani initData istemeden ve bağlantı
+  açmadan, E=R−1 için şunu kontrol eder. Yeni işlem günü **beklenmiyorsa**
+  `yeni veri beklenmiyor (son işlem günü X); toplama atlandı` yazar, 0 ile
+  çıkar; toplama, tarama ve bildirim çalışmaz. Beklenmeme nedenleri:
+  1. E Cumartesi veya Pazar;
+  2. E hafta içi ama fiyat geçmişi E'yi kapsıyor ve hiçbir sembolün fiyat
+     geçmişinde E için işlem görmüş bar yok (tatil; takvim yalnız
+     `data\interim\price_history` dosyalarından türetilir, resmî tatil listesi
+     yoktur);
+  3. her planlı sembolün son kaydedilen pencere sonu (çalıştırma kayıtları +
+     taban yakalama, planlayıcıdaki kural) zaten E veya sonrası.
+
+  **Kesinleşmemiş gün varsa toplama yine yapılır** (takas düzelmesi için):
+  `data\interim\scanner_daily` altındaki en son `observations.json`'da herhangi
+  bir sembolün `composition.unsettled.in_window_day_count` değeri 0'dan büyükse
+  ya da bu dosya yok/okunamıyorsa durum "bilinmiyor" sayılır ve toplama
+  yapılır. Koruma yalnız kanıtlayabildiğinde atlar; kontrol hata verirse
+  (yapılandırma/split okunamadı vb.) stderr'e not düşer ve toplamaya devam
+  eder. `--dry-run` ve `--skip-collect` korumadan geçmez.
+  Sınırlar: fiyat geçmişi yalnız zaten çekilmiş günleri bildiğinden, henüz hiçbir
+  fiyat çekiminin kapsamadığı bir tatil ilk denemede "yeni gün bekleniyor"
+  görünür ve bir kez toplanır (o çalıştırmanın fiyat adımı tatili kaydeder; aynı
+  günkü yeniden çalıştırma atlanır). Geçmiş bir `--run-date` ile yeniden toplama
+  gerekiyorsa `--force-collect` verin.
 - `collect_daily.py` initData'yı kendisi sorar (stdio devralınır). Çıkış kodu
   0 değilse dur; tarama ve bildirim çalışmaz, hiçbir şey gönderilmez.
 - Tarama: `scan_observations.py --daily-root data\interim\daily_capture
