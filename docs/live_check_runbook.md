@@ -649,7 +649,11 @@ $env:PYTHONPATH = "$PWD\src"
 .\.venv\Scripts\python.exe scripts\run_daily_pipeline.py --allow-session-takeover --llm-note
 ```
 
-- **Sıra:** toplama -> tarama -> **deterministik bildirim** (modeli beklemez) ->
+- **Düzen v3 (varsayılan, Efe kararı 2026-10-03):** sıra toplama -> tarama -> `llm_note.py` ->
+  **tek** sinyal mesajı (notun kanıt kelimesi satırın içinde; ayrı not mesajı yok). Not hatası
+  ya da zaman aşımı mesajı düşürmez (`Opus: —`). Aşağıdaki sıra ve maddeler `--layout v2` içindir
+  (`docs/notify.md` "Sinyal chati").
+- **Sıra (v2):** toplama -> tarama -> **deterministik bildirim** (modeli beklemez) ->
   `llm_note.py` -> not bildirimi (`notify_observations.py --llm-note-dir
   data\interim\llm_notes`: kendi Telegram mesajı, kendi makbuzu
   `note_receipt.json`; mesaj başına durumlu, devam edebilir: aynı gün yeniden çalıştırma yalnız

@@ -8,7 +8,22 @@ every script keeps its own guards and exit codes:
 3. ``notify_observations.py --as-of <as_of>`` (only if 2 == 0; dry-run unless
    this script got ``--send``; ``--resend`` is never passed)
 
-Optional steps 4-5, only with ``--llm-note`` (default off; Efe's decision of
+Layout v3 (default, ``--layout v3``; Efe's decision of 2026-10-03, the Telegram
+signal chat): ONE short message a day. With ``--llm-note`` the order is collect
+-> scan -> ``llm_note.py`` -> the single v3 message (``notify_observations.py
+--layout v3 --note-assessments-dir``), the accepted note's evidence word going
+into each stock's line; there are no separate note messages. If the note step
+errors, times out (``LLM_NOTE_TIMEOUT_MARGIN_SECONDS`` over the config's
+``max_run_seconds``) or rejects a symbol, the message is still sent with ``—``
+for the missing assessments -- the deterministic notice never depends on the
+note. Without ``--llm-note`` v3 is sent with ``—`` everywhere. The receipt and
+resume rules are the notifier's (``receipt.json``), so a same-day re-run sends
+nothing again; when the receipt already exists (``--send``) the note step is
+not repeated either (``llm_note: skipped_already_sent``).
+
+``--layout v2`` keeps everything below exactly as it was.
+
+Optional steps 4-5 (v2 only), only with ``--llm-note`` (default off; Efe's decision of
 2026-10-02), AFTER the deterministic notice has been sent so it never waits
 for the model: 4. ``llm_note.py --as-of <as_of>``; 5. ``notify_observations.py
 --llm-note-dir`` = the note as its own Telegram message(s) with its own
@@ -35,6 +50,7 @@ financial value.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -45,6 +61,10 @@ SCRIPTS = ROOT / "scripts"
 DAILY_ROOT = os.path.join("data", "interim", "daily_capture")
 SCANNER_DIR = os.path.join("data", "interim", "scanner_daily")
 LLM_NOTES_DIR = os.path.join("data", "interim", "llm_notes")
+NOTIFY_DIR = os.path.join("data", "interim", "notify")
+LLM_NOTE_CONFIG = ROOT / "configs" / "llm_note" / "config_v1.json"
+LLM_NOTE_DEFAULT_RUN_SECONDS = 5400  # the config's max_run_seconds, if the file cannot be read
+LLM_NOTE_TIMEOUT_MARGIN_SECONDS = 300
 LLM_STATUS_PREFIX = "LLM_NOTE_STATUS: "
 SAVED_PREFIX = "Observations saved:"
 EXISTS_PREFIX = "Scan failed: output file already exists (no overwrite):"
@@ -76,11 +96,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="start at the scan step (re-run scan+notify after a successful collect)")
     parser.add_argument("--send", action="store_true",
                         help="notify step actually sends to Telegram (default: notify dry-run)")
+    parser.add_argument("--layout", choices=("v2", "v3"), default="v3",
+                        help="v3 (default): one short signal message a day; v2: summary + one "
+                             "message per stock (the note, if any, as separate messages after it)")
     parser.add_argument("--llm-note", action="store_true",
-                        help="after the deterministic notice: run the Opus 5.5 analysis note step "
-                             "(llm_note.py) and send the note as its own message with its own "
-                             "receipt; default off; its failure changes neither the notice nor "
-                             "the exit code")
+                        help="run the Opus 5.5 analysis note step (llm_note.py). v3: before the "
+                             "single message, whose lines carry the accepted evidence words (a "
+                             "failed or timed-out note prints the dash and never blocks the "
+                             "message); v2: after the notice, sent as its own message(s) with "
+                             "its own receipt. Default off; its failure never changes the exit "
+                             "code")
     return parser
 
 
@@ -111,26 +136,52 @@ def llm_note_command(as_of: str) -> list[str]:
             "--scanner-dir", SCANNER_DIR, "--daily-root", DAILY_ROOT, "--out-dir", LLM_NOTES_DIR]
 
 
-def notify_command(as_of: str, send: bool, note: bool = False) -> list[str]:
+def notify_command(as_of: str, send: bool, note: bool = False, *, layout: str = "v2",
+                   assessments: bool = False) -> list[str]:
     """``note=True``: the analysis note as its own message(s) with its own
     receipt (``notify_observations.py --llm-note-dir``); the deterministic
-    command (``note=False``) is exactly what it was without the note step."""
+    command (``note=False``) is what it was without the note step, with the
+    layout now explicit (the notifier's default is v3). ``assessments=True``
+    (layout v3): the accepted notes' evidence words go into the message lines."""
     cmd = [sys.executable, _script("notify_observations.py"), "--as-of", as_of,
-           "--scanner-dir", SCANNER_DIR]
+           "--scanner-dir", SCANNER_DIR, "--layout", layout]
     if send:
         cmd.append("--send")
     if note:
         cmd += ["--llm-note-dir", LLM_NOTES_DIR]
+    if assessments:
+        cmd += ["--note-assessments-dir", LLM_NOTES_DIR]
     return cmd
 
 
-def run_llm_note(as_of: str) -> str:
+def llm_note_timeout_seconds() -> int:
+    """Wall-clock limit for the v3 note step: the note config's whole-run
+    budget plus a margin, so a hung child can never keep the message back."""
+    try:
+        run_seconds = json.loads(LLM_NOTE_CONFIG.read_text(encoding="utf-8"))["max_run_seconds"]
+        if isinstance(run_seconds, bool) or not isinstance(run_seconds, int) or run_seconds <= 0:
+            raise ValueError("max_run_seconds")
+    except (OSError, ValueError, KeyError, TypeError):
+        run_seconds = LLM_NOTE_DEFAULT_RUN_SECONDS
+    return run_seconds + LLM_NOTE_TIMEOUT_MARGIN_SECONDS
+
+
+def v3_notice_exists(as_of: str) -> bool:
+    """The v3 message of ``as_of`` already has its (session-head) receipt."""
+    return (ROOT / NOTIFY_DIR / as_of / "receipt.json").exists()
+
+
+def run_llm_note(as_of: str, timeout: float | None = None) -> str:
     """Run the note step; return its status string. Never raises and never
-    decides the pipeline's exit code."""
+    decides the pipeline's exit code. ``timeout`` (v3): seconds after which the
+    child is killed and the status is ``error:timeout``."""
     try:
         proc = subprocess.run(llm_note_command(as_of), cwd=ROOT, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                              errors="replace", env=_child_env())
+                              errors="replace", env=_child_env(),
+                              **({} if timeout is None else {"timeout": timeout}))
+    except subprocess.TimeoutExpired:
+        return "error:timeout"
     except Exception as exc:  # the note must never stop the deterministic notice
         return f"error:{type(exc).__name__}"
     if proc.stderr:
@@ -269,7 +320,17 @@ def main(argv: list[str] | None = None) -> int:
         as_of, saved = found
         results.append(("scan", "0"))
 
-    proc = subprocess.run(notify_command(as_of, args.send), cwd=ROOT,
+    v3_note = args.layout == "v3" and args.llm_note
+    if v3_note:
+        # Before the single message, which never waits on the outcome: any
+        # status (error, timeout, rejected symbols) just leaves dashes.
+        if args.send and v3_notice_exists(as_of):
+            status = "skipped_already_sent"
+        else:
+            status = run_llm_note(as_of, timeout=llm_note_timeout_seconds())
+        results.append(("llm_note", status))
+
+    proc = subprocess.run(notify_command(as_of, args.send, layout=args.layout, assessments=v3_note), cwd=ROOT,
                           stderr=subprocess.PIPE, text=True, encoding="utf-8",
                           errors="replace", env=_child_env())
     notify_err = proc.stderr or ""
@@ -286,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         results.append(("notify", "0"))
         summary = dict(as_of=as_of, saved=saved, sent=args.send)
 
-    if args.llm_note:
+    if args.llm_note and args.layout == "v2":
         # After the deterministic notice has gone out: nothing below can
         # change it or the exit code; failures only show up in the summary.
         results += run_note_steps(as_of, args.send)

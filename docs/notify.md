@@ -9,9 +9,58 @@ gönderir. `fintr.notify.format.SUPPORTED_OBSERVATIONS_SCHEMAS` her iki
 şemayı da kabul eder; eski (`_v1`, `--daily-root` öncesi ya da onsuz
 üretilmiş) dosyalar aynen okunmaya devam eder.
 
-## Mesaj düzeni v2 (varsayılan) ve `--layout v1`
+## Sinyal chati: düzen v3 (varsayılan)
 
-2026-10-03'ten beri varsayılan düzen v2'dir (`src/fintr/notify/layout.py`):
+Efe kararı (2026-10-03, `docs/prereg/DECISIONS.md`): Telegram "sinyal chati" olarak
+kullanılır; **günde tek mesaj, hisse başına tek satır**. `--layout v3` varsayılandır
+(`src/fintr/notify/layout_v3.py`); `--layout v1` ve `--layout v2` aynen kalır. Uzun açıklama,
+kural metni ve "Ne demek" bu düzende yoktur.
+
+```
+📊 02.10 sinyaller (doğrulanmamış hipotez, tavsiye değil)
+AKFIS ↑ al yönlü · H2+H4 · Opus: destekliyor
+BIMAS ↓ sat yönlü · H1 · Opus: —
+veri: 2 gün kesinleşmemiş
+```
+
+Gözlem yoksa tek satır: `📊 02.10 sinyal yok` (veri satırı olmadan).
+
+- **Yön:** yalnız dondurulmuş kuralın `predicted_direction` alanından (`positive` →
+  `↑ al yönlü`, `negative` → `↓ sat yönlü`; hash doğrulamalı yükleyici). Yön bilinmiyorsa ya da
+  `--no-direction-label` verilmişse yön kısmı yazılmaz (`AKFIS · H2 · Opus: —`); tahmin yok.
+- **Birleştirme:** bir hissede aynı yönlü birden çok kural tek satırda `H2+H4` olur; yönleri
+  farklıysa ayrı satır kullanılır (önce yukarı, sonra aşağı, sonra yönsüz). Aynı hisse iki farklı
+  günde koşul sağlarsa (çok günlük tarama) sembolün yanına `(GG.AA)` yazılır.
+- **`Opus:`** yalnız o hisse, kural ve gün için **kabul edilmiş (`accepted`)** analiz notunun
+  kanıt değerlendirmesi kelimesidir (`destekliyor`/`zayıflatıyor`/`belirsiz`); not yoksa,
+  reddedilmişse, başarısızsa ya da bütünlük yeniden doğrulamasını geçemiyorsa `—`. Birleştirilen
+  kurallarda kelimeler farklıysa kural başına yazılır (`Opus: H2 destekliyor, H4 belirsiz`); kod hiçbir
+  kelime üretmez. Kelimeler `--note-assessments-dir data/interim/llm_notes` ile okunur
+  (`fintr.llm_note.render.accepted_assessments`); bayrak yoksa hepsi `—`. `--llm-note-dir`'den
+  farklı olarak ayrı not mesajı göndermez; `--note-assessments-dir` yalnız v3 ile geçerlidir.
+- **Veri satırı:** yalnız pencerede kesinleşmemiş gün, boşluk ya da revize varsa, sona tek kısa
+  satır (`veri: 2 gün kesinleşmemiş, 1 gün boşluk, 1 gün revize`). Sayılar kayıtlı `composition`
+  alanındaki pencere içi sayımlardır; taranan hisseler arasında her tür için **en büyük** sayı
+  gösterilir (toplanmaz). Pencere bilgisi olmayan hisse varsa `durum bilgisi yok` eklenir.
+- **Uzunluk:** normalde tek mesaj; 4096 karakteri aşacak kadar hisse varsa satırlar sonraki
+  mesajlara bölünür ve her mesaj başlık satırını tekrarlar (20 hisselik en kötü durum testle
+  sınırın altında tutulur).
+- **Yasak:** getiri, puan, hedef fiyat, stop, pozisyon büyüklüğü eklenmez. LLM al/sat ya da karar
+  üretmez (AGENTS.md); satırdaki kelime doğrulanmış notun alanının aynen aktarımıdır.
+- **Receipt / devam:** düzen v2 ile aynı mekanizma (`receipt*.json`, `fintr_notify_receipt_v2`,
+  `layout: "v3"`; `--note-assessments-dir` verildiyse `note_assessments` alanı klasörü ve gösterilen
+  değerlendirme sayısını kaydeder). Aynı `as_of` için tamamlanmış receipt varsa yeniden gönderilmez
+  (`--resend` gerekir).
+- **Pipeline:** `run_daily_pipeline.py --llm-note` v3'te sırası toplama → tarama → `llm_note.py` →
+  tek v3 mesajı; `--llm-note` olmadan v3 yine gönderilir (hepsi `—`). `llm_note.py` hata verir, zaman
+  aşımına uğrar (config'teki `max_run_seconds` + 300 sn) ya da bir hisse reddedilirse mesaj yine gider,
+  eksik değerlendirmeler `—` olur; deterministik bildirim nota bağlı değildir. Aynı gün yeniden
+  çalıştırmada receipt varsa not adımı da tekrarlanmaz (`llm_note: skipped_already_sent`) ve mesaj
+  yeniden gönderilmez. `--layout v2` eski sırayı korur (bildirim, sonra ayrı not mesajı).
+
+## Mesaj düzeni v2 ve `--layout v1`
+
+Düzen v2 (`src/fintr/notify/layout.py`; `--layout v2` ile seçilir, v3'ten önceki varsayılandı):
 **önce bir özet mesajı, sonra koşulu sağlayan her hisse için ayrı mesaj**.
 `--layout v1` önceki tek düz metni birebir korur (aşağıdaki "Beklenen yön
 etiketi" ve "Veri durumu satırı" bölümleri v1 metnini anlatır). Eski v1/v2
@@ -137,7 +186,8 @@ yazar. Bir kuralın `meaning` alanı yoksa "Ne demek" satırı atlanır (uydurul
 
 ### Bayraklar (v2)
 
-`--layout {v1,v2}` (varsayılan v2), `--rule-explanations PATH`, `--delivery-config PATH`,
+`--layout {v1,v2,v3}` (varsayılan v3), `--note-assessments-dir DIR` (yalnız v3),
+`--rule-explanations PATH`, `--delivery-config PATH`,
 `--message-delay-seconds N`; mevcut `--no-direction-label`, `--skip-empty`, `--send`,
 `--resend`, `--rules-file` aynen çalışır.
 
@@ -213,14 +263,15 @@ eklenmez.
 Opus 5.5 analiz notu, kendi mesajı ve kendi makbuzuyla (`note_receipt.json`)
 yazdırılır/gönderilir (`scripts/llm_note.py`, `src/fintr/llm_note/`; tasarım:
 `docs/architecture.md`, karar: `docs/prereg/DECISIONS.md`). Deterministik bildirim
-ayrı, bayraksız bir çağrıdır (varsayılan düzen v2; `--layout v1` önceki tek metni verir)
-ve modeli beklemez. Not modu `--layout`'u yok sayar: not mesajları kendi biçimindedir ve
+ayrı bir çağrıdır (`--layout v2` ya da `v1` ile; düzen v3'te not değerlendirmesi zaten
+tek mesajın satırındadır, yukarıdaki "Sinyal chati" bölümü) ve modeli beklemez. Not modu
+`--layout`'u yok sayar: not mesajları kendi biçimindedir ve
 yalnız `note_receipt*.json` dosyalarını yazar. Not gönderimi, deterministik bildirimin
 düzen v2 yoluyla aynı devam edebilir mekanizmayı kullanır (`src/fintr/notify/delivery.py`;
 aşağıdaki "Receipt" maddesi); iki bildirimin receipt'leri birbirinden bağımsızdır
 (`receipt*.json` deseni `note_receipt*.json` dosyalarını görmez).
-`run_daily_pipeline.py --llm-note` sırası: toplama, tarama, deterministik bildirim,
-`llm_note.py`, not bildirimi. Not adımının hatası gönderilmiş bildirimi veya çıkış
+`run_daily_pipeline.py --layout v2 --llm-note` sırası: toplama, tarama, deterministik bildirim,
+`llm_note.py`, not bildirimi (varsayılan v3'te sıra farklıdır: not önce, tek mesaj sonra). Not adımının hatası gönderilmiş bildirimi veya çıkış
 kodunu değiştirmez; yalnız özette görünür (`note_notify: 0 | already_sent | partial |
 content_changed | skipped | failed:exit_N`). Aynı gün yeniden çalıştırmada tamamlanmış not
 tekrar gönderilmez (`already_sent`), yarım kalmış notun yalnız gönderilmemiş mesajları
