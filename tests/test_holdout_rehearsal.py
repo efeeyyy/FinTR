@@ -372,13 +372,21 @@ class OneShotExecutionTests(RehearsalCase):
         self.assertIn("evaluate_study_family (primary H1+H2): ok", out)
         self.assertIn("Manifest written", out)
 
-    def test_stdout_carries_no_result_numbers(self):
+    def test_stdout_carries_only_paths_and_statuses(self):
+        # Every stdout line must be a check status, a run status or a file
+        # path; no statistic is ever printed (they live in the JSON files).
         _code, out, _err = self.first
-        for result in self.results().values():
-            test = result["hypothesis_test"]
-            for needle in (test["p_value_one_sided"], test["difference_mean"], test["event_count"]):
-                self.assertNotIn(str(needle), out)
-
+        allowed = (
+            r"\[(OK|FAIL)\] \d\. \w+: .*",
+            r"run_study \S+ scope=(primary|secondary): ok",
+            r"  saved: \S+\.json",
+            r"evaluate_study_family \(primary H1\+H2\): ok",
+            r"Manifest written: \S+manifest\.json",
+        )
+        for line in filter(str.strip, out.splitlines()):
+            self.assertTrue(any(re.fullmatch(pattern, line) for pattern in allowed), line)
+        self.assertNotIn("p_value", out)
+        self.assertNotIn("difference_mean", out)
     def test_manifest_records_commit_plan_hash_and_inputs(self):
         manifest = self.manifest
         plan = load_test_plan(PLAN_PATH)
