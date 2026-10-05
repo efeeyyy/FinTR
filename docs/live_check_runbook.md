@@ -665,7 +665,7 @@ $env:PYTHONPATH = "$PWD\src"
   olan hisseler; `rejected` = doğrulamadan geçemedi, `failed` = alınamadı),
   `already_noted`, `no_observations`, `error:<kategori>`; ve `note_notify: 0 |
   already_sent | skipped | failed:exit_N`. Adım hisse sayısı x çağrı süresi kadar
-  sürer (çağrı başına 900 sn zaman aşımı, tüm adım için `max_run_seconds` 5400).
+  sürer (çağrı başına 900 sn zaman aşımı, tüm adım için `max_run_seconds` 1800).
 - **Ön koşul:** Claude Code CLI Efe'nin aboneliğiyle giriş yapmış olmalı
   (`%USERPROFILE%\.local\bin\claude.exe`; farklı yol için
   `configs/llm_note/config_v1.json` `cli_path` ya da `scripts\llm_note.py
