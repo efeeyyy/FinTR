@@ -728,8 +728,10 @@ class ScriptV2Tests(GuardEnvMixin, unittest.TestCase):
         return path
 
     def _argv(self, root: Path, *extra: str) -> list[str]:
+        # the notifier's default layout is v3 (tests/test_notify_layout_v3.py); here v2 unless overridden
         return ["--as-of", "2026-10-02", "--scanner-dir", str(root / "scanner"),
-                "--out-dir", str(root / "out"), "--rule-texts", str(REAL_RULE_TEXTS_FILE), *extra]
+                "--out-dir", str(root / "out"), "--rule-texts", str(REAL_RULE_TEXTS_FILE),
+                "--layout", "v2", *extra]
 
     def _run(self, root: Path, *extra: str, send_effects=None):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -745,7 +747,7 @@ class ScriptV2Tests(GuardEnvMixin, unittest.TestCase):
         directory = root / "out" / "2026-10-02"
         return sorted(directory.iterdir()) if directory.exists() else []
 
-    def test_default_is_layout_v2_dry_run_without_network(self):
+    def test_layout_v2_dry_run_without_network(self):
         root = self._prepare()
         stdout = io.StringIO()
         with patch("fintr.notify.telegram.urllib.request.urlopen",

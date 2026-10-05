@@ -8,7 +8,22 @@ every script keeps its own guards and exit codes:
 3. ``notify_observations.py --as-of <as_of>`` (only if 2 == 0; dry-run unless
    this script got ``--send``; ``--resend`` is never passed)
 
-Optional steps 4-5, only with ``--llm-note`` (default off; Efe's decision of
+Layout v3 (default, ``--layout v3``; Efe's decision of 2026-10-03, the Telegram
+signal chat): ONE short message a day. With ``--llm-note`` the order is collect
+-> scan -> ``llm_note.py`` -> the single v3 message (``notify_observations.py
+--layout v3 --note-assessments-dir``), the accepted note's evidence word going
+into each stock's line; there are no separate note messages. If the note step
+errors, times out (``LLM_NOTE_TIMEOUT_MARGIN_SECONDS`` over the config's
+``max_run_seconds``) or rejects a symbol, the message is still sent with ``—``
+for the missing assessments -- the deterministic notice never depends on the
+note. Without ``--llm-note`` v3 is sent with ``—`` everywhere. The receipt and
+resume rules are the notifier's (``receipt.json``), so a same-day re-run sends
+nothing again; when the receipt already exists (``--send``) the note step is
+not repeated either (``llm_note: skipped_already_sent``).
+
+``--layout v2`` keeps everything below exactly as it was.
+
+Optional steps 4-5 (v2 only), only with ``--llm-note`` (default off; Efe's decision of
 2026-10-02), AFTER the deterministic notice has been sent so it never waits
 for the model: 4. ``llm_note.py --as-of <as_of>``; 5. ``notify_observations.py
 --llm-note-dir`` = the note as its own Telegram message(s) with its own
@@ -26,6 +41,18 @@ content differs, so nothing was sent (a full resend needs ``notify_observations.
 --llm-note-dir ... --resend`` by hand; this script never passes ``--resend``).
 Without ``--llm-note`` the behaviour is exactly as before.
 
+No-new-data guard (before step 1; no initData prompt, no connection): the
+planner's window end ``E = R - end_offset_days`` is checked offline
+(``fintr.collection.new_data_guard``). If no new trading day is expected
+(weekend; holiday per the saved price-history calendar; or every planned
+symbol's last saved window end is already ``>= E``) and no unsettled day is
+pending in the latest saved scan, the pipeline prints ``yeni veri beklenmiyor
+(son işlem günü X); toplama atlandı`` and exits 0 -- no collect, scan or
+notify, so nothing is sent (an already sent day is never sent again). An
+unsettled day (or an unreadable settlement state) keeps the collection, for
+custody settlement. ``--force-collect`` bypasses the guard; ``--dry-run`` and
+``--skip-collect`` are not guarded. Any guard error falls back to collecting.
+
 Any other non-zero exit stops the pipeline with that exit code; nothing is sent.
 The scanner's stdout (the observation document) is captured and discarded;
 only its stderr (saved path or error line) is read. This script prints no
@@ -35,16 +62,41 @@ financial value.
 from __future__ import annotations
 
 import argparse
+from datetime import date
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+
+from fintr.collection.new_data_guard import (
+    NewDataDecision,
+    decide_new_data,
+    istanbul_today,
+    last_saved_end,
+    load_price_calendar,
+    scanner_unsettled_pending,
+)
+from fintr.collection.planner import (
+    CollectionPlannerError,
+    load_daily_collection_config,
+    plan_daily_collection,
+    scan_base_capture_ends,
+    scan_last_success,
+)
+from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 DAILY_ROOT = os.path.join("data", "interim", "daily_capture")
 SCANNER_DIR = os.path.join("data", "interim", "scanner_daily")
 LLM_NOTES_DIR = os.path.join("data", "interim", "llm_notes")
+NOTIFY_DIR = os.path.join("data", "interim", "notify")
+PRICE_DIR = os.path.join("data", "interim", "price_history")
+DAILY_CONFIG = ROOT / "configs" / "collection" / "daily_miniapp_v1.json"
+LLM_NOTE_CONFIG = ROOT / "configs" / "llm_note" / "config_v1.json"
+LLM_NOTE_DEFAULT_RUN_SECONDS = 1800  # the config's max_run_seconds, if the file cannot be read
+LLM_NOTE_TIMEOUT_MARGIN_SECONDS = 300
 LLM_STATUS_PREFIX = "LLM_NOTE_STATUS: "
 SAVED_PREFIX = "Observations saved:"
 EXISTS_PREFIX = "Scan failed: output file already exists (no overwrite):"
@@ -76,11 +128,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="start at the scan step (re-run scan+notify after a successful collect)")
     parser.add_argument("--send", action="store_true",
                         help="notify step actually sends to Telegram (default: notify dry-run)")
+    parser.add_argument("--force-collect", action="store_true",
+                        help="skip the no-new-data guard (weekend / holiday / already collected): "
+                             "always run collect_daily.py")
+    parser.add_argument("--layout", choices=("v2", "v3"), default="v3",
+                        help="v3 (default): one short signal message a day; v2: summary + one "
+                             "message per stock (the note, if any, as separate messages after it)")
     parser.add_argument("--llm-note", action="store_true",
-                        help="after the deterministic notice: run the Opus 5.5 analysis note step "
-                             "(llm_note.py) and send the note as its own message with its own "
-                             "receipt; default off; its failure changes neither the notice nor "
-                             "the exit code")
+                        help="run the Opus 5.5 analysis note step (llm_note.py). v3: before the "
+                             "single message, whose lines carry the accepted evidence words (a "
+                             "failed or timed-out note prints the dash and never blocks the "
+                             "message); v2: after the notice, sent as its own message(s) with "
+                             "its own receipt. Default off; its failure never changes the exit "
+                             "code")
     return parser
 
 
@@ -111,26 +171,52 @@ def llm_note_command(as_of: str) -> list[str]:
             "--scanner-dir", SCANNER_DIR, "--daily-root", DAILY_ROOT, "--out-dir", LLM_NOTES_DIR]
 
 
-def notify_command(as_of: str, send: bool, note: bool = False) -> list[str]:
+def notify_command(as_of: str, send: bool, note: bool = False, *, layout: str = "v2",
+                   assessments: bool = False) -> list[str]:
     """``note=True``: the analysis note as its own message(s) with its own
     receipt (``notify_observations.py --llm-note-dir``); the deterministic
-    command (``note=False``) is exactly what it was without the note step."""
+    command (``note=False``) is what it was without the note step, with the
+    layout now explicit (the notifier's default is v3). ``assessments=True``
+    (layout v3): the accepted notes' evidence words go into the message lines."""
     cmd = [sys.executable, _script("notify_observations.py"), "--as-of", as_of,
-           "--scanner-dir", SCANNER_DIR]
+           "--scanner-dir", SCANNER_DIR, "--layout", layout]
     if send:
         cmd.append("--send")
     if note:
         cmd += ["--llm-note-dir", LLM_NOTES_DIR]
+    if assessments:
+        cmd += ["--note-assessments-dir", LLM_NOTES_DIR]
     return cmd
 
 
-def run_llm_note(as_of: str) -> str:
+def llm_note_timeout_seconds() -> int:
+    """Wall-clock limit for the v3 note step: the note config's whole-run
+    budget plus a margin, so a hung child can never keep the message back."""
+    try:
+        run_seconds = json.loads(LLM_NOTE_CONFIG.read_text(encoding="utf-8"))["max_run_seconds"]
+        if isinstance(run_seconds, bool) or not isinstance(run_seconds, int) or run_seconds <= 0:
+            raise ValueError("max_run_seconds")
+    except (OSError, ValueError, KeyError, TypeError):
+        run_seconds = LLM_NOTE_DEFAULT_RUN_SECONDS
+    return run_seconds + LLM_NOTE_TIMEOUT_MARGIN_SECONDS
+
+
+def v3_notice_exists(as_of: str) -> bool:
+    """The v3 message of ``as_of`` already has its (session-head) receipt."""
+    return (ROOT / NOTIFY_DIR / as_of / "receipt.json").exists()
+
+
+def run_llm_note(as_of: str, timeout: float | None = None) -> str:
     """Run the note step; return its status string. Never raises and never
-    decides the pipeline's exit code."""
+    decides the pipeline's exit code. ``timeout`` (v3): seconds after which the
+    child is killed and the status is ``error:timeout``."""
     try:
         proc = subprocess.run(llm_note_command(as_of), cwd=ROOT, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                              errors="replace", env=_child_env())
+                              errors="replace", env=_child_env(),
+                              **({} if timeout is None else {"timeout": timeout}))
+    except subprocess.TimeoutExpired:
+        return "error:timeout"
     except Exception as exc:  # the note must never stop the deterministic notice
         return f"error:{type(exc).__name__}"
     if proc.stderr:
@@ -191,6 +277,44 @@ def extract_as_of(stderr_text: str, prefix: str = SAVED_PREFIX) -> tuple[str, st
     return None
 
 
+def new_data_decision(run_date_arg: str | None) -> NewDataDecision | None:
+    """The offline no-new-data check; ``None`` = could not decide (collect).
+
+    Uses the same config, active guards and planner as ``collect_daily.py``;
+    reads local files only (run records, price history, latest scan)."""
+    try:
+        run_date = date.fromisoformat(run_date_arg) if run_date_arg else istanbul_today()
+        config = load_daily_collection_config(DAILY_CONFIG)
+        guards = load_active_guards()
+        capture_root = ROOT / config.capture_root
+        development = [
+            symbol for symbol in guards.split.development_symbols if not guards.is_excluded(symbol)
+        ]
+        base_ends = {}
+        if config.base_capture_root is not None:
+            base_ends = scan_base_capture_ends(
+                ROOT / config.base_capture_root, config.base_capture_filename, development,
+            )
+        last_success = scan_last_success(capture_root / "_runs")
+        plan = plan_daily_collection(
+            run_date=run_date, guards=guards, last_success_by_symbol=last_success,
+            base_capture_end_by_symbol=base_ends, end_offset_days=config.end_offset_days,
+            lookback_calendar_days=config.lookback_calendar_days, max_span_days=config.max_span_days,
+        )
+        if plan.blocked():
+            return None  # collect_daily reports the decision the plan needs
+        planned = [entry.symbol for entry in plan.planned()]
+        return decide_new_data(
+            window_end=plan.window_end,
+            calendar=load_price_calendar(ROOT / PRICE_DIR, planned),
+            last_saved=last_saved_end(planned, last_success, base_ends),
+            unsettled_pending=scanner_unsettled_pending(ROOT / SCANNER_DIR),
+        )
+    except (CollectionPlannerError, SymbolGuardError, OSError, ValueError) as exc:
+        print(f"No-new-data check could not run ({type(exc).__name__}); collecting.", file=sys.stderr)
+        return None
+
+
 def _summary(results, as_of=None, saved=None, sent=None) -> None:
     print("Pipeline summary:")
     for step, code in results:
@@ -232,6 +356,16 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 2
 
+    if not (args.skip_collect or args.dry_run or args.force_collect):
+        decision = new_data_decision(args.run_date)
+        if decision is not None and not decision.expect_new_data:
+            last = decision.last_trading_day.isoformat() if decision.last_trading_day else "bilinmiyor"
+            print(f"yeni veri beklenmiyor (son işlem günü {last}); toplama atlandı")
+            results += [("collect", "skipped_no_new_data"), ("scan", "skipped"), ("notify", "skipped")]
+            _summary(results)
+            print(f"  reason: {decision.reason} (window end {decision.window_end.isoformat()})")
+            return 0
+
     if args.skip_collect:
         if args.dry_run:
             print("--skip-collect with --dry-run: nothing to plan.", file=sys.stderr)
@@ -269,7 +403,17 @@ def main(argv: list[str] | None = None) -> int:
         as_of, saved = found
         results.append(("scan", "0"))
 
-    proc = subprocess.run(notify_command(as_of, args.send), cwd=ROOT,
+    v3_note = args.layout == "v3" and args.llm_note
+    if v3_note:
+        # Before the single message, which never waits on the outcome: any
+        # status (error, timeout, rejected symbols) just leaves dashes.
+        if args.send and v3_notice_exists(as_of):
+            status = "skipped_already_sent"
+        else:
+            status = run_llm_note(as_of, timeout=llm_note_timeout_seconds())
+        results.append(("llm_note", status))
+
+    proc = subprocess.run(notify_command(as_of, args.send, layout=args.layout, assessments=v3_note), cwd=ROOT,
                           stderr=subprocess.PIPE, text=True, encoding="utf-8",
                           errors="replace", env=_child_env())
     notify_err = proc.stderr or ""
@@ -286,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
         results.append(("notify", "0"))
         summary = dict(as_of=as_of, saved=saved, sent=args.send)
 
-    if args.llm_note:
+    if args.llm_note and args.layout == "v2":
         # After the deterministic notice has gone out: nothing below can
         # change it or the exit code; failures only show up in the summary.
         results += run_note_steps(as_of, args.send)

@@ -45,6 +45,7 @@ import io
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import subprocess
 import sys
@@ -453,6 +454,21 @@ def execute(args: argparse.Namespace, checks: list[dict], context: dict) -> int:
         "code_commit": context["commit"],
         "test_plan_path": str(args.test_plan),
         "test_plan_sha256": plan.plan_sha256,
+        "split_file_sha256": context["guards"].split.split_sha256,
+        "specs": {
+            ref.spec_id: {
+                "path": ref.path,
+                "raw_sha256": ref.raw_sha256,
+                "canonical_sha256": specs[ref.spec_id].spec_sha256,
+                "bootstrap_seed": specs[ref.spec_id].bootstrap.seed,
+                "block_bootstrap_seed": (
+                    None if specs[ref.spec_id].block_bootstrap is None
+                    else specs[ref.spec_id].block_bootstrap.seed
+                ),
+            }
+            for ref in plan.specs
+        },
+        "python_version": platform.python_version(),
         "input_file_sha256": {},
         "results": {},
         "completed": False,

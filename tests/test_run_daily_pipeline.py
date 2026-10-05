@@ -39,11 +39,13 @@ def _go(argv, codes=(0, 0, 0), saved=True, scan_err=None, notify_err="", env=Non
         return subprocess.CompletedProcess(cmd, codes[idx], stdout="SECRET-OBSERVATION", stderr=err)
 
     out, err = io.StringIO(), io.StringIO()
-    with patch.dict(os.environ, env, clear=False), patch.object(rdp.subprocess, "run", run),             redirect_stdout(out), redirect_stderr(err):
+    with patch.dict(os.environ, env, clear=False), patch.object(rdp.subprocess, "run", run), \
+            patch.object(rdp, "new_data_decision", lambda *_: None), redirect_stdout(out), redirect_stderr(err):
         for name in rdp.TELEGRAM_ENV:
             if name not in env:
                 os.environ.pop(name, None)
-        rc = rdp.main(argv)
+        # the pipeline's default layout is v3; these tests pin the v2 behaviour unless told otherwise
+        rc = rdp.main(argv if "--layout" in argv else ["--layout", "v2", *argv])
     return rc, calls, out.getvalue(), err.getvalue()
 
 
@@ -60,12 +62,21 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(collect, ["--allow-session-takeover", "--skip-price", "--run-date", "2026-10-02"])
         self.assertEqual(scan, ["--daily-root", rdp.DAILY_ROOT, "--out-dir", rdp.SCANNER_DIR,
                                 "--save", "--format", "json"])
-        self.assertEqual(notify, ["--as-of", "2026-10-01", "--scanner-dir", rdp.SCANNER_DIR])
+        self.assertEqual(notify, ["--as-of", "2026-10-01", "--scanner-dir", rdp.SCANNER_DIR, "--layout", "v2"])
         self.assertNotIn("--resend", notify)
         self.assertTrue(all(c[0][0] == rdp.sys.executable for c in calls))
         self.assertNotIn("stdout", calls[0][1])  # collect inherits stdio (getpass prompt)
         self.assertNotIn("stdout", calls[2][1])
         self.assertNotIn("SECRET-OBSERVATION", out + err)
+
+    def test_layout_v3_is_the_pipeline_default_and_v2_stays_selectable(self):
+        self.assertEqual(rdp.build_parser().parse_args([]).layout, "v3")
+        _, calls, _, _ = _go(["--layout", "v3", "--allow-session-takeover"])
+        self.assertEqual(calls[2][0][2:], ["--as-of", "2026-10-01", "--scanner-dir", rdp.SCANNER_DIR,
+                                           "--layout", "v3"])
+        self.assertEqual(_names(calls), ["collect_daily.py", "scan_observations.py", "notify_observations.py"])
+        _, calls, _, _ = _go(["--layout", "v2"])
+        self.assertEqual(calls[2][0][-2:], ["--layout", "v2"])
 
     def test_send_forwarded_only_when_given(self):
         _, calls, out, _ = _go(["--allow-session-takeover", "--send"])

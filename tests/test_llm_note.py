@@ -586,6 +586,11 @@ class ForbiddenTests(unittest.TestCase):
                      "manipülasyon", "niyetli", "kasıtlı", "buy now", "target price"):
             self.assertTrue(find_forbidden(text), text)
 
+    def test_flags_kazanc_and_its_inflections(self):
+        for text in ("kazanç", "Kazancı yüksek", "kazançlı hisse", "KAZANÇ", "kazançlar", "kazanc"):
+            self.assertIn("kazanç", find_forbidden(text), text)
+        self.assertEqual(find_forbidden("kazanç", allowed_phrases=("kazanç",)), [])
+
     def test_flags_inflected_advice_and_forecast_wording(self):
         for text in ("almalı", "Satmalı", "satılmalı", "alınmalı", "alınabilir", "elde tutmalı",
                      "tutulmalı", "yükselecek", "DÜŞECEK", "artacak", "bekleniyor", "garanti",
@@ -997,7 +1002,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("{", config.schema_text)
         self.assertNotIn("\n", config.schema_text)
         self.assertEqual((config.max_symbol_packet_bytes, config.max_symbols_per_run, config.max_run_seconds),
-                         (200_000, 30, 5400.0))
+                         (200_000, 30, 1800.0))
         self.assertEqual((config.setting_sources, config.isolation_probe), ("local", False))
         self.assertEqual(config.probe_prompt_sha256,
                          hashlib.sha256(config.probe_prompt_path.read_bytes()).hexdigest())
@@ -1030,9 +1035,9 @@ class ConfigTests(unittest.TestCase):
         reason = item["properties"]["reasons"]["items"]
         self.assertEqual(set(reason["required"]), v._REASON_KEYS)
 
-    def test_prompt_v2_is_configured_and_states_the_limits(self):
+    def test_prompt_v3_is_configured_and_states_the_limits(self):
         config = load_config(REAL_CONFIG, project_root=ROOT)
-        self.assertEqual(config.prompt_path.name, "prompt_v2.md")
+        self.assertEqual(config.prompt_path.name, "prompt_v3.md")
         prompt = config.prompt_path.read_text(encoding="utf-8")
         self.assertIn(f"1 ile {validate_mod.MAX_REASONS} arasında gerekçe (`reasons`)", prompt)
         self.assertIn(f"1 ile {validate_mod.MAX_PATHS_PER_REASON} arasında `evidence_paths`", prompt)
@@ -1043,6 +1048,34 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue((ROOT / "configs" / "llm_note" / "prompt_v1.md").is_file())
         self.assertIn("Şu sözcükleri kullanma: al, sat, hedef, stop, pozisyon", prompt)
 
+    def test_prompt_v3_is_v2_plus_the_explicit_wording_rule(self):
+        """TRALT's note was twice rejected as ``forbidden_phrase: getiri``: the
+        model repeated the rule text's word. v3 = v2 + an explicit rule; v2 stays
+        byte-identical (provenance of earlier attempt records) and the validator's
+        forbidden list is NOT relaxed."""
+        v2_path = ROOT / "configs" / "llm_note" / "prompt_v2.md"
+        v3_path = ROOT / "configs" / "llm_note" / "prompt_v3.md"
+        v2 = v2_path.read_bytes()
+        self.assertEqual(hashlib.sha256(v2).hexdigest(), "20bddcf34670f0d1c2be010cec83c3bef64f42542a958939dd3bb101d0ac753e")
+        v3 = v3_path.read_text(encoding="utf-8")
+        self.assertTrue(v3.startswith(v2.decode("utf-8")))
+        added = v3[len(v2.decode("utf-8")):]
+        self.assertTrue(added.startswith("10. "), added)
+        for needle in ('"getiri", "kazanç" ve "kâr"',
+                       "hipotez, sonraki 5 işlem gününde fiyat hareketinin ... olacağını varsayar"):
+            self.assertIn(needle, added)
+        # the rule words are exactly what the (unchanged) validator rejects or the prompt forbids
+        for word in ("getiri", "kâr"):
+            self.assertTrue(validate_mod.find_forbidden(f"hipotez {word} anlatır"), word)
+        # the prescribed sentence itself passes the forbidden-wording and number-word checks
+        sentence = "hipotez, sonraki 5 işlem gününde fiyat hareketinin yukarı yönlü olacağını varsayar"
+        self.assertEqual(validate_mod.find_forbidden(sentence), [])
+        self.assertEqual(numbers.find_number_words(sentence), [])
+        # the config points at v3 and keeps v1/v2 on disk
+        self.assertEqual(json.loads(REAL_CONFIG.read_text(encoding="utf-8"))["prompt_file"],
+                         "configs/llm_note/prompt_v3.md")
+        self.assertTrue((ROOT / "configs" / "llm_note" / "prompt_v1.md").is_file())
+
     def test_suggested_qualitative_phrases_are_not_number_words(self):
         for phrase in ("birden fazla kurum", "bazı kurumlar", "birkaç gün"):
             self.assertEqual(numbers.find_number_words(phrase), [], phrase)
@@ -1051,7 +1084,7 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(numbers.find_number_words(phrase), phrase)
 
     def test_prompt_states_the_hard_rules(self):
-        prompt = (ROOT / "configs" / "llm_note" / "prompt_v2.md").read_text(encoding="utf-8")
+        prompt = (ROOT / "configs" / "llm_note" / "prompt_v3.md").read_text(encoding="utf-8")
         for needle in ("destekliyor", "zayıflatıyor", "belirsiz", "bilinmiyor", "JSON Pointer",
                        "Hesap yapma", "manipülasyon", "pozisyon", "hedef", "stop", "yazıyla sayı",
                        "yollarının altındaki", "Eksi işaretli", "plain_explanation", "hypothesis_text",
@@ -1060,7 +1093,7 @@ class ConfigTests(unittest.TestCase):
 
 class PromptLayoutTests(Env, unittest.TestCase):
     def test_prompt_paths_match_the_real_packet_layout(self):
-        prompt = (ROOT / "configs" / "llm_note" / "prompt_v2.md").read_text(encoding="utf-8")
+        prompt = (ROOT / "configs" / "llm_note" / "prompt_v3.md").read_text(encoding="utf-8")
         self.assertNotIn("symbols.<SYM>.observations", prompt)  # observations live under scans[]
         for key in ("scans[].observations[]", "scans[].freshness", "scans[].data_status", "metadata_by_day",
                     "composition", "institutions", "days.<TARİH>.akd", "days.<TARİH>.custody"):
@@ -1116,7 +1149,7 @@ class ScriptTests(Env, unittest.TestCase):
                          "--no-session-persistence", "--system-prompt-file", "--strict-mcp-config",
                          "--disable-slash-commands", "--setting-sources"):
                 self.assertIn(flag, command)
-            self.assertEqual(command[command.index("--system-prompt-file") + 1], "configs/llm_note/prompt_v2.md")
+            self.assertEqual(command[command.index("--system-prompt-file") + 1], "configs/llm_note/prompt_v3.md")
             self.assertNotIn(str(ROOT), json.dumps(record["command"][2:]))
             self.assertTrue(json.loads((attempt / "note.json").read_text(encoding="utf-8"))["assessments"])
             # the packet file is the very packet validated and sent, and holds only this symbol
@@ -1490,11 +1523,11 @@ class NotifyIntegrationTests(Env, unittest.TestCase):
         plain = fmt.render_notification(document, rule_texts, None)
         self.assertEqual(self.messages("--layout", "v1", "--no-direction-label"), [m + "\n" for m in plain])
         self.assertNotIn("analiz notu", "".join(self.messages()).lower())
-        # default layout (v2): exactly the layout renderer's output, no note content
+        # layout v2: exactly the layout renderer's output, no note content
         explanations = load_rule_explanations(REAL_EXPLANATIONS)
         horizons = load_rule_horizons(REAL_RULES_FILE, project_root=ROOT)
         v2 = render_layout_v2(document, rule_texts, directions, explanations, horizons)
-        self.assertEqual(self.messages(), [m + "\n" for m in v2])
+        self.assertEqual(self.messages("--layout", "v2"), [m + "\n" for m in v2])
 
     def test_verified_notes_are_one_message_per_symbol_plus_a_closing_message(self):
         self.run_note("ok")
@@ -1904,7 +1937,7 @@ SAVED = os.path.join("data", "interim", "scanner_daily", AS_OF, "observations.js
 
 def _go(argv, llm_stdout="LLM_NOTE_STATUS: ok=2,rejected=0,failed=0\n", llm_code=0, llm_raises=None,
         notify_code=0, notify_stderr="", note_notify_code=0, note_notify_stderr="", note_notify_raises=None,
-        env=None):
+        env=None, layout="v2"):
     """Run the pipeline with every child replaced; returns (rc, calls, stdout,
     stderr, kwargs of each call)."""
     calls, kwargs_seen = [], []
@@ -1930,7 +1963,9 @@ def _go(argv, llm_stdout="LLM_NOTE_STATUS: ok=2,rejected=0,failed=0\n", llm_code
     out, err = io.StringIO(), io.StringIO()
     with patch.object(pipeline.subprocess, "run", run), redirect_stdout(out), redirect_stderr(err), \
             patch.dict(os.environ, env or {}):
-        rc = pipeline.main(argv)
+        # the pipeline's default layout is v3: the older tests pin v2 (``layout="v2"``), the v3 tests
+        # pass ``layout=None`` to exercise the real default
+        rc = pipeline.main(argv if layout is None or "--layout" in argv else ["--layout", layout, *argv])
     return rc, calls, out.getvalue(), err.getvalue(), kwargs_seen
 
 
@@ -1942,7 +1977,7 @@ class PipelineTests(unittest.TestCase):
         rc, calls, out, _, _ = _go(["--allow-session-takeover"])
         self.assertEqual(rc, 0)
         self.assertEqual(self.names(calls), ["collect_daily.py", "scan_observations.py", "notify_observations.py"])
-        self.assertEqual(calls[2][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR])
+        self.assertEqual(calls[2][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR, "--layout", "v2"])
         self.assertNotIn("llm_note", out)
         self.assertNotIn("note_notify", out)
         self.assertEqual(pipeline.build_parser().parse_args([]).llm_note, False)
@@ -1966,11 +2001,11 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.names(calls), ["collect_daily.py", "scan_observations.py", "notify_observations.py",
                                              "llm_note.py", "notify_observations.py"])
         # the deterministic call is exactly what it is without --llm-note
-        self.assertEqual(calls[2][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR, "--send"])
+        self.assertEqual(calls[2][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR, "--layout", "v2", "--send"])
         self.assertEqual(calls[3][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR,
                                         "--daily-root", pipeline.DAILY_ROOT, "--out-dir", pipeline.LLM_NOTES_DIR])
-        self.assertEqual(calls[4][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR, "--send",
-                                        "--llm-note-dir", pipeline.LLM_NOTES_DIR])
+        self.assertEqual(calls[4][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR, "--layout", "v2",
+                                        "--send", "--llm-note-dir", pipeline.LLM_NOTES_DIR])
         self.assertNotIn("--resend", calls[4])
         self.assertIn("  llm_note: ok=2,rejected=0,failed=0", out)
         self.assertIn("  note_notify: 0", out)
@@ -2128,7 +2163,7 @@ class PipelineNoteResumeTests(Env, unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with patch.object(pipeline.subprocess, "run", run), redirect_stdout(out), redirect_stderr(err), \
                 patch.dict(os.environ, self.ENV):
-            rc = pipeline.main(["--skip-collect", "--llm-note", "--send"])
+            rc = pipeline.main(["--layout", "v2", "--skip-collect", "--llm-note", "--send"])
         self.stderr = err.getvalue()
         return rc, out.getvalue(), notice, notes, children
 
@@ -2171,6 +2206,286 @@ class PipelineNoteResumeTests(Env, unittest.TestCase):
         self.assertIn("  note_notify: content_changed", out)
         self.assertIn("--resend by hand", out)
         self.assertTrue(all("--resend" not in argv for argv in children))
+
+
+class NotifyV3NoteTests(Env, unittest.TestCase):
+    """Layout v3 with REAL note files (fake model CLI): the accepted note's
+    evidence word goes into the stock's line; every other state prints the dash;
+    no separate note message exists."""
+
+    def v3(self, *extra: str, notes: bool = True) -> str:
+        argv = ["--as-of", AS_OF, "--scanner-dir", str(self.scanner_dir), "--out-dir", str(self.tmp / "receipts"),
+                *(["--note-assessments-dir", str(self.out_dir)] if notes else []), *extra]
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = notify.main(argv)
+        self.assertEqual(code, 0, err.getvalue())
+        parts = re.split(r"--- mesaj \d+/\d+ \(dry-run; ağ kullanılmadı\) ---\n", out.getvalue())
+        messages = [part for part in parts if part]
+        self.assertEqual(len(messages), 1, messages)  # one message a day, notes or not
+        return messages[0]
+
+    def lines(self, *extra: str, **kwargs) -> list[str]:
+        return self.v3(*extra, **kwargs).rstrip("\n").split("\n")
+
+    def row(self, symbol: str, word: str) -> str:
+        return f"{symbol} ↑ al yönlü · H2 · Opus: {word}"
+
+    def test_accepted_notes_put_their_word_in_each_line(self):
+        self.run_note("ok")
+        lines = self.lines()
+        self.assertTrue(lines[0].startswith("📊 09.01 sinyaller (doğrulanmamış hipotez, tavsiye değil)"), lines)
+        self.assertEqual(lines[1:3], [self.row(SYM_A, "destekliyor"), self.row(SYM_B, "destekliyor")])
+        text = "\n".join(lines)
+        for leaked in ("analiz notu", "Sade anlatım", "Veri notları", "Takas verisi gecikmeli", "Opus 5.5"):
+            self.assertNotIn(leaked, text)  # the word only: no note text, no note message
+
+    def test_no_note_or_no_flag_prints_dashes(self):
+        self.assertEqual(self.lines()[1:3], [self.row(SYM_A, "—"), self.row(SYM_B, "—")])  # step never ran
+        self.run_note("ok")
+        self.assertEqual(self.lines(notes=False)[1:3], [self.row(SYM_A, "—"), self.row(SYM_B, "—")])
+
+    def test_rejected_or_failed_notes_print_dashes_and_never_block_the_message(self):
+        for mode in ("forbidden", "forbidden_buy", "bad_number", "bad_path", "crash", "refusal"):
+            with self.subTest(mode=mode):
+                self.setUp()  # fresh note directory per mode
+                self.run_note(mode)
+                self.assertEqual(self.lines()[1:3], [self.row(SYM_A, "—"), self.row(SYM_B, "—")])
+
+    def test_each_stock_gets_only_its_own_accepted_note(self):
+        self.run_note("forbidden", only=SYM_B)
+        self.assertEqual(self.lines()[1:3], [self.row(SYM_A, "destekliyor"), self.row(SYM_B, "—")])
+
+    def test_a_rejected_attempt_after_an_accepted_one_does_not_hide_the_accepted_word(self):
+        self.run_note("ok")
+        self.run_note("forbidden")  # accepted symbols are not re-called; the accepted note stays
+        self.assertEqual(self.lines()[1:3], [self.row(SYM_A, "destekliyor"), self.row(SYM_B, "destekliyor")])
+
+    def test_a_note_that_no_longer_matches_its_record_is_not_shown(self):
+        self.run_note("ok")
+        attempt, _record = latest_accepted(symbol_dir(self.out_dir, AS_OF, SYM_A))
+        note_path = attempt / "note.json"
+        note = json.loads(note_path.read_text(encoding="utf-8"))
+        note["assessments"][0]["assessment"] = "zayıflatıyor"  # tampered after validation
+        note["assessments"][0]["plain_explanation"] += " Hedef fiyat yüksek."
+        note_path.write_text(json.dumps(note, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(self.lines()[1:3], [self.row(SYM_A, "—"), self.row(SYM_B, "destekliyor")])
+
+    def test_v3_words_equal_the_notes_assessment_fields(self):
+        self.run_note("ok")
+        words = render.accepted_assessments(self.out_dir, AS_OF, [SYM_A, SYM_B])
+        self.assertEqual(words, {(SYM_A, "H2", AS_OF): "destekliyor", (SYM_B, "H2", AS_OF): "destekliyor"})
+        self.assertEqual(render.accepted_assessments(self.out_dir, AS_OF, []), {})
+        self.assertEqual(render.accepted_assessments(self.tmp / "none", AS_OF, [SYM_A]), {})
+
+    def test_llm_note_dir_still_means_the_note_only_messages_whatever_the_default_layout(self):
+        self.run_note("ok")
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = notify.main(["--as-of", AS_OF, "--scanner-dir", str(self.scanner_dir),
+                                "--out-dir", str(self.tmp / "receipts"), "--llm-note-dir", str(self.out_dir)])
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertIn(render.TITLE, out.getvalue())
+        self.assertNotIn("📊", out.getvalue())
+
+
+def _go_default(argv, **kwargs):
+    """``_go`` with the pipeline's own default layout (v3)."""
+    return _go(argv, layout=None, **kwargs)
+
+
+class PipelineV3Tests(unittest.TestCase):
+    """The pipeline's default layout v3: collect -> scan -> llm_note -> ONE message."""
+
+    ENV = {"FINTR_TELEGRAM_BOT_TOKEN": "t", "FINTR_TELEGRAM_CHAT_ID": "c"}
+
+    def names(self, calls):
+        return [Path(c[1]).name for c in calls]
+
+    def test_order_is_collect_scan_note_then_the_single_message_with_the_notes_inside(self):
+        rc, calls, out, err, kwargs = _go_default(["--allow-session-takeover", "--send", "--llm-note"], env=self.ENV)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.names(calls), ["collect_daily.py", "scan_observations.py", "llm_note.py",
+                                             "notify_observations.py"])
+        self.assertEqual(calls[3][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR, "--layout", "v3",
+                                        "--send", "--note-assessments-dir", pipeline.LLM_NOTES_DIR])
+        self.assertNotIn("--llm-note-dir", calls[3])  # no separate note message in v3
+        self.assertNotIn("--resend", calls[3])
+        self.assertEqual(calls[2][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR,
+                                        "--daily-root", pipeline.DAILY_ROOT, "--out-dir", pipeline.LLM_NOTES_DIR])
+        self.assertIn("  llm_note: ok=2,rejected=0,failed=0", out)
+        self.assertIn("  notify: 0", out)
+        self.assertNotIn("note_notify", out)
+        self.assertLess(out.index("llm_note:"), out.index("notify: 0"))
+        self.assertIn("  sent: yes", out)
+
+    def test_without_llm_note_v3_is_still_sent_with_no_note_input(self):
+        rc, calls, out, _, _ = _go_default(["--allow-session-takeover", "--send"], env=self.ENV)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.names(calls), ["collect_daily.py", "scan_observations.py", "notify_observations.py"])
+        self.assertEqual(calls[2][2:], ["--as-of", AS_OF, "--scanner-dir", pipeline.SCANNER_DIR, "--layout", "v3",
+                                        "--send"])
+        self.assertNotIn("llm_note", out)
+        self.assertEqual(pipeline.build_parser().parse_args([]).layout, "v3")
+
+    def test_a_failing_or_timed_out_note_never_keeps_the_message_back(self):
+        cases = {
+            "error:exit_1": dict(llm_stdout="", llm_code=1),
+            "error:data_load_failed": dict(llm_stdout="LLM_NOTE_STATUS: error:data_load_failed\n", llm_code=1),
+            "ok=0,rejected=2,failed=0": dict(llm_stdout="LLM_NOTE_STATUS: ok=0,rejected=2,failed=0\n", llm_code=3),
+            "ok=0,rejected=0,failed=2": dict(llm_stdout="LLM_NOTE_STATUS: ok=0,rejected=0,failed=2\n", llm_code=3),
+            "error:OSError": dict(llm_raises=OSError("boom")),
+            "error:RuntimeError": dict(llm_raises=RuntimeError("boom")),
+            "error:timeout": dict(llm_raises=subprocess.TimeoutExpired("llm_note.py", 5700)),
+        }
+        for status, case in cases.items():
+            with self.subTest(status=status):
+                rc, calls, out, _, _ = _go_default(["--llm-note", "--send"], env=self.ENV, **case)
+                self.assertEqual(rc, 0)
+                self.assertEqual(self.names(calls)[-1], "notify_observations.py")
+                self.assertIn("--send", calls[-1])
+                self.assertIn("--note-assessments-dir", calls[-1])  # the notifier prints a dash for a missing note
+                self.assertIn(f"  llm_note: {status}", out)
+                self.assertIn("  notify: 0", out)
+                self.assertIn("  sent: yes", out)
+
+    def test_the_note_step_has_a_wall_clock_limit_taken_from_the_config(self):
+        config = json.loads(pipeline.LLM_NOTE_CONFIG.read_text(encoding="utf-8"))
+        self.assertEqual(config["max_run_seconds"], 1800)
+        self.assertEqual(config["timeout_seconds"], 900)  # the per-call timeout is unchanged
+        self.assertEqual(pipeline.llm_note_timeout_seconds(),
+                         config["max_run_seconds"] + pipeline.LLM_NOTE_TIMEOUT_MARGIN_SECONDS)
+        self.assertEqual(pipeline.llm_note_timeout_seconds(), 2100)
+        _, calls, _, _, kwargs = _go_default(["--llm-note"])
+        llm_kwargs = [k for c, k in zip(calls, kwargs) if Path(c[1]).name == "llm_note.py"]
+        self.assertEqual([k["timeout"] for k in llm_kwargs], [pipeline.llm_note_timeout_seconds()])
+        # the v2 note step has no new limit
+        _, calls, _, _, kwargs = _go_default(["--layout", "v2", "--llm-note"])
+        self.assertTrue(all("timeout" not in k for c, k in zip(calls, kwargs) if Path(c[1]).name == "llm_note.py"))
+        with patch.object(pipeline, "LLM_NOTE_CONFIG", Path("/nonexistent/config.json")):
+            self.assertEqual(pipeline.llm_note_timeout_seconds(), 1800 + 300)
+
+    def test_notify_failure_stops_the_pipeline_as_before(self):
+        rc, calls, out, _, _ = _go_default(["--llm-note", "--send"], notify_code=4, env=self.ENV)
+        self.assertEqual(rc, 4)
+        self.assertIn("failed with exit code 4", out)
+        self.assertEqual(self.names(calls)[-1], "notify_observations.py")
+
+    def test_same_day_rerun_sends_nothing_again_and_does_not_repeat_the_note_step(self):
+        receipt = "Notify failed: bu as_of için receipt zaten var (x); --resend ile yeniden gönder\n"
+        with patch.object(pipeline, "v3_notice_exists", return_value=True):
+            rc, calls, out, _, _ = _go_default(["--skip-collect", "--llm-note", "--send"], env=self.ENV,
+                                       notify_code=1, notify_stderr=receipt)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.names(calls), ["scan_observations.py", "notify_observations.py"])
+        self.assertIn("  llm_note: skipped_already_sent", out)
+        self.assertIn("  notify: already_sent", out)
+        self.assertEqual(out.splitlines()[-1], "  sent: no (already sent earlier; no resend)")
+        self.assertTrue(all("--resend" not in c for c in calls))
+        # a dry run (no --send) never skips the note step on the strength of a receipt
+        with patch.object(pipeline, "v3_notice_exists", return_value=True):
+            _, calls, _, _, _ = _go_default(["--skip-collect", "--llm-note"])
+        self.assertIn("llm_note.py", self.names(calls))
+
+    def test_v3_notice_exists_looks_for_the_primary_receipt_of_that_day(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(pipeline, "ROOT", Path(directory)):
+                self.assertFalse(pipeline.v3_notice_exists(AS_OF))
+                target = Path(directory) / pipeline.NOTIFY_DIR / AS_OF
+                target.mkdir(parents=True)
+                (target / "receipt.json").write_text("{}", encoding="utf-8")
+                self.assertTrue(pipeline.v3_notice_exists(AS_OF))
+                self.assertFalse(pipeline.v3_notice_exists("2026-01-10"))
+
+    def test_layout_v2_keeps_the_old_order_and_the_separate_note_messages(self):
+        rc, calls, out, _, _ = _go_default(["--layout", "v2", "--allow-session-takeover", "--send", "--llm-note"], env=self.ENV)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.names(calls), ["collect_daily.py", "scan_observations.py", "notify_observations.py",
+                                             "llm_note.py", "notify_observations.py"])
+        self.assertNotIn("--note-assessments-dir", " ".join(" ".join(c) for c in calls))
+        self.assertIn("  note_notify: 0", out)
+
+
+class PipelineV3EndToEndTests(Env, unittest.TestCase):
+    """The pipeline with the REAL ``notify_observations.main`` as the notify
+    child (in process, fake Telegram, no network): note failure, resume."""
+
+    ENV = {"FINTR_TELEGRAM_BOT_TOKEN": "123456:PipeToken", "FINTR_TELEGRAM_CHAT_ID": "5551234567"}
+
+    def run_pipeline(self, *extra: str, llm: str = "ok"):
+        sent, children, llm_calls = [], [], []
+
+        def fake_send(token, chat_id, text, **kwargs):
+            sent.append(text)
+            return SendResult(message_id=len(sent))
+
+        def run(cmd, **kwargs):
+            name = Path(cmd[1]).name
+            if name == "scan_observations.py":
+                return subprocess.CompletedProcess(cmd, 0, stdout="OBS", stderr=f"Observations saved: {SAVED}\n")
+            if name == "llm_note.py":
+                llm_calls.append(kwargs.get("timeout"))
+                if llm == "timeout":
+                    raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+                if llm == "crash":
+                    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+                # the notes were written beforehand (``run_note``): the child just reports them
+                return subprocess.CompletedProcess(cmd, 0, stdout="LLM_NOTE_STATUS: already_noted\n", stderr="")
+            argv = list(cmd[2:])
+            children.append(argv)
+            for flag, value in (("--scanner-dir", self.scanner_dir), ("--note-assessments-dir", self.out_dir)):
+                if flag in argv:
+                    argv[argv.index(flag) + 1] = str(value)
+            argv += ["--out-dir", str(self.tmp / "receipts")]
+            err = io.StringIO()
+            with redirect_stderr(err), patch.object(notify, "send_message", fake_send), \
+                    patch.object(notify, "time", MagicMock()):
+                code = notify.main(argv)
+            return subprocess.CompletedProcess(cmd, code, stdout="", stderr=err.getvalue())
+
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(pipeline.subprocess, "run", run), redirect_stdout(out), redirect_stderr(err), \
+                patch.object(pipeline, "ROOT", self.tmp), patch.dict(os.environ, self.ENV):
+            rc = pipeline.main(["--skip-collect", "--send", *extra])
+        self.stderr = err.getvalue()
+        return rc, out.getvalue(), sent, children, llm_calls
+
+    def test_message_goes_out_once_with_the_notes_words_and_a_rerun_sends_nothing(self):
+        self.run_note("ok")
+        rc, out, sent, children, llm_calls = self.run_pipeline("--llm-note")
+        self.assertEqual(rc, 0, out + self.stderr)
+        self.assertEqual(len(sent), 1)
+        self.assertIn(f"{SYM_A} ↑ al yönlü · H2 · Opus: destekliyor", sent[0])
+        self.assertIn(f"{SYM_B} ↑ al yönlü · H2 · Opus: destekliyor", sent[0])
+        self.assertEqual(len(llm_calls), 1)
+        self.assertNotIn("PipeToken", out + self.stderr)
+        # the receipts live in tmp/receipts here, so the pipeline-side skip of the note step is covered by
+        # the unit tests above; the notifier's own refusal is what prevents the second send.
+        rc, out, sent2, _, _ = self.run_pipeline("--llm-note")
+        self.assertEqual(rc, 0)
+        self.assertEqual(sent2, [])
+        self.assertIn("  notify: already_sent", out)
+        self.assertEqual(out.splitlines()[-1], "  sent: no (already sent earlier; no resend)")
+
+    def test_note_crash_or_timeout_still_sends_the_message_with_dashes(self):
+        for llm in ("crash", "timeout"):
+            with self.subTest(llm=llm):
+                self.setUp()
+                rc, out, sent, _, _ = self.run_pipeline("--llm-note", llm=llm)
+                self.assertEqual(rc, 0, out + self.stderr)
+                self.assertEqual(len(sent), 1)
+                self.assertIn(f"{SYM_A} ↑ al yönlü · H2 · Opus: —", sent[0])
+                self.assertIn(f"{SYM_B} ↑ al yönlü · H2 · Opus: —", sent[0])
+                self.assertIn("  llm_note: error:", out)
+                self.assertIn("  notify: 0", out)
+
+    def test_without_llm_note_the_message_is_sent_with_dashes_and_no_model_call(self):
+        rc, out, sent, children, llm_calls = self.run_pipeline()
+        self.assertEqual(rc, 0, out + self.stderr)
+        self.assertEqual(llm_calls, [])
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Opus: —", sent[0])
+        self.assertNotIn("--note-assessments-dir", children[0])
 
 
 class RealPipelineSmokeTests(Env, unittest.TestCase):

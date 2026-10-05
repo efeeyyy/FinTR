@@ -154,3 +154,48 @@ bayt düzeyinde aynıdır; adım `run_daily_pipeline.py --llm-note` ile açılı
 kapalıdır. Not bir avantaj (edge) iddiası değildir: kuralın yönü doğrulanmamış bir
 hipotezdir (holdout testi 2027 Nisan) ve değerlendirme yalnız ham verinin o hipotezle
 ilişkisini anlatır. Holdout sonucu yönü doğrulamazsa bu adım kapatılmalıdır.
+
+## 2026-10-03 — Telegram "sinyal chati": kısa bildirim düzeni v3 (Efe kararı)
+
+Efe 2026-10-03'te Telegram'ı "sinyal chati" olarak kullanmaya karar verdi: günde tek
+mesaj, hisse başına tek satır; uzun açıklamalar ve "Ne demek" metni bu modda yoktur.
+Karar, 2026-10-02 tarihli iki istisnanın (yön etiketi; analiz notu) ifadesini günceller;
+kural, eşik, spec, holdout planı ve K4 aynen geçerlidir.
+
+**İzin verilen.**
+
+- Düzen v3'te (`fintr.notify.layout_v3`, varsayılan) yön etiketi kısa biçimde gösterilebilir:
+  `positive` → `↑ al yönlü`, `negative` → `↓ sat yönlü`. Yön yine yalnız dondurulmuş
+  spec'in `predicted_direction` alanından (hash doğrulamalı yükleyici) gelir; çözülemezse
+  ya da `--no-direction-label` verilmişse yön kısmı yazılmaz (tahmin yok). Düzen v1/v2 aynen
+  kalır (uzun etiket).
+- Doğrulanmamış hipotez uyarısı her mesajın başlığındadır: `📊 <GG.AA> sinyaller
+  (doğrulanmamış hipotez, tavsiye değil)`. Gözlem yoksa tek satır: `📊 <GG.AA> sinyal yok`.
+- Aynı satırda, o hisse ve kural için **kabul edilmiş (`accepted`)** analiz notunun kanıt
+  değerlendirmesi kelimesi (`destekliyor`/`zayıflatıyor`/`belirsiz`) gösterilebilir
+  (`Opus: <kelime>`). Not yoksa, reddedilmişse, başarısızsa ya da bütünlük denetimini
+  geçemiyorsa `—` yazılır. Kelime, doğrulanmış notun alanının aynen aktarımıdır; birleştirilen
+  kurallarda kelimeler farklıysa kural başına gösterilir, kod hiçbir kelime üretmez ya da
+  birleştirmez.
+
+**Değişmeyen / yasak.** LLM al/sat, hedef, puan ya da karar üretmez; bu yasak aynen kalır
+(analiz notunun yasak ifade listesi ve doğrulayıcısı gevşetilmedi). Satırda getiri, puan,
+hedef fiyat, stop seviyesi, pozisyon büyüklüğü, kural açıklaması ya da "Ne demek" metni
+yoktur. Bildirim nota bağlı değildir: `llm_note.py` hata verir ya da zaman aşımına uğrarsa tek
+v3 mesajı yine gönderilir, değerlendirmeler `—` olur. v3'te ayrı not mesajı gönderilmez.
+Receipt ve devam mekanizması düzen v2 ile aynıdır (`receipt*.json`); aynı gün yeniden
+çalıştırmada yeniden gönderim olmaz. Veri satırı yalnız pencerede kesinleşmemiş gün,
+boşluk ya da revize varsa eklenir (kayıtlı `composition` sayımlarından; yeni rakam üretilmez).
+
+**Kanıt durumu.** Etiket ve kelime avantaj (edge) iddiası değildir; yön doğrulanmamış
+hipotezdir (holdout testi 2027 Nisan) ve K4 (2027-03-31'e kadar ara performans
+değerlendirmesi yok) geçerlidir. Holdout sonucu yönü doğrulamazsa etiket ve `Opus:` kelimesi
+kaldırılmalıdır. Ham verinin Anthropic'e gönderimi hakkındaki 2026-10-02 notu (lisans kapsamı
+doğrulanmadı) değişmedi.
+
+**Analiz notu istemi (prompt v3).** TRALT notu iki kez `forbidden_phrase: getiri` ile
+reddedildi: model hipotezi anlatırken "getiri" sözcüğünü kullandı (kural metni bu sözcüğü
+içeriyor). `configs/llm_note/prompt_v3.md` = v2 + açık kural: "getiri", "kazanç", "kâr"
+kullanılmaz; hipotez "hipotez, sonraki 5 işlem gününde fiyat hareketinin ... olacağını
+varsayar" kalıbıyla anlatılır. `config_v1.json` `prompt_file` v3'e işaret eder; v2 dosyası
+değişmedi; yasak liste ve doğrulayıcı gevşetilmedi.

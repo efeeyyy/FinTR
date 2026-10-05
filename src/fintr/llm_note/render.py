@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 
 from fintr.llm_note.record import latest_accepted, latest_attempt, recorded_symbols, symbol_dir
-from fintr.llm_note.validate import validate_note
+from fintr.llm_note.validate import ASSESSMENT_VALUES, validate_note
 from fintr.notify import format as fmt
 from fintr.scanner.observe import VALIDATION_STATUS
 
@@ -190,3 +190,20 @@ def note_messages(
     if any(s.kind == "ok" for s in states):
         return render_note_messages(states, root, as_of, directions=directions, limit=limit)
     return render_status_messages(states, limit=limit)
+
+
+def accepted_assessments(root: Path, as_of: str, symbols: list[str]) -> dict[tuple[str, str, str], str]:
+    """(symbol, rule_id, as_of) -> evidence word, from each symbol's accepted
+    note only (re-validated from its files, like the note messages). A symbol
+    with no note, a rejected or failed one, or one that no longer passes the
+    integrity check contributes nothing -- the caller prints ``—`` for it.
+    Used by notification layout v3 (the word only; no text of the note)."""
+    found: dict[tuple[str, str, str], str] = {}
+    for symbol in sorted(symbols):
+        state = symbol_state(root, as_of, symbol)
+        if state.kind != "ok":
+            continue
+        for item in state.note["assessments"]:
+            if item["symbol"] == symbol and item["assessment"] in ASSESSMENT_VALUES:
+                found[(symbol, item["rule_id"], item["as_of"])] = item["assessment"]
+    return found
