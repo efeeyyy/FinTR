@@ -16,6 +16,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -308,7 +309,39 @@ class DryRunRejectionTests(RehearsalCase):
                 self.assertEqual(sorted(self.failing(out)), [4])
                 self.assertIn(f"EKGYO={count} tradeable bar(s) after 2027-03-31 (need >= 25)", self.failing(out)[4])
 
+    def test_o_excl_lock_refuses_even_when_every_check_passes(self):
+        self.test_dir.mkdir()
+        original_status = runner._previous_output_status
+        calls = []
 
+        def racing_status(lock_path, manifest_path):
+            # Checks run clean, then a concurrent invocation creates the lock
+            # before our O_EXCL open: the first call (check 6) sees nothing.
+            calls.append(1)
+            if len(calls) == 1:
+                result = original_status(lock_path, manifest_path)
+                lock_path.write_text("{}\n", encoding="utf-8")
+                return result
+            return original_status(lock_path, manifest_path)
+
+        runner._previous_output_status = racing_status
+        try:
+            code, _out, err = self.run_main("--execute")
+        finally:
+            runner._previous_output_status = original_status
+        self.assertEqual(code, 1)
+        self.assertIn("Execute refused: yarım kalmış çalışma", err)
+        self.assertFalse(self.out_dir.exists())
+        self.assertFalse((self.test_dir / "manifest.json").exists())
+
+
+SLOW_TESTS = os.environ.get("FINTR_SLOW_TESTS") == "1"
+
+
+@unittest.skipUnless(
+    SLOW_TESTS,
+    "slow end-to-end rehearsal (real --execute, 8 run_study runs, ~4 min): set FINTR_SLOW_TESTS=1 to run",
+)
 class OneShotExecutionTests(RehearsalCase):
     """One real ``--execute`` (4 frozen specs x 2 scopes + Holm), shared by
     every assertion below; the run itself is the expensive part."""
@@ -517,36 +550,6 @@ class OneShotExecutionTests(RehearsalCase):
         code, out, _err = self.cli(["--dry-run"])
         self.assertEqual(code, 1)
         self.assertIn("önceki test zaten tamamlanmış", out)
-
-    def test_o_excl_lock_refuses_even_when_every_check_passes(self):
-        fresh = Path(tempfile.mkdtemp(dir=self.tmp_root))
-        argv = [a if a != str(self.test_dir) else str(fresh / "t") for a in self.argv_base]
-        argv = [a if a != str(self.out_dir) else str(fresh / "o") for a in argv]
-        (fresh / "t").mkdir()
-        original_status = runner._previous_output_status
-        calls = []
-
-        def racing_status(lock_path, manifest_path):
-            # Checks run clean, then a concurrent invocation creates the lock
-            # before our O_EXCL open: the first call (check 6) sees nothing.
-            calls.append(1)
-            if len(calls) == 1:
-                result = original_status(lock_path, manifest_path)
-                lock_path.write_text("{}\n", encoding="utf-8")
-                return result
-            return original_status(lock_path, manifest_path)
-
-        runner._previous_output_status = racing_status
-        try:
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with redirect_stdout(stdout), redirect_stderr(stderr):
-                code = runner.main(argv + ["--execute"])
-        finally:
-            runner._previous_output_status = original_status
-        self.assertEqual(code, 1)
-        self.assertIn("Execute refused: yarım kalmış çalışma", stderr.getvalue())
-        self.assertFalse((fresh / "o").exists())
-        self.assertFalse((fresh / "t" / "manifest.json").exists())
 
 
 if __name__ == "__main__":
