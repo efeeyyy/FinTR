@@ -159,6 +159,12 @@ def _process_symbol(
     except (fetch.FetchError, fetch.PriceHistoryParseError, ValueError) as exc:
         return {"symbol": symbol, "status": "failed", "reason": str(exc)}
 
+    # The end day's close is not published yet: saving would freeze a null
+    # last bar (no-overwrite), so leave the file absent and let a later run fetch it.
+    if fetch.last_bar_incomplete(capture["normalized"]):
+        return {"symbol": symbol, "status": fetch.INCOMPLETE_LAST_BAR_STATUS,
+                "reason": "last_bar_close_missing"}
+
     try:
         fetch._save_capture(capture, symbol, start, end)
     except fetch.FetchError as exc:
