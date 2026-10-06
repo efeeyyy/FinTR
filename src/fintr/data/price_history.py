@@ -357,29 +357,6 @@ def normalized_payload(filtered: FilteredPriceHistory) -> dict[str, Any]:
     }
 
 
-def last_bar_incomplete(normalized: dict[str, Any]) -> bool:
-    """True when the bar of the requested end day exists but its close is not
-    published yet (Yahoo serves a null close for a day still being settled).
-
-    ``normalized`` is a ``normalized_payload`` dict. Only the last bar on the
-    requested end date counts: a holiday has either no bar or a flat
-    placeholder bar with a close, and an older null bar is history, not a
-    pending day. A null ``adjusted_close`` only counts when earlier bars of
-    the same response carry one (a response without adjclose has none at all).
-    """
-    bars = normalized.get("bars")
-    if not isinstance(bars, list) or not bars:
-        return False
-    last = bars[-1]
-    if not isinstance(last, dict) or last.get("date") != normalized.get("requested_end_date"):
-        return False
-    if last.get("close") is None:
-        return True
-    return last.get("adjusted_close") is None and any(
-        isinstance(bar, dict) and bar.get("adjusted_close") is not None for bar in bars[:-1]
-    )
-
-
 def canonical_json(value: Any) -> str:
     """Sorted-key compact JSON with exact Decimal/number tokens, for capture hashes."""
     if isinstance(value, dict):
@@ -448,21 +425,6 @@ class PriceHistoryCapture:
     dropped_before_start_count: int
     dropped_after_end_count: int
     bars: tuple[DailyBar, ...]
-
-
-def capture_last_bar_incomplete(capture: PriceHistoryCapture) -> bool:
-    """``last_bar_incomplete`` for a loaded capture (e.g. one saved before the guard existed)."""
-    return last_bar_incomplete({
-        "requested_end_date": capture.requested_end.isoformat(),
-        "bars": [
-            {
-                "date": bar.trade_date.isoformat(),
-                "close": bar.close,
-                "adjusted_close": bar.adjusted_close,
-            }
-            for bar in capture.bars
-        ],
-    })
 
 
 def _reject_capture_constant(token: str) -> None:

@@ -20,10 +20,6 @@ same planned development symbols (ADR §5) through
 symbol failure, stop on the first HTTP 429, pacing floor kept) and records
 per-symbol category status, file path, sha256 and bar count in the run
 record's ``price_history`` block -- never a price or volume value.
-A symbol whose last bar (the day E) has no close yet (Yahoo has not published it)
-is not saved -- the file is no-overwrite, so a null close would be frozen --; its
-status is ``skipped_incomplete_last_bar`` (block status ``incomplete_last_bar``,
-exit code unchanged) and a later run fetches the same window again.
 ``--skip-price`` omits the step; ``--dry-run`` only prints its plan.
 
 See ``docs/research/daily_miniapp_collection_adr.md`` for the full design
@@ -385,7 +381,7 @@ def run_price_step(
         elif status == "failed":
             entry["status"] = f"failed:{_price_failure_category(reason)}"
         else:
-            entry["status"] = status  # skipped_excluded, skipped_incomplete_last_bar
+            entry["status"] = status  # skipped_excluded
         if entry["status"] in ("saved", "skipped_exists"):
             entry["file_path"] = _price_display_path(path)
             files.append(entry["file_path"])
@@ -395,10 +391,6 @@ def run_price_step(
         status = "stopped_on_429"
     elif any(str(entry["status"]).startswith("failed") for entry in entries):
         status = "partial"
-    elif any(entry["status"] == price_batch.fetch.INCOMPLETE_LAST_BAR_STATUS for entry in entries):
-        # Not a failure (exit code unchanged): nothing was saved for these
-        # symbols, so a later run fetches the same window again.
-        status = "incomplete_last_bar"
     else:
         status = "completed"
 
@@ -406,9 +398,6 @@ def run_price_step(
     for entry in entries:
         bars = entry["bar_count"] if entry["bar_count"] is not None else "-"
         print(f"{entry['symbol']:<10}{entry['status']:<30}{bars}")
-    if status == "incomplete_last_bar":
-        print(f"Price history: close of {price_plan.end.isoformat()} not published yet for some "
-              "symbols; their files were not saved (fetch again later).")
     return {
         "status": status,
         "source_id": price_batch.fetch.SOURCE_ID,

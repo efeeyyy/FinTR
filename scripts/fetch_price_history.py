@@ -34,7 +34,6 @@ from fintr.data.price_history import (
     PriceHistoryParseError,
     canonical_json,
     filter_to_range,
-    last_bar_incomplete,
     normalized_payload,
     parse_chart_json,
 )
@@ -48,7 +47,6 @@ SOURCE_ID = "yahoo_finance_chart_v8"
 CHART_ENDPOINT = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 # Recorded verbatim per the manager-verified permission basis (2026-09-26);
 # this is an unofficial secondary source, not Borsa Istanbul official data.
-INCOMPLETE_LAST_BAR_STATUS = "skipped_incomplete_last_bar"
 PERMISSION_STATUS = "user_asserted_2026-09-26_not_independently_verified"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -341,10 +339,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     normalized = capture["normalized"]
-    if args.save and last_bar_incomplete(normalized):
-        print(f"Save skipped: {INCOMPLETE_LAST_BAR_STATUS} (the close of "
-              f"{args.end_date.isoformat()} is not published yet); nothing saved, fetch again later")
-        return 1
     print(f"Symbol: {args.symbol} (Yahoo: {args.symbol}.IS)")
     print(f"Requested range: {args.start_date.isoformat()}..{args.end_date.isoformat()} (inclusive)")
     print(f"Bars in requested range: {normalized['bar_count']}")

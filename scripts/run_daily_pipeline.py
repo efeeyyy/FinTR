@@ -53,13 +53,6 @@ unsettled day (or an unreadable settlement state) keeps the collection, for
 custody settlement. ``--force-collect`` bypasses the guard; ``--dry-run`` and
 ``--skip-collect`` are not guarded. Any guard error falls back to collecting.
 
-Missing-close warning (after the steps): when the scan's as_of is older than the
-collected window end E, E is a weekday without a close in the saved price
-history (not a holiday; Yahoo had not published it, so the price step did not
-save the file) and that as_of's notice was already sent before this run, nothing
-new could be scanned. The pipeline prints ``yeni gün taranamadı: <E> için
-kapanış fiyatı yok ...`` and exits 3 so it is noticed (not with ``--skip-price``).
-
 Any other non-zero exit stops the pipeline with that exit code; nothing is sent.
 The scanner's stdout (the observation document) is captured and discarded;
 only its stderr (saved path or error line) is read. This script prints no
@@ -69,7 +62,7 @@ financial value.
 from __future__ import annotations
 
 import argparse
-from datetime import date, timedelta
+from datetime import date
 import json
 import os
 from pathlib import Path
@@ -82,7 +75,6 @@ from fintr.collection.new_data_guard import (
     istanbul_today,
     last_saved_end,
     load_price_calendar,
-    missing_close_day,
     scanner_unsettled_pending,
 )
 from fintr.collection.planner import (
@@ -111,7 +103,6 @@ EXISTS_PREFIX = "Scan failed: output file already exists (no overwrite):"
 RECEIPT_EXISTS_MARK = "receipt zaten var"
 NOTE_PARTIAL_MARK = "analiz notu kısmi gönderim ("
 NOTE_CHANGED_MARK = "mesaj içeriği ondan farklı"
-EXIT_NEW_DAY_NOT_SCANNED = 3
 TELEGRAM_ENV = ("FINTR_TELEGRAM_BOT_TOKEN", "FINTR_TELEGRAM_CHAT_ID")
 
 
@@ -324,26 +315,6 @@ def new_data_decision(run_date_arg: str | None) -> NewDataDecision | None:
         return None
 
 
-def missing_close_window_end(run_date_arg: str | None, as_of: str) -> date | None:
-    """The window end E when the scan could not reach it for lack of a close
-    (see ``missing_close_day``); ``None`` = no gap or could not decide (the
-    warning is advisory, so an unreadable input never changes the exit code)."""
-    try:
-        run_date = date.fromisoformat(run_date_arg) if run_date_arg else istanbul_today()
-        config = load_daily_collection_config(DAILY_CONFIG)
-        guards = load_active_guards()
-        window_end = run_date - timedelta(days=config.end_offset_days)
-        development = [
-            symbol for symbol in guards.split.development_symbols if not guards.is_excluded(symbol)
-        ]
-        calendar = load_price_calendar(ROOT / PRICE_DIR, development)
-        if missing_close_day(window_end=window_end, calendar=calendar, as_of=date.fromisoformat(as_of)):
-            return window_end
-    except (CollectionPlannerError, SymbolGuardError, OSError, ValueError) as exc:
-        print(f"Missing-close check could not run ({type(exc).__name__}).", file=sys.stderr)
-    return None
-
-
 def _summary(results, as_of=None, saved=None, sent=None) -> None:
     print("Pipeline summary:")
     for step, code in results:
@@ -442,7 +413,6 @@ def main(argv: list[str] | None = None) -> int:
             status = run_llm_note(as_of, timeout=llm_note_timeout_seconds())
         results.append(("llm_note", status))
 
-    sent_before = v3_notice_exists(as_of)  # before this run's notify can create the receipt
     proc = subprocess.run(notify_command(as_of, args.send, layout=args.layout, assessments=v3_note), cwd=ROOT,
                           stderr=subprocess.PIPE, text=True, encoding="utf-8",
                           errors="replace", env=_child_env())
@@ -468,12 +438,6 @@ def main(argv: list[str] | None = None) -> int:
     _summary(results, **summary)
     if already_sent:
         print("  sent: no (already sent earlier; no resend)")
-    if sent_before and not args.skip_price:
-        missing = missing_close_window_end(args.run_date, as_of)
-        if missing is not None:
-            print(f"UYARI: yeni gün taranamadı: {missing.isoformat()} için kapanış fiyatı yok "
-                  "(Yahoo henüz yayınlamadı); daha sonra `--skip-collect` ile tekrar çalıştırın")
-            return EXIT_NEW_DAY_NOT_SCANNED
     return 0
 
 
