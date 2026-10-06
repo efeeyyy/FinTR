@@ -158,6 +158,16 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      (`d3ac9c7`, 1170 test). TRALT prompt v3 ile kabul (10-02'nin 5 notu tamam). v3 dry-run:
      tek mesaj ~290 karakter. Bulutta bekleyen: `env-doctor` (scripts/check_env.py, tzdata) ve
      `llm-note-hardening` ("kazanç" yasak, max_run_seconds 1800). Gelince doğrula, birleştir.
+   - 2026-10-06/07: Birleşti: no-new-data guard, holdout provası (FINTR_SLOW_TESTS=1), env-doctor
+     (`scripts/check_env.py`), check-env receipt düzeltmesi (`485f7d1`, 1259 test). Pazartesi
+     (10-05) toplandı (20/20; ilk deneme kesildi, 14 yarım dosya `daily_capture/_interrupted/
+     2026-10-06T00/` altında, silinmedi) ama Yahoo 10-05 kapanışı 01:29'da boştu → tarama as_of
+     10-02'ye düştü, 10-05 mesajı GİTMEDİ. `price-null-close-guard` birleştirildi ama v3 aynı gün
+     tekrar testini bozduğu için geri alındı (`42e88ff`). Bulut düzeltmesi gerekli: (1) exit 3
+     uyarısı meşru aynı gün tekrarında tetiklenmemeli; (2) tatil yer tutucusu tamamen boş bar →
+     "eksik" sayılmamalı (yalnız OHLV dolu, close boşsa eksik). Sonra yeniden birleştir,
+     `repair_incomplete_prices.py --apply` (20 dosya, 10-05), Efe taze initData ile pipeline'ı
+     sabah çalıştırır (E=son iş günü). Mini App oturumu ~30 dk (Efe beyanı).
    - İzinler (Efe, 2026-10-04): `.claude/settings.local.json` (git dışı) → env PYTHONPATH=src,
      PYTHONIOENCODING=utf-8; allow: git merge, `git push origin *`, venv python ile
      run_daily_pipeline/notify_observations/scan_observations/collect_daily/llm_note. Yeni
