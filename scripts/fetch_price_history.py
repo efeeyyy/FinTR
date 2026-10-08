@@ -46,9 +46,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CAPTURE_SCHEMA = "fintr_price_history_capture_v1"
 SOURCE_ID = "yahoo_finance_chart_v8"
 CHART_ENDPOINT = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+INCOMPLETE_LAST_BAR_STATUS = "skipped_incomplete_last_bar"
 # Recorded verbatim per the manager-verified permission basis (2026-09-26);
 # this is an unofficial secondary source, not Borsa Istanbul official data.
-INCOMPLETE_LAST_BAR_STATUS = "skipped_incomplete_last_bar"
 PERMISSION_STATUS = "user_asserted_2026-09-26_not_independently_verified"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
