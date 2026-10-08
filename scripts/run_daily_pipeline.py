@@ -56,8 +56,8 @@ custody settlement. ``--force-collect`` bypasses the guard; ``--dry-run`` and
 Missing-close warning (after the steps): when the scan's as_of is older than the
 collected window end E, E is a weekday without a close in the saved price
 history (not a holiday; Yahoo had not published it, so the price step did not
-save the file) and that as_of's notice was already sent before this run, nothing
-new could be scanned. The pipeline prints ``yeni gün taranamadı: <E> için
+save the file) and that as_of's notice was already sent before this run (on an
+earlier day; a same-day re-run of a sent day exits 0), nothing new could be scanned. The pipeline prints ``yeni gün taranamadı: <E> için
 kapanış fiyatı yok ...`` and exits 3 so it is noticed (not with ``--skip-price``).
 
 Any other non-zero exit stops the pipeline with that exit code; nothing is sent.
@@ -69,12 +69,13 @@ financial value.
 from __future__ import annotations
 
 import argparse
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+from zoneinfo import ZoneInfo
 
 from fintr.collection.new_data_guard import (
     NewDataDecision,
@@ -213,6 +214,18 @@ def llm_note_timeout_seconds() -> int:
 def v3_notice_exists(as_of: str) -> bool:
     """The v3 message of ``as_of`` already has its (session-head) receipt."""
     return (ROOT / NOTIFY_DIR / as_of / "receipt.json").exists()
+
+
+def v3_notice_sent_on(as_of: str, run_date_arg: str | None) -> bool:
+    """The receipt of ``as_of`` was written on the run date (Istanbul day): a
+    same-day re-run, not a later day whose scan lags behind. Unreadable = no."""
+    try:
+        run_date = date.fromisoformat(run_date_arg) if run_date_arg else istanbul_today()
+        receipt = json.loads((ROOT / NOTIFY_DIR / as_of / "receipt.json").read_text(encoding="utf-8"))
+        sent = datetime.fromisoformat(str(receipt["sent_at_utc"]).replace("Z", "+00:00"))
+        return sent.astimezone(ZoneInfo("Europe/Istanbul")).date() == run_date
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def run_llm_note(as_of: str, timeout: float | None = None) -> str:
@@ -468,7 +481,7 @@ def main(argv: list[str] | None = None) -> int:
     _summary(results, **summary)
     if already_sent:
         print("  sent: no (already sent earlier; no resend)")
-    if sent_before and not args.skip_price:
+    if sent_before and not args.skip_price and not v3_notice_sent_on(as_of, args.run_date):
         missing = missing_close_window_end(args.run_date, as_of)
         if missing is not None:
             print(f"UYARI: yeni gün taranamadı: {missing.isoformat()} için kapanış fiyatı yok "

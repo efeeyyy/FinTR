@@ -8,6 +8,7 @@ import os
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from datetime import date
 from unittest.mock import patch
@@ -164,6 +165,24 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(len(checked), 1)
         self.assertNotIn("yeni gün taranamadı", out)
+
+    def test_same_day_rerun_of_a_sent_day_exits_0_despite_the_gap(self):
+        with patch.object(rdp, "v3_notice_sent_on", lambda _as_of, _run: True):
+            rc, _calls, out, _checked = self._stale(
+                ["--allow-session-takeover", "--send", "--run-date", "2026-10-06"],
+                sent_before=True, missing=date(2026, 10, 5))
+        self.assertEqual(rc, 0)
+        self.assertNotIn("yeni gün taranamadı", out)
+
+    def test_v3_notice_sent_on_compares_the_receipt_day_with_the_run_date(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / rdp.NOTIFY_DIR / "2026-10-01"
+            target.mkdir(parents=True)
+            (target / "receipt.json").write_text('{"sent_at_utc": "2026-10-06T05:00:00+00:00"}', encoding="utf-8")
+            with patch.object(rdp, "ROOT", Path(directory)):
+                self.assertTrue(rdp.v3_notice_sent_on("2026-10-01", "2026-10-06"))
+                self.assertFalse(rdp.v3_notice_sent_on("2026-10-01", "2026-10-07"))
+                self.assertFalse(rdp.v3_notice_sent_on("2026-10-02", "2026-10-06"))  # no receipt
 
     def test_no_missing_close_check_with_skip_price(self):
         rc, _calls, _out, checked = self._stale(
