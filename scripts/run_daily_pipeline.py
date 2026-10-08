@@ -75,11 +75,11 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from zoneinfo import ZoneInfo
 
 from fintr.collection.new_data_guard import (
     NewDataDecision,
     decide_new_data,
+    istanbul_date,
     istanbul_today,
     last_saved_end,
     load_price_calendar,
@@ -223,7 +223,7 @@ def v3_notice_sent_on(as_of: str, run_date_arg: str | None) -> bool:
         run_date = date.fromisoformat(run_date_arg) if run_date_arg else istanbul_today()
         receipt = json.loads((ROOT / NOTIFY_DIR / as_of / "receipt.json").read_text(encoding="utf-8"))
         sent = datetime.fromisoformat(str(receipt["sent_at_utc"]).replace("Z", "+00:00"))
-        return sent.astimezone(ZoneInfo("Europe/Istanbul")).date() == run_date
+        return istanbul_date(sent) == run_date
     except (OSError, ValueError, KeyError, TypeError):
         return False
 

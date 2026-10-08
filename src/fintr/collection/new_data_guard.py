@@ -79,17 +79,21 @@ class NewDataDecision:
     last_trading_day: date | None
 
 
-def istanbul_today(*, now: datetime | None = None) -> date:
-    """Run day R: the Europe/Istanbul calendar date (same rule as ``collect_daily``)."""
-    if now is None:
-        now = datetime.now(timezone.utc)
-    elif now.tzinfo is None or now.utcoffset() is None:
+def istanbul_date(moment: datetime) -> date:
+    """The Europe/Istanbul calendar date of an aware ``moment``; UTC+3 fixed
+    fallback when the tz database lacks the zone (Windows without ``tzdata``)."""
+    if moment.tzinfo is None or moment.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
     try:
         tzinfo = ZoneInfo("Europe/Istanbul")
     except ZoneInfoNotFoundError:
         tzinfo = timezone(timedelta(hours=_ISTANBUL_FIXED_OFFSET_HOURS))
-    return now.astimezone(tzinfo).date()
+    return moment.astimezone(tzinfo).date()
+
+
+def istanbul_today(*, now: datetime | None = None) -> date:
+    """Run day R: the Europe/Istanbul calendar date (same rule as ``collect_daily``)."""
+    return istanbul_date(datetime.now(timezone.utc) if now is None else now)
 
 
 def load_price_calendar(price_dir: Path, symbols: Iterable[str]) -> PriceCalendar:

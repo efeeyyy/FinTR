@@ -184,6 +184,18 @@ class PipelineTests(unittest.TestCase):
                 self.assertFalse(rdp.v3_notice_sent_on("2026-10-01", "2026-10-07"))
                 self.assertFalse(rdp.v3_notice_sent_on("2026-10-02", "2026-10-06"))  # no receipt
 
+    def test_v3_notice_sent_on_works_without_tzdata(self):
+        from zoneinfo import ZoneInfoNotFoundError
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / rdp.NOTIFY_DIR / "2026-10-01"
+            target.mkdir(parents=True)
+            # 22:30 UTC on 10-05 is 01:30 on 10-06 in Istanbul (UTC+3).
+            (target / "receipt.json").write_text('{"sent_at_utc": "2026-10-05T22:30:00+00:00"}', encoding="utf-8")
+            with patch.object(rdp, "ROOT", Path(directory)), \
+                    patch("fintr.collection.new_data_guard.ZoneInfo", side_effect=ZoneInfoNotFoundError("x")):
+                self.assertTrue(rdp.v3_notice_sent_on("2026-10-01", "2026-10-06"))
+                self.assertFalse(rdp.v3_notice_sent_on("2026-10-01", "2026-10-05"))
+
     def test_no_missing_close_check_with_skip_price(self):
         rc, _calls, _out, checked = self._stale(
             ["--send", "--skip-price"], sent_before=True, missing=date(2026, 10, 5))
