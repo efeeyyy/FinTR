@@ -373,6 +373,9 @@ def last_bar_incomplete(normalized: dict[str, Any]) -> bool:
     last = bars[-1]
     if not isinstance(last, dict) or last.get("date") != normalized.get("requested_end_date"):
         return False
+    fields = ("open", "high", "low", "close", "adjusted_close", "volume")
+    if all(last.get(field) is None for field in fields):
+        return False
     if last.get("close") is None:
         return True
     return last.get("adjusted_close") is None and any(

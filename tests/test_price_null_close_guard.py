@@ -86,13 +86,23 @@ class LastBarIncompleteTests(unittest.TestCase):
         self.assertFalse(last_bar_incomplete(
             _normalized(_chart(null_last_close=True), end=date(2026, 1, 10))))
 
-    def test_flat_zero_volume_holiday_placeholder_with_a_close_is_not_incomplete(self):
+    def test_completely_empty_last_bar_is_a_holiday_placeholder_not_incomplete(self):
         document = json.loads(_chart())
-        quote = document["chart"]["result"][0]["indicators"]["quote"][0]
-        for key in ("open", "high", "low", "close"):
-            quote[key][-1] = 10.5
-        quote["volume"][-1] = 0
+        result = document["chart"]["result"][0]
+        for key in ("open", "high", "low", "close", "volume"):
+            result["indicators"]["quote"][0][key][-1] = None
+        result["indicators"]["adjclose"][0]["adjclose"][-1] = None
         self.assertFalse(last_bar_incomplete(_normalized(json.dumps(document).encode())))
+
+    def test_open_high_low_volume_filled_but_close_null_is_incomplete(self):
+        document = json.loads(_chart())
+        result = document["chart"]["result"][0]
+        quote = result["indicators"]["quote"][0]
+        for key, value in (("open", 10.5), ("high", 10.6), ("low", 10.4), ("volume", 1000)):
+            quote[key][-1] = value
+        quote["close"][-1] = None
+        result["indicators"]["adjclose"][0]["adjclose"][-1] = None
+        self.assertTrue(last_bar_incomplete(_normalized(json.dumps(document).encode())))
 
     def test_empty_or_odd_payload_is_not_incomplete(self):
         self.assertFalse(last_bar_incomplete({}))
