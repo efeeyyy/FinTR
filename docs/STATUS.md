@@ -174,6 +174,12 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      Sıradaki: Efe sabah/öğleden sonra (Yahoo kapanışı yayınlandıktan sonra) taze initData ile
      `run_daily_pipeline.py --allow-session-takeover --send --llm-note` (E=son iş günü).
      Bulut kredisi neredeyse bitti; kod işleri yerel alt ajanlara dönüyor.
+   - 2026-10-09 22:10: `--run-date 2026-10-10` ile 10-09 dahil çalıştırıldı: 20/20 saved, as_of
+     2026-10-09, not ok=3, v3 mesajı gönderildi. VERİ KALİTESİ (açık soru, holdout öncesi
+     incele): Yahoo geçmişi geriye dönük değişti — 2023-01-02_2026-10-09 dosyasında 2026-05-27..29
+     (önceki dosyalarda değerli bar; muhtemelen Kurban Bayramı, doğrulanmadı) ve 4 boş tatil
+     satırı yok. Eski fiyat dosyalarında tatil günlerine dolgu değer yazılmış olabilir; H1–H4
+     train bu dosyalarla çalıştı. Etki analizi finans/araştırma işi; spec değiştirmeden.
    - İzinler (Efe, 2026-10-04): `.claude/settings.local.json` (git dışı) → env PYTHONPATH=src,
      PYTHONIOENCODING=utf-8; allow: git merge, `git push origin *`, venv python ile
      run_daily_pipeline/notify_observations/scan_observations/collect_daily/llm_note. Yeni
