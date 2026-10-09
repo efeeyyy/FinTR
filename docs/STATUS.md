@@ -168,6 +168,12 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      "eksik" sayılmamalı (yalnız OHLV dolu, close boşsa eksik). Sonra yeniden birleştir,
      `repair_incomplete_prices.py --apply` (20 dosya, 10-05), Efe taze initData ile pipeline'ı
      sabah çalıştırır (E=son iş günü). Mini App oturumu ~30 dk (Efe beyanı).
+   - 2026-10-09: `price-null-close-guard` düzeltmeleriyle yeniden birleşti (`d668b79`, 1285 test,
+     tzdata'sız Windows'ta da geçiyor). `repair_incomplete_prices.py --apply` → 20 boş kapanışlı
+     10-05 fiyat dosyası `price_history/_incomplete/2026-10-09/` altına taşındı (silinmedi).
+     Sıradaki: Efe sabah/öğleden sonra (Yahoo kapanışı yayınlandıktan sonra) taze initData ile
+     `run_daily_pipeline.py --allow-session-takeover --send --llm-note` (E=son iş günü).
+     Bulut kredisi neredeyse bitti; kod işleri yerel alt ajanlara dönüyor.
    - İzinler (Efe, 2026-10-04): `.claude/settings.local.json` (git dışı) → env PYTHONPATH=src,
      PYTHONIOENCODING=utf-8; allow: git merge, `git push origin *`, venv python ile
      run_daily_pipeline/notify_observations/scan_observations/collect_daily/llm_note. Yeni
