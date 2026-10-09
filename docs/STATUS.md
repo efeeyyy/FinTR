@@ -180,6 +180,14 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      (önceki dosyalarda değerli bar; muhtemelen Kurban Bayramı, doğrulanmadı) ve 4 boş tatil
      satırı yok. Eski fiyat dosyalarında tatil günlerine dolgu değer yazılmış olabilir; H1–H4
      train bu dosyalarla çalıştı. Etki analizi finans/araştırma işi; spec değiştirmeden.
+     2026-10-10 karşılaştırma (salt okunur, `data/interim/research/yahoo_diff_2026-10-09/report.md`):
+     20 hissede 7 gün (04-23, 05-01, 05-19, 05-27..29, 07-15; hepsi train penceresinde)
+     10-09'da çekilen dosyalarda yok; 140 satırın hepsi işaret satırı (78 tamamen boş, 62 düz
+     dolgu: hacim 0, O=H=L=C=önceki kapanış); hiçbiri normal işlem barı değil, işlem barı kümesi
+     ve ham OHLCV değişmedi. Ayrıca TUPRS, TRALT `adjusted_close` 932 günde revize (≤%1,8; neden
+     doğrulanmadı; `adjusted_close` research/engine'de kullanılıyor). 12 hissede yalnız 09-25
+     dosyası var → karışık eski/yeni stil. Repo'da tatil takvimi yok. Etki değerlendirmesi
+     (dolgu satırları ve adjusted_close revizyonu train'i etkiledi mi) finans/araştırma işi.
    - İzinler (Efe, 2026-10-04): `.claude/settings.local.json` (git dışı) → env PYTHONPATH=src,
      PYTHONIOENCODING=utf-8; allow: git merge, `git push origin *`, venv python ile
      run_daily_pipeline/notify_observations/scan_observations/collect_daily/llm_note. Yeni
