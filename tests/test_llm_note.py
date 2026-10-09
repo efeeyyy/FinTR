@@ -2373,7 +2373,9 @@ class PipelineV3Tests(unittest.TestCase):
 
     def test_same_day_rerun_sends_nothing_again_and_does_not_repeat_the_note_step(self):
         receipt = "Notify failed: bu as_of için receipt zaten var (x); --resend ile yeniden gönder\n"
-        with patch.object(pipeline, "v3_notice_exists", return_value=True):
+        with patch.object(pipeline, "v3_notice_exists", return_value=True), \
+                patch.object(pipeline, "v3_notice_sent_on", return_value=True), \
+                patch.object(pipeline, "missing_close_window_end", return_value=date(2026, 10, 5)):
             rc, calls, out, _, _ = _go_default(["--skip-collect", "--llm-note", "--send"], env=self.ENV,
                                        notify_code=1, notify_stderr=receipt)
         self.assertEqual(rc, 0)

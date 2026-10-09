@@ -611,6 +611,18 @@ düşürülemez. Holdout, dışlanan semboller ve DSTKF hiçbir zaman istenmez.
   `skipped_exists`, `skipped_rate_limited`, `failed:<kategori>`), dosya yolu,
   sha256 ve bar sayısı. Fiyat/hacim değeri yazılmaz. `partial` ve
   `stopped_on_429` exit code 1 verir.
+- Son bar (gün `E`) için Yahoo henüz kapanış yayınlamadıysa (`close`
+  null; `adjusted_close` yalnız önceki barlarda varken null ise de) dosya
+  **kaydedilmez** (no-overwrite, null kapanış donardı): durum
+  `skipped_incomplete_last_bar`, blok durumu `incomplete_last_bar` (hata
+  değil, exit code değişmez); sonraki çalıştırma aynı pencereyi yeniden çeker
+  (pipeline'ın "yeni veri beklenmiyor" korumasını geçmek için aynı gün
+  `--force-collect`). Tatil (bar yok ya da kapanışlı düz yer tutucu bar)
+  etkilenmez. `run_daily_pipeline.py`: scan'in as_of'u `E`'den eskiyse, `E` hafta
+  içi, takvimde tatil değil ve as_of zaten gönderilmişse "yeni gün taranamadı"
+  uyarısı ve exit code 3. Eski (null son barlı) dosyalar için:
+  `scripts/repair_incomplete_prices.py` (`--dry-run` varsayılan; `--apply`
+  dosyaları silmeden `data/interim/price_history/_incomplete/<tarih>/` altına taşır).
 - Kaynak/lisans: Yahoo için `fetch_price_history.py`'deki mevcut beyan
   (`user_asserted_2026-09-26_not_independently_verified`) geçerlidir; Mini App
   izni (2026-09-28) Yahoo'yu kapsamaz ve ADR'deki risk notu genişletilmedi.

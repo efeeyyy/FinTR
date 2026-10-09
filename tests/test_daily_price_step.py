@@ -183,6 +183,30 @@ class PriceStepTests(guard_fixtures.GuardEnvMixin, unittest.TestCase):
         )
         self.assertEqual(by_symbol["AKFIS"]["status"], "saved")
 
+    def test_null_close_last_bar_is_not_saved_and_is_recorded(self):
+        document = json.loads(FIXTURE.read_bytes())
+        result = document["chart"]["result"][0]
+        result["indicators"]["quote"][0]["close"][-1] = None
+        result["indicators"]["adjclose"][0]["adjclose"][-1] = None
+        null_bytes = json.dumps(document).encode("utf-8")
+
+        root = self._env()
+        self._precreate_mini_app(root, ("AKFIS", "ZZZZZ"))
+        code, out, err, fetch_mock, _t, _c = self._run(
+            root, self._live_argv(root), fetch_side_effect=lambda url, timeout: null_bytes,
+        )
+        self.assertEqual(code, 0, err)  # not a failure: a later run fetches the window again
+        self.assertEqual(fetch_mock.call_count, 2)
+        price = self._record(root)["price_history"]
+        self.assertEqual(price["status"], "incomplete_last_bar")
+        self.assertEqual(price["files"], [])
+        for entry in price["symbols"]:
+            self.assertEqual(entry["status"], "skipped_incomplete_last_bar")
+            self.assertIsNone(entry["file_path"])
+            self.assertIsNone(entry["sha256"])
+            self.assertFalse((self._price_dir(root, entry["symbol"]) / PRICE_NAME).exists())
+        self.assertIn("skipped_incomplete_last_bar", out)
+
     def test_symbol_failure_continues_and_is_categorised_without_leaking_detail(self):
         def side_effect(url, timeout):
             if "AKFIS" in url:

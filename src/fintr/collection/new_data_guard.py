@@ -36,7 +36,11 @@ import re
 from typing import Collection, Iterable, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fintr.data.price_history import PriceHistoryCaptureError, load_price_history_capture
+from fintr.data.price_history import (
+    PriceHistoryCaptureError,
+    capture_last_bar_incomplete,
+    load_price_history_capture,
+)
 from fintr.research.engine import tradeable_price_bars
 
 
@@ -58,6 +62,9 @@ class PriceCalendar:
 
     trading_days: frozenset[date]
     coverage_end: date | None
+    # Requested ends whose saved file has a null close on that very day (saved
+    # before the incomplete-last-bar guard): not a holiday, the close is missing.
+    incomplete_ends: frozenset[date] = frozenset()
 
     def last_trading_day(self, on_or_before: date) -> date | None:
         days = [day for day in self.trading_days if day <= on_or_before]
@@ -72,17 +79,21 @@ class NewDataDecision:
     last_trading_day: date | None
 
 
-def istanbul_today(*, now: datetime | None = None) -> date:
-    """Run day R: the Europe/Istanbul calendar date (same rule as ``collect_daily``)."""
-    if now is None:
-        now = datetime.now(timezone.utc)
-    elif now.tzinfo is None or now.utcoffset() is None:
+def istanbul_date(moment: datetime) -> date:
+    """The Europe/Istanbul calendar date of an aware ``moment``; UTC+3 fixed
+    fallback when the tz database lacks the zone (Windows without ``tzdata``)."""
+    if moment.tzinfo is None or moment.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
     try:
         tzinfo = ZoneInfo("Europe/Istanbul")
     except ZoneInfoNotFoundError:
         tzinfo = timezone(timedelta(hours=_ISTANBUL_FIXED_OFFSET_HOURS))
-    return now.astimezone(tzinfo).date()
+    return moment.astimezone(tzinfo).date()
+
+
+def istanbul_today(*, now: datetime | None = None) -> date:
+    """Run day R: the Europe/Istanbul calendar date (same rule as ``collect_daily``)."""
+    return istanbul_date(datetime.now(timezone.utc) if now is None else now)
 
 
 def load_price_calendar(price_dir: Path, symbols: Iterable[str]) -> PriceCalendar:
@@ -93,6 +104,7 @@ def load_price_calendar(price_dir: Path, symbols: Iterable[str]) -> PriceCalenda
     """
     root = Path(price_dir)
     days: set[date] = set()
+    incomplete: set[date] = set()
     coverage_end: date | None = None
     for symbol in symbols:
         symbol_dir = root / symbol
@@ -113,10 +125,31 @@ def load_price_calendar(price_dir: Path, symbols: Iterable[str]) -> PriceCalenda
             except (OSError, PriceHistoryCaptureError):
                 continue
             days.update(bar.trade_date for bar in tradeable_price_bars(capture))
+            if capture_last_bar_incomplete(capture):
+                incomplete.add(capture.requested_end)
             if coverage_end is None or capture.requested_end > coverage_end:
                 coverage_end = capture.requested_end
             break
-    return PriceCalendar(frozenset(days), coverage_end)
+    return PriceCalendar(frozenset(days), coverage_end, frozenset(incomplete))
+
+
+def missing_close_day(*, window_end: date, calendar: PriceCalendar, as_of: date) -> bool:
+    """True when the scan stopped at ``as_of`` before the collected day
+    ``window_end`` because that weekday has no close in the saved price history.
+
+    Not a weekend, and not a holiday (a window end inside the price coverage
+    without a tradeable bar and without a null last bar). ``False`` when
+    ``window_end`` has a tradeable bar: then a stale ``as_of`` is not a price
+    gap (e.g. the AKD data lags) and this check says nothing.
+    """
+    if as_of >= window_end or window_end.weekday() >= 5:
+        return False
+    if window_end in calendar.trading_days:
+        return False
+    if window_end in calendar.incomplete_ends:
+        return True
+    # No saved price history at all: nothing to compare with, so no claim.
+    return calendar.coverage_end is not None and calendar.coverage_end < window_end
 
 
 def scanner_unsettled_pending(scanner_dir: Path) -> bool:

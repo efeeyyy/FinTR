@@ -8,7 +8,9 @@ import os
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
+from datetime import date
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -127,6 +129,78 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("already_scanned", out)
         self.assertIn("already_sent", out)
         self.assertIn("no resend", out)
+
+    def _stale(self, argv, *, sent_before, missing, codes=(0, 1, 1)):
+        exists = f"Scan failed: output file already exists (no overwrite): {SAVED}\n"
+        receipt = "Notify failed: bu as_of için receipt zaten var (x); --resend ile yeniden gönder\n"
+        checked = []
+
+        def check(run_date, as_of):
+            checked.append((run_date, as_of))
+            return missing
+
+        with patch.object(rdp, "v3_notice_exists", lambda _as_of: sent_before), \
+                patch.object(rdp, "missing_close_window_end", check):
+            rc, calls, out, err = _go(argv, codes=codes, scan_err=exists, notify_err=receipt)
+        return rc, calls, out, checked
+
+    def test_missing_close_after_an_already_sent_as_of_warns_and_exits_3(self):
+        rc, calls, out, checked = self._stale(
+            ["--allow-session-takeover", "--send", "--run-date", "2026-10-06"],
+            sent_before=True, missing=date(2026, 10, 5))
+        self.assertEqual(rc, 3)
+        self.assertEqual(rdp.EXIT_NEW_DAY_NOT_SCANNED, 3)
+        self.assertEqual(checked, [("2026-10-06", "2026-10-01")])
+        self.assertIn("yeni gün taranamadı: 2026-10-05 için kapanış fiyatı yok "
+                      "(Yahoo henüz yayınlamadı); daha sonra `--skip-collect` ile tekrar çalıştırın", out)
+        self.assertEqual(len(calls), 3)  # the steps ran as before; nothing was resent
+        self.assertIn("already_sent", out)
+
+    def test_no_warning_when_the_as_of_was_not_sent_before_or_no_gap(self):
+        rc, _calls, out, checked = self._stale(["--send"], sent_before=False, missing=date(2026, 10, 5))
+        self.assertEqual(rc, 0)
+        self.assertEqual(checked, [])
+        self.assertNotIn("yeni gün taranamadı", out)
+        rc, _calls, out, checked = self._stale(["--send"], sent_before=True, missing=None)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(checked), 1)
+        self.assertNotIn("yeni gün taranamadı", out)
+
+    def test_same_day_rerun_of_a_sent_day_exits_0_despite_the_gap(self):
+        with patch.object(rdp, "v3_notice_sent_on", lambda _as_of, _run: True):
+            rc, _calls, out, _checked = self._stale(
+                ["--allow-session-takeover", "--send", "--run-date", "2026-10-06"],
+                sent_before=True, missing=date(2026, 10, 5))
+        self.assertEqual(rc, 0)
+        self.assertNotIn("yeni gün taranamadı", out)
+
+    def test_v3_notice_sent_on_compares_the_receipt_day_with_the_run_date(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / rdp.NOTIFY_DIR / "2026-10-01"
+            target.mkdir(parents=True)
+            (target / "receipt.json").write_text('{"sent_at_utc": "2026-10-06T05:00:00+00:00"}', encoding="utf-8")
+            with patch.object(rdp, "ROOT", Path(directory)):
+                self.assertTrue(rdp.v3_notice_sent_on("2026-10-01", "2026-10-06"))
+                self.assertFalse(rdp.v3_notice_sent_on("2026-10-01", "2026-10-07"))
+                self.assertFalse(rdp.v3_notice_sent_on("2026-10-02", "2026-10-06"))  # no receipt
+
+    def test_v3_notice_sent_on_works_without_tzdata(self):
+        from zoneinfo import ZoneInfoNotFoundError
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / rdp.NOTIFY_DIR / "2026-10-01"
+            target.mkdir(parents=True)
+            # 22:30 UTC on 10-05 is 01:30 on 10-06 in Istanbul (UTC+3).
+            (target / "receipt.json").write_text('{"sent_at_utc": "2026-10-05T22:30:00+00:00"}', encoding="utf-8")
+            with patch.object(rdp, "ROOT", Path(directory)), \
+                    patch("fintr.collection.new_data_guard.ZoneInfo", side_effect=ZoneInfoNotFoundError("x")):
+                self.assertTrue(rdp.v3_notice_sent_on("2026-10-01", "2026-10-06"))
+                self.assertFalse(rdp.v3_notice_sent_on("2026-10-01", "2026-10-05"))
+
+    def test_no_missing_close_check_with_skip_price(self):
+        rc, _calls, _out, checked = self._stale(
+            ["--send", "--skip-price"], sent_before=True, missing=date(2026, 10, 5))
+        self.assertEqual(rc, 0)
+        self.assertEqual(checked, [])
 
     def test_exists_scan_then_dry_run_notify_continues(self):
         exists = f"Scan failed: output file already exists (no overwrite): {SAVED}\n"
