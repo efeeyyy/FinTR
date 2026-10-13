@@ -13,6 +13,8 @@ yoktur ve eşikler, vadeler, olay sayısı hedefleri önceden (a priori)
 seçildi. Aşağıdaki güç hesabındaki oynaklık/korelasyon rakamları veriden
 değil, açıkça işaretlenmiş varsayımlardır.
 
+Deneme defteri (her analiz/varyant/koşu, sonuç okunmadan önce kaydedilir): [TRIAL_LOG.md](TRIAL_LOG.md).
+
 ## Süreç
 
 1. **Öneri (şimdi).** Bu belgeler + `"frozen": false` spec'ler. Değişiklik
