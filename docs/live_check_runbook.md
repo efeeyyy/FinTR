@@ -623,6 +623,9 @@ Exit 1 = en az bir sembol `failed:<kategori>` (ör. `packet_hash_mismatch`,
    ([scanner.md](scanner.md#günlük-birleştirme---daily-root)).
 4. `notify_observations.py --as-of YYYY-MM-DD` (varsayılan dry-run; gerçek
    gönderim için `--send`, [notify.md](notify.md)).
+5. (İsteğe bağlı) `forward_log.py append --as-of YYYY-MM-DD` veya boru hattında
+   `--forward-log`; sonra `forward_log/manifest.jsonl` commit'i ve düzenli
+   `git tag forward-log-YYYY-MM-DD` ([forward_log.md](forward_log.md)).
 
 ### 6h. Tek komut: `run_daily_pipeline.py`
 
