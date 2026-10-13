@@ -195,8 +195,10 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      (`scripts/forward_log.py`, `forward_log/manifest.jsonl`, `docs/forward_log.md`; pipeline
      `--forward-log`, varsayılan kapalı; repo manifesti henüz boş), çevrimdışı fiyat revizyon
      farkı (`scripts/diff_price_history.py`; pipeline `--price-diff`, varsayılan kapalı; 10-10
-     bulgularını yeniden üretti). Efe'ye sorulan: iki bayrak günlük komuta eklensin mi, manifest
-     2026-09-30'dan backfill edilsin mi. Sıradaki aday işler: sentetik boş-hipotez motor testi
+     bulgularını yeniden üretti). Efe kararı (2026-10-13): iki bayrak günlük komutta
+     (`--allow-session-takeover --send --llm-note --price-diff --forward-log`); manifest
+     2026-09-30..10-09 backfill edildi (3 kayıt, `backfilled`), etiket `forward-log-2026-10-13`.
+     Manifest her çalıştırmada değişir: düzenli commit + `forward-log-YYYY-MM-DD` etiketi. Sıradaki aday işler: sentetik boş-hipotez motor testi
      (madde 1), resmî BIST tatil takvimi (Efe resmî listeyi doğrular), haftalık replay, LLM
      altın/negatif seti, T+2 gecikmesini yapılandırmaya taşıma. Pazartesi 10-12 ve Salı 10-13
      verisi henüz toplanmadı (Efe).
