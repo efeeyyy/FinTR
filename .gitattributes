@@ -2,3 +2,5 @@
 # keep LF line endings regardless of core.autocrlf.
 configs/** text eol=lf
 *.json text eol=lf
+# Append-only hash chain: keep LF so the file bytes are identical everywhere.
+forward_log/manifest.jsonl text eol=lf
