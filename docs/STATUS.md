@@ -188,6 +188,18 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      doğrulanmadı; `adjusted_close` research/engine'de kullanılıyor). 12 hissede yalnız 09-25
      dosyası var → karışık eski/yeni stil. Repo'da tatil takvimi yok. Etki değerlendirmesi
      (dolgu satırları ve adjusted_close revizyonu train'i etkiledi mi) finans/araştırma işi.
+   - 2026-10-13: Bulut kredisi bitti (Efe); kod işleri yerel alt ajanlarda (worktree, dal başına
+     bir iş, yönetici birleştirir + push). Araştırma notu `docs/research/signal_bot_best_practices_2026-10-13.md`
+     (öncelikli 8 madde). Birleşti (1359 test OK): `docs/prereg/TRIAL_LOG.md` (deneme defteri,
+     yalnız ekleme; yeni her bakış sonuçtan önce satır), hash zincirli ileri kayıt
+     (`scripts/forward_log.py`, `forward_log/manifest.jsonl`, `docs/forward_log.md`; pipeline
+     `--forward-log`, varsayılan kapalı; repo manifesti henüz boş), çevrimdışı fiyat revizyon
+     farkı (`scripts/diff_price_history.py`; pipeline `--price-diff`, varsayılan kapalı; 10-10
+     bulgularını yeniden üretti). Efe'ye sorulan: iki bayrak günlük komuta eklensin mi, manifest
+     2026-09-30'dan backfill edilsin mi. Sıradaki aday işler: sentetik boş-hipotez motor testi
+     (madde 1), resmî BIST tatil takvimi (Efe resmî listeyi doğrular), haftalık replay, LLM
+     altın/negatif seti, T+2 gecikmesini yapılandırmaya taşıma. Pazartesi 10-12 ve Salı 10-13
+     verisi henüz toplanmadı (Efe).
    - İzinler (Efe, 2026-10-04): `.claude/settings.local.json` (git dışı) → env PYTHONPATH=src,
      PYTHONIOENCODING=utf-8; allow: git merge, `git push origin *`, venv python ile
      run_daily_pipeline/notify_observations/scan_observations/collect_daily/llm_note. Yeni
