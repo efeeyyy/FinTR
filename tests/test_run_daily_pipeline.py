@@ -249,5 +249,78 @@ class PipelineTests(unittest.TestCase):
         self.assertIsNone(rdp.extract_as_of("nothing"))
 
 
+class PriceDiffStepTests(unittest.TestCase):
+    """--price-diff: optional offline revision check right after collect; never blocks."""
+
+    def _go(self, argv, diff_result=None, diff_exc=None):
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            name = Path(cmd[1]).name
+            if name == "diff_price_history.py":
+                if diff_exc is not None:
+                    raise diff_exc
+                code, stdout = diff_result
+                return subprocess.CompletedProcess(cmd, code, stdout=stdout, stderr="")
+            err = f"Observations saved: {SAVED}\n" if name == "scan_observations.py" else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout="SECRET-OBSERVATION", stderr=err)
+
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(rdp.subprocess, "run", run), patch.object(rdp, "new_data_decision", lambda *_: None), \
+                redirect_stdout(out), redirect_stderr(err):
+            rc = rdp.main(["--layout", "v2", "--run-date", "2026-10-02", *argv])
+        return rc, calls, out.getvalue()
+
+    def test_default_off(self):
+        rc, calls, out = self._go([])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("diff_price_history.py", _names(calls))
+        self.assertNotIn("price_diff", out)
+
+    def test_no_changes(self):
+        rc, calls, out = self._go(["--price-diff"], diff_result=(0, "PRICE_DIFF: changes=0 high=0 medium=0 info=0\n"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(_names(calls), ["collect_daily.py", "diff_price_history.py",
+                                         "scan_observations.py", "notify_observations.py"])
+        cmd, kwargs = calls[1]
+        self.assertEqual(cmd[2:5], ["--price-dir", rdp.PRICE_DIR, "--out"])
+        self.assertTrue(cmd[5].startswith(os.path.join(rdp.PRICE_DIFF_DIR, "2026-10-02") + os.sep))
+        self.assertEqual(kwargs["timeout"], rdp.PRICE_DIFF_TIMEOUT_SECONDS)
+        self.assertIn("price_diff: none", out)
+
+    def test_changes_found_warns_but_exit_code_is_unchanged(self):
+        rc, calls, out = self._go(
+            ["--price-diff"], diff_result=(2, "x\nPRICE_DIFF: changes=7 high=1 medium=2 info=4 errors=0 report=r\n"))
+        self.assertEqual(rc, 0)
+        self.assertIn("price_diff: changes:7", out)
+        self.assertIn("yüksek 1, orta 2, bilgi 4", out)
+        self.assertEqual(_names(calls)[-2:], ["scan_observations.py", "notify_observations.py"])
+
+    def test_failures_never_block(self):
+        for result, exc in (((1, ""), None), ((2, "no summary line"), None),
+                            (None, OSError("boom")), (None, subprocess.TimeoutExpired("x", 1))):
+            rc, calls, out = self._go(["--price-diff"], diff_result=result, diff_exc=exc)
+            self.assertEqual(rc, 0)
+            self.assertIn("price_diff: failed", out)
+            self.assertEqual(_names(calls)[-1], "notify_observations.py")
+
+    def test_not_run_with_skip_collect_or_dry_run(self):
+        _, calls, _ = self._go(["--price-diff", "--skip-collect"], diff_result=(0, ""))
+        self.assertNotIn("diff_price_history.py", _names(calls))
+        _, calls, _ = self._go(["--price-diff", "--dry-run"], diff_result=(0, ""))
+        self.assertNotIn("diff_price_history.py", _names(calls))
+
+    def test_rerun_same_day_uses_a_distinct_report_name(self):
+        from datetime import datetime as dt
+        calls = []
+        with patch.object(rdp.subprocess, "run",
+                          lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")):
+            rdp.run_price_diff("2026-10-02", now=dt(2026, 10, 2, 8, 0, 1))
+            rdp.run_price_diff("2026-10-02", now=dt(2026, 10, 2, 9, 0, 1))
+        self.assertNotEqual(calls[0][-1], calls[1][-1])
+        self.assertTrue(calls[0][-1].endswith("price_diff_20261002T080001Z.json"))
+
+
 if __name__ == "__main__":
     unittest.main()
