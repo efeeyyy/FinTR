@@ -221,6 +221,66 @@ class CalibrationSmokeTests(unittest.TestCase):
                 self.assertEqual(cal.main(argv), 2)  # never overwrites
 
 
+def _strip_timing(value):
+    if isinstance(value, dict):
+        return {k: _strip_timing(v) for k, v in value.items()
+                if k not in ("seconds", "mean_seconds_per_replicate_cpu")}
+    if isinstance(value, list):
+        return [_strip_timing(v) for v in value]
+    return value
+
+
+class ResumeTests(unittest.TestCase):
+    ARGV = ["--variants", "iid", "--replicates-null", "3", "--replicates-alt", "2",
+            "--effect-sizes", "0.02", "--workers", "1", "--n-symbols", "6", "--n-days", "80",
+            "--block-resamples", "99"]
+
+    def test_resumed_run_equals_uninterrupted_run(self):
+        cal = _load_script()
+        with tempfile.TemporaryDirectory() as tmp:
+            full, resumed = Path(tmp) / "full", Path(tmp) / "resumed"
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(cal.main(["--out", str(full), *self.ARGV]), 0)
+            doc_full = json.loads((full / "calibration.json").read_text(encoding="utf-8"))
+            details = [rec for name in doc_full["scenarios"]
+                       for rec in doc_full["scenarios"][name]["replicates_detail"]]
+            self.assertEqual(len(details), 5)
+            # interrupted run: only 3 of 5 replicates finished (in task order), the
+            # last line cut mid-write, no header (as the first script version wrote)
+            order = sorted(details, key=lambda rec: (rec["r"], rec["scenario"]))
+            lines = [json.dumps(rec) for rec in order[:3]]
+            resumed.mkdir()
+            (resumed / "replicates.partial.jsonl").write_text(
+                "\n".join(lines) + "\n" + json.dumps(order[3])[:40], encoding="utf-8")
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(cal.main(["--out", str(resumed), "--resume", *self.ARGV]), 0)
+            doc_resumed = json.loads((resumed / "calibration.json").read_text(encoding="utf-8"))
+            self.assertEqual(doc_resumed["timing"]["resumed_from_replicates"], 3)
+            self.assertEqual(_strip_timing(doc_resumed["scenarios"]), _strip_timing(doc_full["scenarios"]))
+            self.assertFalse((resumed / "replicates.partial.jsonl").exists())
+
+    def test_resume_refuses_foreign_or_missing_partial(self):
+        cal = _load_script()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "run"
+            out.mkdir()
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(cal.main(["--out", str(out), "--resume", *self.ARGV]), 2)  # no partial
+            record = {"scenario": "iid/null", "r": 0, "seed": "1:0", "block_bootstrap_seed": 1,
+                      "hypotheses": {"H1": {}, "H2": {}}}
+            partial = out / "replicates.partial.jsonl"
+            partial.write_text(json.dumps(record) + "\n", encoding="utf-8")
+            with redirect_stderr(io.StringIO()):  # seeds belong to another --seed
+                self.assertEqual(cal.main(["--out", str(out), "--resume", *self.ARGV]), 2)
+            self.assertTrue(partial.exists())  # left untouched
+            self.assertIn('"seed": "1:0"', partial.read_text(encoding="utf-8"))
+            header = {"_header": {"seed": 20261013, "n_symbols": 7, "n_days": 80, "specs": ["H1", "H2"],
+                                  "block_resamples": 99, "iid_resamples": 20}}
+            partial.write_text(json.dumps(header) + "\n", encoding="utf-8")
+            with redirect_stderr(io.StringIO()):  # header from different options
+                self.assertEqual(cal.main(["--out", str(out), "--resume", *self.ARGV]), 2)
+
+
 @unittest.skipUnless(
     SLOW_TESTS,
     "slow calibration (several minutes, many cores): set FINTR_SLOW_TESTS=1 to run",

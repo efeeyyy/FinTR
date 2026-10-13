@@ -358,7 +358,14 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--specs", nargs="+", choices=sorted(SPEC_FILES), default=list(PRIMARY),
                    help="H3/H4 are descriptive (outside Holm); H1 and H2 must stay first")
     p.add_argument("--seed", type=int, default=20261013)
-    p.add_argument("--workers", type=int, default=max(1, min(12, (os.cpu_count() or 2) - 2)))
+    p.add_argument("--workers", type=int, default=max(1, min(12, (os.cpu_count() or 2) - 2)),
+                   help="worker processes (default: up to 12, leaving 2 cores free; the run is "
+                        "CPU-bound for hours, so on a laptop pick fewer, e.g. --workers 6)")
+    p.add_argument("--resume", action="store_true",
+                   help="continue an interrupted run: read replicates.partial.jsonl in --out, "
+                        "check its seeds/config, skip finished (scenario, r) pairs, append the "
+                        "rest, then write the same outputs as an uninterrupted run. Pass the "
+                        "same options as the original command")
     p.add_argument("--n-symbols", type=int, default=20)
     p.add_argument("--n-days", type=int, default=250)
     p.add_argument("--block-resamples", type=int, default=None,
@@ -368,13 +375,70 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
+PARTIAL_NAME = "replicates.partial.jsonl"
+
+
+class ResumeError(ValueError):
+    """The partial file does not belong to this configuration."""
+
+
+def load_partial(path: Path, expected_reps: dict[str, int], fingerprint: dict) -> tuple[list[dict], bool]:
+    """Validated records of an interrupted run, and whether the file needs a
+    rewrite (truncated last line or missing final newline).
+
+    Every record must belong to a planned (scenario, r), carry exactly the
+    replicate seed and block-bootstrap seed this configuration derives, hold
+    results for the same hypotheses, and appear once. A header line (written by
+    new runs) must equal ``fingerprint``; a headerless file (first version)
+    can only be checked through the seeds.
+    """
+    text = path.read_text(encoding="utf-8")
+    lines = text.split("\n")
+    rewrite = not text.endswith("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    records: list[dict] = []
+    seen: set[tuple[str, int]] = set()
+    for index, line in enumerate(lines):
+        try:
+            doc = json.loads(line)
+        except json.JSONDecodeError:
+            if index == len(lines) - 1:  # killed mid-write
+                rewrite = True
+                break
+            raise ResumeError(f"unreadable line {index + 1} in {path.name}") from None
+        if "_header" in doc:
+            if index != 0 or doc["_header"] != fingerprint:
+                raise ResumeError("partial file header differs from the current options")
+            continue
+        scenario, r = doc.get("scenario"), doc.get("r")
+        if scenario not in expected_reps or not isinstance(r, int) or not 0 <= r < expected_reps[scenario]:
+            raise ResumeError(f"record outside the planned scenarios/replicates: {scenario!r} r={r!r}")
+        seed = f"{fingerprint['seed']}:{r}"
+        if doc.get("seed") != seed or doc.get("block_bootstrap_seed") != _seed_int(f"bb:{seed}"):
+            raise ResumeError(f"seed mismatch at {scenario} r={r}")
+        if set(doc.get("hypotheses", {})) != set(fingerprint["specs"]):
+            raise ResumeError(f"hypothesis set mismatch at {scenario} r={r}")
+        if (scenario, r) in seen:
+            raise ResumeError(f"duplicate record {scenario} r={r}")
+        seen.add((scenario, r))
+        records.append(doc)
+    return records, rewrite
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if tuple(args.specs[:2]) != PRIMARY:
         print("--specs must start with H1 H2 (the Holm family)", file=sys.stderr)
         return 2
     out = args.out
-    if out.exists() and any(out.iterdir()):
+    partial = out / PARTIAL_NAME  # crash safety; removed after the final write
+    if args.resume:
+        if not partial.is_file() or (out / "calibration.json").exists():
+            print(f"--resume needs {partial} and no finished calibration.json in {out}",
+                  file=sys.stderr)
+            return 2
+    elif out.exists() and any(out.iterdir()):
         print(f"refusing to overwrite: {out} exists and is not empty", file=sys.stderr)
         return 2
     out.mkdir(parents=True, exist_ok=True)
@@ -397,19 +461,43 @@ def main(argv: list[str] | None = None) -> int:
     order = {name: i for i, name in enumerate(scenarios)}
     # round-robin over scenarios so an interrupted run leaves balanced replicate counts
     tasks.sort(key=lambda task: (task["r"], order[task["scenario"]]))
-    started = time.perf_counter()
+    fingerprint = {
+        "seed": args.seed, "n_symbols": args.n_symbols, "n_days": args.n_days,
+        "specs": list(args.specs), "block_resamples": args.block_resamples,
+        "iid_resamples": args.iid_resamples,
+    }
+    total = len(tasks)
     records: list[dict] = []
-    partial = out / "replicates.partial.jsonl"  # crash safety; removed after the final write
-    with partial.open("w", encoding="utf-8") as sink:
+    if args.resume:
+        try:
+            records, rewrite = load_partial(
+                partial, {n: e["replicates"] for n, e in scenarios.items()}, fingerprint)
+        except ResumeError as exc:
+            print(f"cannot resume: {exc}", file=sys.stderr)
+            return 2
+        if rewrite:  # keep only validated lines (atomic replace)
+            tmp = partial.with_suffix(".tmp")
+            tmp.write_text("".join(json.dumps(rec, default=str) + "\n" for rec in records),
+                           encoding="utf-8")
+            os.replace(tmp, partial)
+        done = {(rec["scenario"], rec["r"]) for rec in records}
+        tasks = [task for task in tasks if (task["scenario"], task["r"]) not in done]
+        print(f"resuming: {len(records)} replicates found, {len(tasks)} to run", file=sys.stderr)
+    prior = len(records)
+    started = time.perf_counter()
+    with partial.open("a" if args.resume else "w", encoding="utf-8") as sink:
+        if not args.resume:
+            sink.write(json.dumps({"_header": fingerprint}) + "\n")
+
         def note(rec: dict) -> None:
             records.append(rec)
             sink.write(json.dumps(rec, default=str) + "\n")
             sink.flush()
             if len(records) % 25 == 0:
-                print(f"{len(records)}/{len(tasks)} done ({time.perf_counter() - started:.0f}s)",
+                print(f"{len(records)}/{total} done ({time.perf_counter() - started:.0f}s)",
                       file=sys.stderr)
 
-        if args.workers <= 1:
+        if args.workers <= 1 or not tasks:
             for task in tasks:
                 note(run_replicate(task))
         else:
@@ -473,7 +561,9 @@ def main(argv: list[str] | None = None) -> int:
             "symbols replaced by SYN01.. and symbol_holdout cleared; split=train; frozen spec files untouched",
         ] + ([f"E1 resamples overridden to {args.block_resamples}"] if args.block_resamples else []),
         "timing": {"wall_seconds": wall, "workers": args.workers,
-                   "cpu_seconds": sum(rec["seconds"] for rec in records)},
+                   "cpu_seconds": sum(rec["seconds"] for rec in records),
+                   "resumed_from_replicates": prior if args.resume else 0,
+                   "note": "wall_seconds covers this session only when resumed"},
         "scenarios": scenarios,
     }
     (out / "calibration.json").write_text(
