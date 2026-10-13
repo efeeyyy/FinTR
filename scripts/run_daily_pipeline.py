@@ -41,6 +41,14 @@ content differs, so nothing was sent (a full resend needs ``notify_observations.
 --llm-note-dir ... --resend`` by hand; this script never passes ``--resend``).
 Without ``--llm-note`` the behaviour is exactly as before.
 
+Optional price revision check (``--price-diff``, default off): right after a
+successful collect (not with ``--dry-run``/``--skip-collect``) the offline
+``diff_price_history.py`` compares each symbol's newest saved price file with
+the previous one and writes a report under
+``data/interim/price_revisions/<run date>/``. The summary shows
+``price_diff: <none|changes:N|failed>``; whatever happens, the pipeline goes on
+and its exit code is unchanged (studies and the scanner read prices as before).
+
 No-new-data guard (before step 1; no initData prompt, no connection): the
 planner's window end ``E = R - end_offset_days`` is checked offline
 (``fintr.collection.new_data_guard``). If no new trading day is expected
@@ -77,7 +85,7 @@ financial value.
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -110,6 +118,9 @@ SCANNER_DIR = os.path.join("data", "interim", "scanner_daily")
 LLM_NOTES_DIR = os.path.join("data", "interim", "llm_notes")
 NOTIFY_DIR = os.path.join("data", "interim", "notify")
 PRICE_DIR = os.path.join("data", "interim", "price_history")
+PRICE_DIFF_DIR = os.path.join("data", "interim", "price_revisions")
+PRICE_DIFF_TIMEOUT_SECONDS = 600
+PRICE_DIFF_SUMMARY_PREFIX = "PRICE_DIFF: "
 DAILY_CONFIG = ROOT / "configs" / "collection" / "daily_miniapp_v1.json"
 LLM_NOTE_CONFIG = ROOT / "configs" / "llm_note" / "config_v1.json"
 LLM_NOTE_DEFAULT_RUN_SECONDS = 1800  # the config's max_run_seconds, if the file cannot be read
@@ -154,6 +165,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--layout", choices=("v2", "v3"), default="v3",
                         help="v3 (default): one short signal message a day; v2: summary + one "
                              "message per stock (the note, if any, as separate messages after it)")
+    parser.add_argument("--price-diff", action="store_true",
+                        help="after a successful collect, compare each symbol's newest saved price "
+                             "file with the previous one (offline, diff_price_history.py) and "
+                             "write the report under data/interim/price_revisions/<run date>/. "
+                             "Default off; never blocks the notice or changes the exit code; "
+                             "summary line price_diff: <none|changes:N|failed>")
     parser.add_argument("--llm-note", action="store_true",
                         help="run the Opus 5.5 analysis note step (llm_note.py). v3: before the "
                              "single message, whose lines carry the accepted evidence words (a "
@@ -190,6 +207,44 @@ def collect_command(args: argparse.Namespace) -> list[str]:
 def scan_command() -> list[str]:
     return [sys.executable, _script("scan_observations.py"), "--daily-root", DAILY_ROOT,
             "--out-dir", SCANNER_DIR, "--save", "--format", "json"]
+
+
+def price_diff_command(out_path: str) -> list[str]:
+    return [sys.executable, _script("diff_price_history.py"), "--price-dir", PRICE_DIR,
+            "--out", out_path]
+
+
+def run_price_diff(run_date_arg: str | None, now: datetime | None = None) -> str:
+    """Offline revision check of the saved price files (docs/price_history.md).
+
+    Returns ``none`` | ``changes:N`` | ``failed``; never raises and never
+    blocks the pipeline. The report goes to
+    ``data/interim/price_revisions/<run date>/price_diff_<UTC stamp>.json``
+    (the stamp keeps a same-day re-run from hitting the no-overwrite rule).
+    Only counts and the report path are printed, no price value."""
+    moment = datetime.now(timezone.utc) if now is None else now
+    day = run_date_arg or istanbul_today().isoformat()
+    out_path = os.path.join(PRICE_DIFF_DIR, day, f"price_diff_{moment.strftime('%Y%m%dT%H%M%SZ')}.json")
+    try:
+        proc = subprocess.run(price_diff_command(out_path), cwd=ROOT, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                              errors="replace", env=_child_env(), timeout=PRICE_DIFF_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return "failed"
+    if proc.returncode == 0:
+        return "none"
+    if proc.returncode != 2:
+        return "failed"
+    line = next((ln for ln in (proc.stdout or "").splitlines()
+                 if ln.startswith(PRICE_DIFF_SUMMARY_PREFIX)), "")
+    fields = dict(part.split("=", 1) for part in line[len(PRICE_DIFF_SUMMARY_PREFIX):].split()
+                  if "=" in part)
+    if not fields.get("changes", "").isdigit():
+        return "failed"
+    print(f"UYARI: kayıtlı fiyat dosyalarında geriye dönük değişiklik: {fields['changes']} tarih "
+          f"(yüksek {fields.get('high', '?')}, orta {fields.get('medium', '?')}, "
+          f"bilgi {fields.get('info', '?')}); rapor: {out_path}")
+    return f"changes:{fields['changes']}"
 
 
 def llm_note_command(as_of: str) -> list[str]:
@@ -462,6 +517,8 @@ def main(argv: list[str] | None = None) -> int:
             results += [("scan", "skipped"), ("notify", "skipped")]
             _summary(results)
             return 0
+        if args.price_diff:
+            results.append(("price_diff", run_price_diff(args.run_date)))
 
     proc = subprocess.run(scan_command(), cwd=ROOT, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True, encoding="utf-8",

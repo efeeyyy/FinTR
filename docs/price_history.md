@@ -104,3 +104,55 @@ $env:PYTHONPATH = "$PWD\src"
   --universe configs\universe\bist30.json `
   --start-date 2023-01-02 --end-date 2026-09-25 --save
 ```
+
+## Geriye dönük revizyon izleme (`diff_price_history.py`)
+
+Yahoo resmî olmayan ikincil kaynaktır ve kayıtlı geçmişi sonradan değiştirebilir
+(2026-10-10 elle fark: 2026-10-09'da çekilen dosyalarda 7 işaret satırı yoktu;
+TUPRS/TRALT `adjusted_close` 932 tarihte revize edilmişti, ham OHLCV aynıydı).
+Capture dosyaları üzerine yazılmadığı için revizyon, aynı sembolün **yeni bir
+dosyasının bir önceki dosyayla çakışan tarihlerde uyuşmaması** olarak görünür.
+`scripts/diff_price_history.py` (mantık: `fintr.data.price_revisions`) bunu
+çevrimdışı tespit eder; ağ yok, fiyat dosyalarına dokunmaz.
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\diff_price_history.py `
+  --out data\interim\price_revisions\2026-10-13\manual.json
+# tek çift: --old <eski dosya> --new <yeni dosya> (aynı sembol; sıra verildiği gibi)
+# --symbols AKBNK,TUPRS  --tolerance 1e-6  --price-dir <kök>
+```
+
+- Karşılaştırma: her `price_history/<SEMBOL>/` için (`_incomplete/` hariç) en yeni
+  dosya ile bir öncekisi, ikisinin `requested_start..requested_end` kesişiminde.
+  **Sıra çekim zamanına** (`capture_metadata.accessed_at_utc`) göredir, dosya adındaki
+  bitiş tarihine göre değil (2026-10-09'da bitişi 10-08 olan dosya, 10-09 olandan sonra çekildi).
+  Tek dosyalı sembol karşılaştırılmaz (`single_file`); kesişim yoksa `no_overlap`.
+- Tarih başına tek satır, ilk eşleşen tür: `removed` / `added` (bar yalnız bir dosyada),
+  `marker_status_changed` (`trading`/`placeholder`/`no_data_bar` sınıfı değişti; sınıf
+  `fintr.features.price_join.classify_price_bar` kuralıdır, `unexpected_trading_bar`
+  burada `trading` yazılır), `raw_ohlcv_changed` (open/high/low/close/volume),
+  `adjusted_close_changed` (yalnız `adjusted_close`).
+- Bağıl fark = `|a-b| / max(|a|,|b|)` (aynı alan, iki dosya). Tolerans altı
+  (varsayılan `1e-6`, `--tolerance`) float gürültüsü sayılır, satır üretmez, yalnız
+  `noise_ignored_dates` sayısına girer. Null <-> dolu geçişi her zaman değişikliktir.
+- Önem (bir kural, istatistiksel eşik değil): `high` = işlem barı eklendi/silindi/sınıf
+  değiştirdi ya da işlem barının ham OHLCV değeri değişti; `medium` = yalnız
+  `adjusted_close` değişti, ya da işaret barı başka işaret sınıfına geçti / işaret barının
+  ham değeri değişti; `info` = işaret satırı (`no_data_bar`/`placeholder`) eklendi/silindi.
+- Rapor (`--out`, JSON, üzerine yazılmaz): `schema_version` (`fintr_price_revisions_report_v1`),
+  `parameters`, her sembol için eski/yeni dosyanın yolu + `sha256` + `accessed_at_utc` +
+  aralık + bar sayısı, tür/önem sayıları ve tarih satırları (tarih, tür, önem, eski/yeni
+  sınıf, değişen alanlar, en büyük bağıl fark). Raporda fiyat/hacim **değeri yoktur**.
+- Çıkış kodu: `0` değişiklik yok, `2` değişiklik bulundu (uyarı, hata değil), `1` hata
+  (okunamayan/geçersiz dosya, bilinmeyen sembol, `--out` zaten var). Son stdout satırı
+  `PRICE_DIFF: changes=N high=H medium=M info=I errors=E report=<yol>`.
+- Sınırlar: yalnız ardışık iki dosyayı karşılaştırır; bir değişiklik bir sonraki yeni
+  dosyaya kadar her çalıştırmada yeniden raporlanır. Tatil takvimi bu aracın dışındadır
+  (`removed`/`marker_status_changed` bir tatil değerlendirmesi yapmaz). Revizyonun nedeni
+  (kurumsal işlem, Yahoo kaynak değişikliği) bu araçla doğrulanmaz.
+
+`scripts/run_daily_pipeline.py --price-diff` (varsayılan kapalı) aynı kontrolü başarılı
+`collect` sonrasında çalıştırır ve raporu `data/interim/price_revisions/<çalışma günü>/
+price_diff_<UTC damga>.json` altına yazar; özet satırı `price_diff: <none|changes:N|failed>`.
+Bildirimi engellemez, çıkış kodunu değiştirmez; çalışmalar ve tarayıcı fiyatları eskisi gibi okur.
