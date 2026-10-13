@@ -25,13 +25,19 @@ STEP_INDEX = {"collect_daily.py": 0, "scan_observations.py": 1, "notify_observat
 TELEGRAM_ENV = {"FINTR_TELEGRAM_BOT_TOKEN": "test-token", "FINTR_TELEGRAM_CHAT_ID": "1"}
 
 
-def _go(argv, codes=(0, 0, 0), saved=True, scan_err=None, notify_err="", env=None):
+def _go(argv, codes=(0, 0, 0), saved=True, scan_err=None, notify_err="", env=None,
+        forward=(0, "forward_log: appended\nFORWARD_LOG_STATUS: appended\n")):
     calls = []
     if env is None:
         env = TELEGRAM_ENV if "--send" in argv else {}
 
     def run(cmd, **kwargs):
         calls.append((cmd, kwargs))
+        if isinstance(forward, Exception):
+            if Path(cmd[1]).name == "forward_log.py":
+                raise forward
+        if Path(cmd[1]).name == "forward_log.py":
+            return subprocess.CompletedProcess(cmd, forward[0], stdout=forward[1], stderr="")
         idx = STEP_INDEX[Path(cmd[1]).name]
         err = ""
         if idx == 1:
@@ -241,6 +247,48 @@ class PipelineTests(unittest.TestCase):
         for cmd, kwargs in calls[1:]:
             self.assertEqual(kwargs["env"]["PYTHONIOENCODING"], "utf-8")
             self.assertEqual(kwargs["errors"], "replace")
+
+    def test_forward_log_is_off_by_default(self):
+        rc, calls, out, _ = _go(["--send"])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("forward_log.py", _names(calls))
+        self.assertNotIn("forward_log:", out)
+
+    def test_forward_log_runs_last_after_a_sent_notice(self):
+        rc, calls, out, _ = _go(["--send", "--forward-log"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(_names(calls)[-1], "forward_log.py")
+        self.assertEqual(calls[-1][0][2:], ["append", "--as-of", "2026-10-01"])
+        self.assertIn("forward_log: appended", out)
+
+    def test_forward_log_skipped_for_dry_run_notify(self):
+        rc, calls, out, _ = _go(["--forward-log"])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("forward_log.py", _names(calls))
+        self.assertIn("forward_log: skipped_dry_run", out)
+
+    def test_forward_log_runs_when_notice_was_already_sent(self):
+        rc, calls, out, _ = _go(["--send", "--forward-log"], codes=(0, 0, 1),
+                                notify_err="Notify failed: receipt zaten var\n",
+                                forward=(0, "FORWARD_LOG_STATUS: noop\n"))
+        self.assertEqual(rc, 0)
+        self.assertIn("forward_log: noop", out)
+
+    def test_forward_log_failure_never_changes_exit_code(self):
+        for forward, expected in (
+            ((1, "FORWARD_LOG_STATUS: refused\n"), "failed:exit_1"),
+            ((0, "no status line\n"), "failed:no_status"),
+            (subprocess.TimeoutExpired("x", 1), "failed:timeout"),
+            (OSError("boom"), "failed:OSError"),
+        ):
+            rc, _, out, _ = _go(["--send", "--forward-log"], forward=forward)
+            self.assertEqual(rc, 0)
+            self.assertIn(f"forward_log: {expected}", out)
+
+    def test_forward_log_not_run_when_pipeline_stopped(self):
+        rc, calls, _, _ = _go(["--send", "--forward-log"], codes=(0, 0, 1), notify_err="Notify failed: x\n")
+        self.assertEqual(rc, 1)
+        self.assertNotIn("forward_log.py", _names(calls))
 
     def test_extract_as_of(self):
         self.assertEqual(rdp.extract_as_of(f"x\nObservations saved: {SAVED}\n"), ("2026-10-01", SAVED))

@@ -53,6 +53,14 @@ unsettled day (or an unreadable settlement state) keeps the collection, for
 custody settlement. ``--force-collect`` bypasses the guard; ``--dry-run`` and
 ``--skip-collect`` are not guarded. Any guard error falls back to collecting.
 
+Optional last step ``--forward-log`` (default off; docs/forward_log.md): after a
+sent (or already sent) notice, ``forward_log.py append --as-of <as_of>`` adds the
+SHA-256 of the day's scanner/notify/llm_notes files to the hash-chained
+``forward_log/manifest.jsonl``. The summary shows ``forward_log: appended|noop|
+skipped_dry_run|failed:...``; a failure (e.g. files changed since an earlier
+entry: use ``forward_log.py append --revision`` by hand) never changes the
+notice or the exit code. Committing the manifest stays a manual step.
+
 Missing-close warning (after the steps): when the scan's as_of is older than the
 collected window end E, E is a weekday without a close in the saved price
 history (not a holiday; Yahoo had not published it, so the price step did not
@@ -107,6 +115,8 @@ LLM_NOTE_CONFIG = ROOT / "configs" / "llm_note" / "config_v1.json"
 LLM_NOTE_DEFAULT_RUN_SECONDS = 1800  # the config's max_run_seconds, if the file cannot be read
 LLM_NOTE_TIMEOUT_MARGIN_SECONDS = 300
 LLM_STATUS_PREFIX = "LLM_NOTE_STATUS: "
+FORWARD_LOG_STATUS_PREFIX = "FORWARD_LOG_STATUS: "
+FORWARD_LOG_TIMEOUT_SECONDS = 120
 SAVED_PREFIX = "Observations saved:"
 EXISTS_PREFIX = "Scan failed: output file already exists (no overwrite):"
 RECEIPT_EXISTS_MARK = "receipt zaten var"
@@ -151,6 +161,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "message); v2: after the notice, sent as its own message(s) with "
                              "its own receipt. Default off; its failure never changes the exit "
                              "code")
+    parser.add_argument("--forward-log", action="store_true",
+                        help="after a sent (or already sent) notice, append the day's artifact "
+                             "hashes to forward_log/manifest.jsonl (scripts/forward_log.py; "
+                             "docs/forward_log.md). Default off; the summary shows "
+                             "forward_log: appended|noop|skipped_dry_run|failed:...; its failure "
+                             "never changes the notice or the exit code")
     return parser
 
 
@@ -247,6 +263,29 @@ def run_llm_note(as_of: str, timeout: float | None = None) -> str:
         if line.startswith(LLM_STATUS_PREFIX):
             return line[len(LLM_STATUS_PREFIX):].strip() or f"error:exit_{proc.returncode}"
     return f"error:exit_{proc.returncode}"
+
+
+def run_forward_log(as_of: str) -> str:
+    """Append the day's artifact hashes to the forward log; return a status
+    string (``appended``, ``noop`` or ``failed:...``). Never raises and never
+    decides the pipeline's exit code."""
+    try:
+        proc = subprocess.run([sys.executable, _script("forward_log.py"), "append", "--as-of", as_of],
+                              cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                              encoding="utf-8", errors="replace", env=_child_env(),
+                              timeout=FORWARD_LOG_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return "failed:timeout"
+    except Exception as exc:  # the log must never stop or change the notice
+        return f"failed:{type(exc).__name__}"
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    if proc.returncode != 0:
+        return f"failed:exit_{proc.returncode}"
+    for line in reversed((proc.stdout or "").splitlines()):
+        if line.startswith(FORWARD_LOG_STATUS_PREFIX):
+            return line[len(FORWARD_LOG_STATUS_PREFIX):].strip() or "failed:no_status"
+    return "failed:no_status"
 
 
 def run_note_notify(as_of: str, send: bool) -> str:
@@ -477,6 +516,14 @@ def main(argv: list[str] | None = None) -> int:
         # After the deterministic notice has gone out: nothing below can
         # change it or the exit code; failures only show up in the summary.
         results += run_note_steps(as_of, args.send)
+
+    if args.forward_log:
+        # Last, so the logged file set is the day's final one. A dry-run notify
+        # leaves no receipt, so logging then would only force a revision later.
+        if args.send or already_sent:
+            results.append(("forward_log", run_forward_log(as_of)))
+        else:
+            results.append(("forward_log", "skipped_dry_run"))
 
     _summary(results, **summary)
     if already_sent:
