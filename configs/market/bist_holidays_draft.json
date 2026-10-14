@@ -1,0 +1,870 @@
+{
+  "schema_version": 1,
+  "status": "draft_unverified",
+  "verified_by": null,
+  "market": "BIST equity (Pay Piyasası)",
+  "coverage": {
+    "start": "2023-01-01",
+    "end": "2027-03-31"
+  },
+  "generated_utc": "2026-10-14",
+  "notes": [
+    "Taslak: Efe resmi listeyle doğrulamadan koda bağlanmamalı.",
+    "Hafta sonu günleri de resmi tablolarda geçtikleri için listelenmiştir (weekday alanı).",
+    "Yarım gün seans bitişi (13:00) resmi 'Resmi Tatil Günleri' sayfasından; PDF'ler yalnız 'yarım gün' der.",
+    "İdari izin köprü günleri BIST tarafından kapalı ilan edilmediği sürece dahil edilmemiştir; resmi tablolarda böyle gün görülmedi.",
+    "Kapsam dışı olası olağanüstü durdurmalar (tek hisse, devre kesici, teknik arıza) listelenmemiştir."
+  ],
+  "sources": [
+    {
+      "id": "bist_pay_2023_pdf",
+      "url": "https://www.borsaistanbul.com/files/pay-piyasasi-2023-yili-tatil-tablosu.pdf",
+      "accessed_utc": "2026-10-14T13:45:11Z",
+      "title": "BORSA İSTANBUL A.Ş. PAY PİYASASI 2023 YILI TATİL TABLOSU (EK-3)"
+    },
+    {
+      "id": "bist_pay_2024_pdf",
+      "url": "https://www.borsaistanbul.com/files/pay-piyasasi-2024-yili-tatil-tablosu.pdf",
+      "accessed_utc": "2026-10-14T13:45:11Z",
+      "title": "BORSA İSTANBUL A.Ş. PAY PİYASASI 2024 YILI TATİL TABLOSU (EK-3)"
+    },
+    {
+      "id": "bist_pay_2025_pdf",
+      "url": "https://www.borsaistanbul.com/files/pay-piyasasi-2025-yili-tatil-tablosu.pdf",
+      "accessed_utc": "2026-10-14T13:45:11Z",
+      "title": "BORSA İSTANBUL A.Ş. PAY PİYASASI 2025 YILI TATİL TABLOSU (EK-3)"
+    },
+    {
+      "id": "bist_pay_2026_pdf",
+      "url": "https://www.borsaistanbul.com/files/pay-piyasasi-2026-yili-tatil-tablosu.pdf",
+      "accessed_utc": "2026-10-14T13:44:37Z",
+      "title": "BORSA İSTANBUL A.Ş. PAY PİYASASI 2026 YILI TATİL TABLOSU (EK-3)"
+    },
+    {
+      "id": "bist_ann_2023",
+      "url": "https://borsaistanbul.com/files/2023_tatil-duyurusu.pdf",
+      "accessed_utc": "2026-10-14T13:45:11Z",
+      "title": "2023 Yılı Resmi Tatil Günleri Nedeniyle ... Esasları Hk. (Sayı E-18454353-100.04.02-13031, 07.12.2022)"
+    },
+    {
+      "id": "bist_ann_2025",
+      "url": "https://www.borsaistanbul.com/files/Duyuru-31449.pdf",
+      "accessed_utc": "2026-10-14T13:44:37Z",
+      "title": "2025 Yılı Resmi Tatil Günleri Nedeniyle ... Esasları Hk. (Sayı E-18454353-100.04.02-31449, 24.12.2024)"
+    },
+    {
+      "id": "bist_ann_2026",
+      "url": "https://borsaistanbul.com/files/41625-sayili-duyurumuz-hk.-turkce-04122025.pdf",
+      "accessed_utc": "2026-10-14T13:44:37Z",
+      "title": "2026 Yılı Resmi Tatil Günleri Nedeniyle ... Esasları Hk. (Sayı E-18454353-100.04.02-41625, 04.12.2025)"
+    },
+    {
+      "id": "bist_official_holidays_en",
+      "url": "https://www.borsaistanbul.com/en/official-holidays",
+      "accessed_utc": "2026-10-14T13:44:24Z",
+      "title": "Borsa İstanbul - Official Holidays (tüm piyasalar; gün başına 'Closed' / 'Until 13:00'; Pay Piyasası'na özgü sütun yok)"
+    },
+    {
+      "id": "diyanet_resmi_tatil_2027",
+      "url": "https://vakithesaplama.diyanet.gov.tr/icerik.php?icerik=159",
+      "accessed_utc": "2026-10-14T13:46:20Z",
+      "title": "Diyanet İşleri Başkanlığı Vakit Hesaplama - 2027 Yılı Resmi Tatil Günleri (2429 sayılı Kanun'a göre)"
+    },
+    {
+      "id": "diyanet_dini_gunler_2027",
+      "url": "https://vakithesaplama.diyanet.gov.tr/icerik.php?icerik=154",
+      "accessed_utc": "2026-10-14T13:46:09Z",
+      "title": "Diyanet İşleri Başkanlığı Vakit Hesaplama - 2027 Dini Günler Listesi"
+    },
+    {
+      "id": "eq2023_gedik_copy",
+      "url": "https://gedik.com/duyurular-ve-kampanyalar/duyurular/pay-ve-pay-endeksi-turev-pazarlarinin-5-is-gunu-kapatilmasi-ve-8-subat-2023-tarihli-islemlerin-iptali",
+      "accessed_utc": "2026-10-14T13:50:00Z",
+      "title": "ÜÇÜNCÜ TARAF (aracı kurum) kopyası: Pay ve Pay Endeksi Türev Pazarlarının 5 İş Günü Kapatılması ve 8 Şubat 2023 Tarihli İşlemlerin İptali (yalnız arama sonucu metninden görüldü, sayfa açılmadı; accessed_utc yaklaşık)"
+    },
+    {
+      "id": "eq2023_qnb_copy",
+      "url": "https://www.qnbinvest.com.tr/duyuru/borsa-istanbul-as-duyurusu-08022023",
+      "accessed_utc": "2026-10-14T13:48:00Z",
+      "title": "ÜÇÜNCÜ TARAF (aracı kurum) kopyası: Borsa İstanbul A.Ş. Duyurusu (08.02.2023); accessed_utc yaklaşık"
+    },
+    {
+      "id": "eq2023_timeturk_reopen",
+      "url": "https://www.timeturk.com/genel/borsa-yarin-15-subat-acik-mi-kapali-mi/haber-1760703",
+      "accessed_utc": "2026-10-14T13:48:00Z",
+      "title": "ÜÇÜNCÜ TARAF haber (yalnız arama sonucu özeti): 15 Şubat 2023 yeniden açılış; accessed_utc yaklaşık"
+    }
+  ],
+  "days": [
+    {
+      "date": "2023-01-01",
+      "weekday": "Sunday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Yılbaşı",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2023-02-08",
+      "weekday": "Wednesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Deprem nedeniyle Pay Piyasası işlemlerinin durdurulması (08.02.2023 11:00) ve o günkü tüm işlemlerin iptali",
+      "source_id": "eq2023_gedik_copy",
+      "status": "uncertain",
+      "note": "Olağanüstü kapanış (resmi tatil değil). BIST/KAP duyurusunun üçüncü taraf kopyalarından; resmi metin doğrulanmadı. Gün içinde işlem başladı, 11:00 itibarıyla durduruldu; o günkü tüm işlemler iptal edildi (BİAŞ Yönetmeliği md.33/1-c); geçerli işlem verisi beklenmez. Ek kaynak: eq2023_qnb_copy."
+    },
+    {
+      "date": "2023-02-09",
+      "weekday": "Thursday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Deprem nedeniyle Pay Piyasası kapalı (5 iş günü kapatma)",
+      "source_id": "eq2023_gedik_copy",
+      "status": "uncertain",
+      "note": "Olağanüstü kapanış (resmi tatil değil). BIST/KAP duyurusunun üçüncü taraf kopyalarından; resmi metin doğrulanmadı. '8 Şubat 2023 11:00 itibarıyla 5 iş günü (14 Şubat akşamına kadar)'; yeniden açılış 15.02.2023 (eq2023_timeturk_reopen, ikincil)."
+    },
+    {
+      "date": "2023-02-10",
+      "weekday": "Friday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Deprem nedeniyle Pay Piyasası kapalı (5 iş günü kapatma)",
+      "source_id": "eq2023_gedik_copy",
+      "status": "uncertain",
+      "note": "Olağanüstü kapanış (resmi tatil değil). BIST/KAP duyurusunun üçüncü taraf kopyalarından; resmi metin doğrulanmadı. '8 Şubat 2023 11:00 itibarıyla 5 iş günü (14 Şubat akşamına kadar)'; yeniden açılış 15.02.2023 (eq2023_timeturk_reopen, ikincil)."
+    },
+    {
+      "date": "2023-02-13",
+      "weekday": "Monday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Deprem nedeniyle Pay Piyasası kapalı (5 iş günü kapatma)",
+      "source_id": "eq2023_gedik_copy",
+      "status": "uncertain",
+      "note": "Olağanüstü kapanış (resmi tatil değil). BIST/KAP duyurusunun üçüncü taraf kopyalarından; resmi metin doğrulanmadı. '8 Şubat 2023 11:00 itibarıyla 5 iş günü (14 Şubat akşamına kadar)'; yeniden açılış 15.02.2023 (eq2023_timeturk_reopen, ikincil)."
+    },
+    {
+      "date": "2023-02-14",
+      "weekday": "Tuesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Deprem nedeniyle Pay Piyasası kapalı (5 iş günü kapatma)",
+      "source_id": "eq2023_gedik_copy",
+      "status": "uncertain",
+      "note": "Olağanüstü kapanış (resmi tatil değil). BIST/KAP duyurusunun üçüncü taraf kopyalarından; resmi metin doğrulanmadı. '8 Şubat 2023 11:00 itibarıyla 5 iş günü (14 Şubat akşamına kadar)'; yeniden açılış 15.02.2023 (eq2023_timeturk_reopen, ikincil)."
+    },
+    {
+      "date": "2023-04-20",
+      "weekday": "Thursday",
+      "kind": "half_day",
+      "session_end_local": "13:00",
+      "name_tr": "Ramazan Bayramı Arifesi (yarım gün)",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": "Yarım gün: tablo 'yarım gün seans yapılacaktır' der; 13:00 bitiş saati resmi 'Resmi Tatil Günleri' sayfasından (bist_official_holidays_en, 'Until 13:00')."
+    },
+    {
+      "date": "2023-04-21",
+      "weekday": "Friday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2023-04-22",
+      "weekday": "Saturday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2023-04-23",
+      "weekday": "Sunday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı / Ulusal Egemenlik ve Çocuk Bayramı",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2023-05-01",
+      "weekday": "Monday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Emek ve Dayanışma Günü",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2023-05-19",
+      "weekday": "Friday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Atatürk'ü Anma, Gençlik ve Spor Bayramı",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2023-06-27",
+      "weekday": "Tuesday",
+      "kind": "half_day",
+      "session_end_local": "13:00",
+      "name_tr": "Kurban Bayramı Arifesi (yarım gün)",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": "Yarım gün: tablo 'yarım gün seans yapılacaktır' der; 13:00 bitiş saati resmi 'Resmi Tatil Günleri' sayfasından (bist_official_holidays_en, 'Until 13:00')."
+    },
+    {
+      "date": "2023-06-28",
+      "weekday": "Wednesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2023-06-29",
+      "weekday": "Thursday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2023-06-30",
+      "weekday": "Friday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2023-07-01",
+      "weekday": "Saturday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2023-07-15",
+      "weekday": "Saturday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Demokrasi ve Milli Birlik Günü",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2023-08-30",
+      "weekday": "Wednesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Zafer Bayramı",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2023-10-28",
+      "weekday": "Saturday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Cumhuriyet Bayramı Arifesi",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "uncertain",
+      "note": "Çelişki: PDF'te '(Yarım gün)' etiketi var ama aynı PDF 28 ve 29 Ekim 2023'te 'seans yapılmayacaktır' der; resmi sayfa 'Until 13:00' gösterir. Cumartesi olduğu için fiyat verisini etkilemez. Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2023-10-29",
+      "weekday": "Sunday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Cumhuriyet Bayramı",
+      "source_id": "bist_pay_2023_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2024-01-01",
+      "weekday": "Monday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Yılbaşı",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2024-04-09",
+      "weekday": "Tuesday",
+      "kind": "half_day",
+      "session_end_local": "13:00",
+      "name_tr": "Ramazan Bayramı Arifesi (yarım gün)",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": "Yarım gün: tablo 'yarım gün seans yapılacaktır' der; 13:00 bitiş saati resmi 'Resmi Tatil Günleri' sayfasından (bist_official_holidays_en, 'Until 13:00')."
+    },
+    {
+      "date": "2024-04-10",
+      "weekday": "Wednesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2024-04-11",
+      "weekday": "Thursday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2024-04-12",
+      "weekday": "Friday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2024-04-23",
+      "weekday": "Tuesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ulusal Egemenlik ve Çocuk Bayramı",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2024-05-01",
+      "weekday": "Wednesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Emek ve Dayanışma Günü",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2024-05-19",
+      "weekday": "Sunday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Atatürk'ü Anma, Gençlik ve Spor Bayramı",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2024-06-15",
+      "weekday": "Saturday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı Arifesi (Cumartesi)",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": "PDF 'Arefe-Yarım gün' etiketler, fakat 15 Haziran 'seans yapılmayacaktır' listesinde; resmi sayfa 'Closed'. Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2024-06-16",
+      "weekday": "Sunday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2024-06-17",
+      "weekday": "Monday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2024-06-18",
+      "weekday": "Tuesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2024-06-19",
+      "weekday": "Wednesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2024-07-15",
+      "weekday": "Monday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Demokrasi ve Milli Birlik Günü",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2024-08-30",
+      "weekday": "Friday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Zafer Bayramı",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2024-10-28",
+      "weekday": "Monday",
+      "kind": "half_day",
+      "session_end_local": "13:00",
+      "name_tr": "Cumhuriyet Bayramı Arifesi (yarım gün)",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": "Yarım gün: tablo 'yarım gün seans yapılacaktır' der; 13:00 bitiş saati resmi 'Resmi Tatil Günleri' sayfasından (bist_official_holidays_en, 'Until 13:00')."
+    },
+    {
+      "date": "2024-10-29",
+      "weekday": "Tuesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Cumhuriyet Bayramı",
+      "source_id": "bist_pay_2024_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2025-01-01",
+      "weekday": "Wednesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Yılbaşı",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2025-03-29",
+      "weekday": "Saturday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı Arifesi (Cumartesi)",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": "PDF 'Arife-Yarım gün' etiketler, resmi sayfa 'Closed'; cumartesi. Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2025-03-30",
+      "weekday": "Sunday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2025-03-31",
+      "weekday": "Monday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2025-04-01",
+      "weekday": "Tuesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2025-04-23",
+      "weekday": "Wednesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ulusal Egemenlik ve Çocuk Bayramı",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2025-05-01",
+      "weekday": "Thursday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Emek ve Dayanışma Günü",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2025-05-19",
+      "weekday": "Monday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Atatürk'ü Anma, Gençlik ve Spor Bayramı",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2025-06-05",
+      "weekday": "Thursday",
+      "kind": "half_day",
+      "session_end_local": "13:00",
+      "name_tr": "Kurban Bayramı Arifesi (yarım gün)",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": "Yarım gün: tablo 'yarım gün seans yapılacaktır' der; 13:00 bitiş saati resmi 'Resmi Tatil Günleri' sayfasından (bist_official_holidays_en, 'Until 13:00')."
+    },
+    {
+      "date": "2025-06-06",
+      "weekday": "Friday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2025-06-07",
+      "weekday": "Saturday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2025-06-08",
+      "weekday": "Sunday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2025-06-09",
+      "weekday": "Monday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2025-07-15",
+      "weekday": "Tuesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Demokrasi ve Milli Birlik Günü",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2025-08-30",
+      "weekday": "Saturday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Zafer Bayramı",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2025-10-28",
+      "weekday": "Tuesday",
+      "kind": "half_day",
+      "session_end_local": "13:00",
+      "name_tr": "Cumhuriyet Bayramı Arifesi (yarım gün)",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": "Yarım gün: tablo 'yarım gün seans yapılacaktır' der; 13:00 bitiş saati resmi 'Resmi Tatil Günleri' sayfasından (bist_official_holidays_en, 'Until 13:00')."
+    },
+    {
+      "date": "2025-10-29",
+      "weekday": "Wednesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Cumhuriyet Bayramı",
+      "source_id": "bist_pay_2025_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2026-01-01",
+      "weekday": "Thursday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Yılbaşı",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2026-03-19",
+      "weekday": "Thursday",
+      "kind": "half_day",
+      "session_end_local": "13:00",
+      "name_tr": "Ramazan Bayramı Arifesi (yarım gün)",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": "Yarım gün: tablo 'yarım gün seans yapılacaktır' der; 13:00 bitiş saati resmi 'Resmi Tatil Günleri' sayfasından (bist_official_holidays_en, 'Until 13:00')."
+    },
+    {
+      "date": "2026-03-20",
+      "weekday": "Friday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2026-03-21",
+      "weekday": "Saturday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2026-03-22",
+      "weekday": "Sunday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2026-04-23",
+      "weekday": "Thursday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ulusal Egemenlik ve Çocuk Bayramı",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2026-05-01",
+      "weekday": "Friday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Emek ve Dayanışma Günü",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2026-05-19",
+      "weekday": "Tuesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Atatürk'ü Anma, Gençlik ve Spor Bayramı",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2026-05-26",
+      "weekday": "Tuesday",
+      "kind": "half_day",
+      "session_end_local": "13:00",
+      "name_tr": "Kurban Bayramı Arifesi (yarım gün)",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": "Yarım gün: tablo 'yarım gün seans yapılacaktır' der; 13:00 bitiş saati resmi 'Resmi Tatil Günleri' sayfasından (bist_official_holidays_en, 'Until 13:00')."
+    },
+    {
+      "date": "2026-05-27",
+      "weekday": "Wednesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2026-05-28",
+      "weekday": "Thursday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2026-05-29",
+      "weekday": "Friday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2026-05-30",
+      "weekday": "Saturday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Kurban Bayramı",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2026-07-15",
+      "weekday": "Wednesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Demokrasi ve Milli Birlik Günü",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2026-08-30",
+      "weekday": "Sunday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Zafer Bayramı",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": "Hafta sonuna denk geliyor (zaten işlem günü değil)."
+    },
+    {
+      "date": "2026-10-28",
+      "weekday": "Wednesday",
+      "kind": "half_day",
+      "session_end_local": "13:00",
+      "name_tr": "Cumhuriyet Bayramı Arifesi (yarım gün)",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": "Yarım gün: tablo 'yarım gün seans yapılacaktır' der; 13:00 bitiş saati resmi 'Resmi Tatil Günleri' sayfasından (bist_official_holidays_en, 'Until 13:00')."
+    },
+    {
+      "date": "2026-10-29",
+      "weekday": "Thursday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Cumhuriyet Bayramı",
+      "source_id": "bist_pay_2026_pdf",
+      "status": "official",
+      "note": ""
+    },
+    {
+      "date": "2027-01-01",
+      "weekday": "Friday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Yılbaşı",
+      "source_id": "diyanet_resmi_tatil_2027",
+      "status": "expected_not_announced",
+      "note": "Borsa İstanbul 2027 tablosu henüz bulunamadı (2026-10-14); Diyanet 2027 resmi tatil listesinden (2429 sayılı Kanun) beklenen gün. Sabit tarihli milli tatil."
+    },
+    {
+      "date": "2027-03-08",
+      "weekday": "Monday",
+      "kind": "half_day",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı Arifesi (yarım gün)",
+      "source_id": "diyanet_resmi_tatil_2027",
+      "status": "expected_not_announced",
+      "note": "Borsa İstanbul 2027 tablosu henüz bulunamadı (2026-10-14); Diyanet 2027 resmi tatil listesinden (2429 sayılı Kanun) beklenen gün. Diyanet: arefe 1/2 gün (08 Mart Pazartesi). BIST seans bitişi (önceki yıllarda 13:00) 2027 için duyurulmadı."
+    },
+    {
+      "date": "2027-03-09",
+      "weekday": "Tuesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı 1. gün",
+      "source_id": "diyanet_resmi_tatil_2027",
+      "status": "expected_not_announced",
+      "note": "Borsa İstanbul 2027 tablosu henüz bulunamadı (2026-10-14); Diyanet 2027 resmi tatil listesinden (2429 sayılı Kanun) beklenen gün. "
+    },
+    {
+      "date": "2027-03-10",
+      "weekday": "Wednesday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı 2. gün",
+      "source_id": "diyanet_resmi_tatil_2027",
+      "status": "expected_not_announced",
+      "note": "Borsa İstanbul 2027 tablosu henüz bulunamadı (2026-10-14); Diyanet 2027 resmi tatil listesinden (2429 sayılı Kanun) beklenen gün. "
+    },
+    {
+      "date": "2027-03-11",
+      "weekday": "Thursday",
+      "kind": "full_closure",
+      "session_end_local": null,
+      "name_tr": "Ramazan Bayramı 3. gün",
+      "source_id": "diyanet_resmi_tatil_2027",
+      "status": "expected_not_announced",
+      "note": "Borsa İstanbul 2027 tablosu henüz bulunamadı (2026-10-14); Diyanet 2027 resmi tatil listesinden (2429 sayılı Kanun) beklenen gün. "
+    }
+  ]
+}
