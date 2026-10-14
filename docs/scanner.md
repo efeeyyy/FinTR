@@ -293,6 +293,76 @@ $env:PYTHONPATH = "$PWD\src"
 - `--save`: `data/interim/scanner/<as_of>/observations.json` dosyasına yazar;
   var olan dosyanın üzerine asla yazmaz.
 
+## Haftalık replay (`scripts/replay_scans.py`, E3)
+
+Dondurulmuş tarayıcıyı saklı veriyle son N `as_of` için yeniden çalıştırır ve
+`data/interim/scanner_daily/<as_of>/observations.json` ile alan alan karşılaştırır
+(`docs/research/signal_bot_best_practices_2026-10-13.md` E3). Fark = kod kayması,
+kural değişikliği ya da veri revizyonu; **tespit edilir ve sınıflanır, sessizce
+geçilmez**. Ağ, Telegram, model çağrısı yok; `data/interim/studies/` okunmaz;
+günlük boru hattına eklenmez (haftalık, ör. Cumartesi; bkz. runbook 6k).
+
+```powershell
+.\.venv\Scripts\python.exe scripts\replay_scans.py                    # son 5, iki mod
+.\.venv\Scripts\python.exe scripts\replay_scans.py --as-of 2026-10-09,2026-10-13 --mode point-in-time
+```
+
+- `--last N` (varsayılan 5) ya da `--as-of D1,D2`; `--mode point-in-time|current|both`
+  (varsayılan `both`); `--scanner-dir/--period-dir/--daily-root/--price-dir`
+  (varsayılanlar günlük boru hattıyla aynı); `--out` (yoksa
+  `data/interim/scanner_replay/<UTC>/replay_report.json`; var olan dosyaya asla yazmaz,
+  işe başlamadan reddeder).
+- Çıkış: 0 hepsi aynı, 2 fark, 1 hata (hata önceliklidir: eksik replay "aynı" sayılmaz).
+  Son satır `REPLAY: as_of=K identical=I diff=D errors=E`; I/D/E (as_of, mod)
+  çiftlerini sayar (`both` ile 2K'ya kadar).
+- Her as_of için kaydedilen belgenin `symbols` anahtarlarına, kendi son `as_of` ve tarama
+  sayısına göre gruplanıp tarayıcı yeniden çalıştırılır (`--as-of` her zaman açık verilir;
+  `as_of_source` karşılaştırılmaz). Şema v2 ise `--daily-root` verilir.
+
+### Neden iki mod: günlük kayıtlar sonradan revize edilir
+
+T+2 takas revizyonu ve gecikmeli metadata, günlük kayıtlara yeni dosya (yeni pencere)
+olarak eklenir; eski dosya değişmez. Bugünkü tüm veriyle yapılan saf yeniden çalıştırma
+bu yüzden meşru olarak farklı çıkabilir. İki mod ayrımı sağlar:
+
+1. **`point-in-time`**: `scan_observations.py --data-cutoff-utc <özgün generated_at_utc>`
+   (yeni, varsayılan kapalı seçenek; verilmezse davranış ve çıktı değişmez). Yalnız
+   `capture_metadata.captured_at_utc` (temel/günlük dönem kayıtları) ya da
+   `capture_metadata.accessed_at_utc` (fiyat geçmişi) bu andan **önce veya ona eşit**
+   olan dosyalar kullanılır; sonradan gelen revizyon dosyaları dışarıda kalır. Çıktıya
+   üst düzey `data_cutoff_utc` yazılır (yalnız bu seçenekle). Değişmemiş kod+kural için
+   fark 0 olmalıdır; fark = kod/kural kayması **veya** özgün girdi dosyasının sonradan
+   değiştirilmesi/silinmesi (`input_set_mismatch`). Geç taranan günler doğru işlenir: 10-12
+   taraması 10-13 verisi oluştuktan sonra yapıldıysa, kesme anı o taramanın
+   `generated_at_utc`'sidir ve 10-13 dosyaları dahildir (özgün tarama da kullandı).
+2. **`current`**: diskteki tüm veri. Fark = veri revizyonu + kod kayması.
+
+### Sınıflama (sembol başına, yalnız kayıtlı provenance ile)
+
+`input_files` ve `composition.inputs` (yol kuyruğu + sha256) aynıysa ama çıktı farklıysa:
+`code_drift` (`rules_file_sha256` de farklıysa `rule_change`). Girdi kümesi farklıysa:
+`current` modunda `data_revision`, `point-in-time` modunda `input_set_mismatch`; bu
+durumda o sembolde kod kayması veri değişiminden ayrılamaz (raporda belirtilir).
+`rules_file_sha256` eşitliği ve özgün/yeni `code_commit` her birimde raporlanır.
+
+Karşılaştırma tam eşitliktir (Decimal metinleri dahil); yalnız `generated_at_utc`,
+`python_version`, `code_commit` (raporlanır, sayılmaz), `data_cutoff_utc` ve `as_of_source`
+dışarıda tutulur. Dosya yolları kuyruğa indirgenir (dizin yazımı farkı fark sayılmaz).
+`composition_sha256`, birleştiricide girdi **yol yazımlarını** da hash'lediği için yalnız
+yazımlar birebir aynıysa (aynı göreli dizinlerle çalıştırma) karşılaştırılır; aksi halde
+raporda `composition_sha256_not_comparable` altında listelenir (girdi sha256'ları ve diğer
+tüm alanlar yine karşılaştırılır). Bu yüzden betik repo kökünden, varsayılan göreli
+dizinlerle çalıştırılmalıdır.
+
+Rapor: birim başına durum, `diff_count`, `(symbol, rule, field)` sayıları
+(`summary.by_field/by_rule/by_symbol/by_class`), ilk `--max-diffs` (500) alan farkı
+(özgün/yeniden değer), kesilen sayı. Esik/kural/spec eklemez, getiri veya karar üretmez.
+
+Sınırlar: eşik parametreleri (`--adjustment-ratio-epsilon` vb.) belgede kayıtlı değildir;
+replay varsayılanlarla çalışır, onları değiştiren bir üretim koşusu fark olarak görünür.
+`price_revisions/` ve `repair_incomplete_prices.py` ile değiştirilen fiyat dosyaları, aynı
+dosya adı korunuyorsa yalnız `sha256` farkıyla (veri revizyonu) görünür.
+
 ## Sınırlar
 
 - Bu bir gözlem bildirimidir, tahmin değildir; H1/H2 birincil, H3/H4
