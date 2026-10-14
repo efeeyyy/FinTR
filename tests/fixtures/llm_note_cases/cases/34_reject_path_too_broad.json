@@ -1,0 +1,28 @@
+{
+  "case_id": "reject_path_too_broad",
+  "description": "Path covers every day (80 values): not 'single institution row, single day'.",
+  "expected": "reject",
+  "expected_reason": "evidence_path",
+  "note": {
+    "assessments": [
+      {
+        "symbol": "SYNA",
+        "rule_id": "H2",
+        "as_of": "2026-01-09",
+        "assessment": "destekliyor",
+        "plain_explanation": "Bu kural, günün son fiyatının hacim ağırlıklı ortalama fiyatın altında kalmasını arar. Veri bu koşulun sağlandığını gösteriyor. Hipotez, bu tür baskının kısmen geri döneceğini varsayar.",
+        "reasons": [
+          {
+            "text": "AAA takas lot 5400.",
+            "evidence_paths": [
+              "/symbols/SYNA/days"
+            ]
+          }
+        ]
+      }
+    ],
+    "data_caveats": [
+      "Metadata sağlayıcı hesabıdır; doğrulanmadı."
+    ]
+  }
+}

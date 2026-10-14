@@ -532,6 +532,16 @@ class NumberTests(unittest.TestCase):
         for text in ("bir kurum", "altında", "onlar", "yüzdelik", "binek", "net alıcı", "yedekte"):
             self.assertEqual(numbers.find_number_words(text), [], text)
 
+    def test_inflected_english_and_symbolic_number_words(self):
+        for text in ("kurumların ikisi", "beşi net alıcı", "üçüncü gün", "ikişer lot", "dördü", "kırkı", "binlerce lot",
+                     "milyonlarca", "onlarca kurum", "five institutions", "Two days", "10 percent", "½ lot",
+                     "¾", "m²", "①", "Ⅳ"):
+            self.assertTrue(numbers.find_number_words(text), text)
+        for text in ("net alıcı konumunda", "kararlı gün", "takas verisi", "bilgi", "iyi", "elinde", "eleştiri",
+                     "üretim", "dönem", "tendency", "often", "gün sonu", "5 lot", "%40,5",
+                     "onu", "yüzey", "binanın"):
+            self.assertEqual(numbers.find_number_words(text), [], text)
+
     def test_rounded_quotes_match_at_the_quoted_precision(self):
         self.assertTrue(self.ok("10,46", "10.4567"))
         self.assertTrue(self.ok("10.46", "10.4567"))
@@ -610,6 +620,18 @@ class ForbiddenTests(unittest.TestCase):
     def test_turkish_capital_i_is_handled(self):
         self.assertTrue(find_forbidden("KESİN"))
         self.assertTrue(find_forbidden("POZİSYON"))
+
+    def test_evasive_spellings_are_normalised(self):
+        for text in ("k a z a n ç", "h.e.d.e.f fiyat", "s t o p", "ka zanç", "get iri", "kâr", "KÂR", "kârlılık",
+                     "kârı", "karlılık", "he​def", "ge­tiri", "ｋａｚａｎç", "yukselecek", "dusecek",
+                     "oneri", "firsat", "kasit", "kаzanç", "hedefе", "ｈｅｄｅｆ"):
+            self.assertTrue(find_forbidden(text), text)
+
+    def test_normalisation_does_not_flag_ordinary_words(self):
+        for text in ("karar ve karşı yön", "kararlı gün", "kara liste", "Kesinleşmemiş gün", "alınan veri",
+                     "satış ve alıcı kayıtları", "AAA ve BBB net alıcı", "net 100 lot", "H2 kuralı", "A ve B kurumları",
+                     "sayı 5 ve 6", "takas verisi gecikmeli", "veri durumu belirsiz", "Δ_5 farkı", "tutarı 5000"):
+            self.assertEqual(find_forbidden(text), [], text)
 
 
 # --- validator --------------------------------------------------------------------
@@ -1139,6 +1161,7 @@ class ScriptTests(Env, unittest.TestCase):
             self.assertEqual(record["cli"]["version"], "fake-cli 0.0.1")
             self.assertIn("determin", record["determinism_note"].lower())
             self.assertEqual(record["validation"]["ok"], True)
+            self.assertEqual(record["validation"]["validator_version"], validate_mod.VALIDATOR_VERSION)
             self.assertTrue(record["called"])
             self.assertGreaterEqual(record["duration_seconds"], 0)
             self.assertEqual(record["usage"]["usage"], {"input_tokens": 11, "output_tokens": 22})

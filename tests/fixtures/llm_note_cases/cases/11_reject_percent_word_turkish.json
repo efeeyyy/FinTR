@@ -1,0 +1,28 @@
+{
+  "case_id": "reject_percent_word_turkish",
+  "description": "'yüzde kırk' instead of a digit number.",
+  "expected": "reject",
+  "expected_reason": "number_word",
+  "note": {
+    "assessments": [
+      {
+        "symbol": "SYNA",
+        "rule_id": "H2",
+        "as_of": "2026-01-09",
+        "assessment": "destekliyor",
+        "plain_explanation": "Bu kural, günün son fiyatının hacim ağırlıklı ortalama fiyatın altında kalmasını arar. Veri bu koşulun sağlandığını gösteriyor. Hipotez, bu tür baskının kısmen geri döneceğini varsayar.",
+        "reasons": [
+          {
+            "text": "Perakende payı yüzde kırk civarında.",
+            "evidence_paths": [
+              "/symbols/SYNA/metadata_by_day/2026-01-09"
+            ]
+          }
+        ]
+      }
+    ],
+    "data_caveats": [
+      "Metadata sağlayıcı hesabıdır; doğrulanmadı."
+    ]
+  }
+}

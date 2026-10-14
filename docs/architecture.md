@@ -935,6 +935,30 @@ izolasyonu: `--tools ""`, `--strict-mcp-config`, `--disable-slash-commands`,
 sorusu: kanarya sözcükleri config'te, `llm_notes/_probes/` kaydı) doğrulanır; `isolation_probe` config bayrağı bunu
 her çalıştırmada fail-closed ön kontrol yapar.
 
+Doğrulayıcı sürümü 2 (`validate.VALIDATOR_VERSION`; attempt kaydında
+`validation.validator_version`) ve negatif örnek derlemi: `tests/fixtures/llm_note_cases/`
+(sentetik paket + 43 elle yazılmış not çıktısı; 6 kabul, 37 ret) `tests/test_llm_note_cases.py`
+ile gerçek doğrulayıcıdan geçer; doğrulayıcının yanlış karar verdiği örnekler
+silinmez, `known_gap` ile işaretlenip mevcut davranışı sabitlenir (değişirse test
+bildirir). İlk derlemde 16 açık vardı; 12'si deterministik ve yanlış-ret riski düşük
+olduğu için kapatıldı: (a) yasak ifade denetimi NFKC + görünmez/birleştirici karakter
+temizliği + ASCII ve Kiril/Yunanca benzeri harf katlaması + harf harfe yazım ("k a z a n ç")
++ uzun gövdelerde ayraçsız eşleşme ("ka zanç"), `kâr`/`karlılık` çekimleri; (b) yazıyla sayı
+denetimi çekimli biçimleri (ikisi, beşi, üçüncü, ikişer, -larca/-lerce), İngilizce sayı
+sözcüklerini ve rakam benzeri simgeleri (½, ², ①, Roman rakamı) da yakalar; (c) kanıt yolu
+en çok 40 değer kapsar (önce 600): prompt zaten "tek kurum satırı, tek gün" ister, gerçek
+8 kabul edilmiş notta en geniş yol 8 değerdi; geniş yol başka günün/kurumun değerini
+"yolun altında" gösteriyordu. Gerçek kabul edilmiş 8 not (+ paketleri) yeni doğrulayıcıdan
+salt okunur geçirildi: 8/8 geçer. Kalan, bilinen ve belgelenmiş açıklar (hepsi anlamsal
+sadakat sınıfı; sayı veya sözcük eşleşir ama yorum yanlış olabilir): (1) doğru sayı aynı
+günün başka kurumuna atfedilebilir (yol bir günün tamamıysa); (2) doğru sayı aynı satırın
+başka alanına atfedilebilir (net_size/total_size/total_cost tek yolda); (3) oran `%` işaretiyle
+yazılırsa (0,05 yerine %0,05) `%p` paketteki `p` ile aynen eşleştiği için yakalanmaz --
+alan başına birim bilgisi yok; (4) karar sözcüğü (`destekliyor`/`zayıflatıyor`/`belirsiz`)
+kendi gerekçesindeki kanıtla çelişebilir veya metin başka bir karar sözcüğü içerebilir;
+bu anlamsal yargı kodla denetlenmez. Ayrıca "bir"/"yarım" gibi sözcükler, "on"/"yüz" gibi
+kısa köklerin çekimleri denetlenemez.
+
 Sonuç: Bu adım AGENTS.md'de açıkça belirtilmiş bir istisnadır (yalnız kanıt
 değerlendirmesi; emir, hedef, stop, pozisyon, getiri tahmini veya puan yok). Riskler:
 (1) ham verinin Anthropic'e gönderimi için lisans kapsamı doğrulanmadı (Efe kararı);

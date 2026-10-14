@@ -49,7 +49,7 @@ from fintr.llm_note.packet import GuardRefusal, PacketError, SymbolOutcome, buil
 from fintr.llm_note.record import (
     DETERMINISM_NOTE, RECORD_SCHEMA, json_bytes, latest_accepted, new_attempt_dir, symbol_dir, write_new,
 )
-from fintr.llm_note.validate import Validation, validate_note
+from fintr.llm_note.validate import VALIDATOR_VERSION, Validation, validate_note
 from fintr.notify import format as fmt
 from fintr.scanner.report import resolve_code_commit
 from fintr.scanner.rules import ScannerRulesError, load_scanner_rules
@@ -279,6 +279,7 @@ class _Run:
             },
             "validation": None if validation is None else {
                 "ok": validation.ok, "category": validation.category, "details": list(validation.details),
+                "validator_version": VALIDATOR_VERSION,
             },
         })
         try:

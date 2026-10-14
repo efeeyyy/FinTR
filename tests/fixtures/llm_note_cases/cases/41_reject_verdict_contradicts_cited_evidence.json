@@ -1,0 +1,34 @@
+{
+  "case_id": "reject_verdict_contradicts_cited_evidence",
+  "description": "Verdict 'destekliyor' while the only cited and described evidence is a net seller (-55).",
+  "expected": "reject",
+  "expected_reason": null,
+  "note": {
+    "assessments": [
+      {
+        "symbol": "SYNA",
+        "rule_id": "H2",
+        "as_of": "2026-01-09",
+        "assessment": "destekliyor",
+        "plain_explanation": "Veri hipotezi destekliyor.",
+        "reasons": [
+          {
+            "text": "BBB kodu net satıcı; net_size -55.",
+            "evidence_paths": [
+              "/symbols/SYNA/days/2026-01-09/akd/BBB"
+            ]
+          }
+        ]
+      }
+    ],
+    "data_caveats": [
+      "Metadata sağlayıcı hesabıdır; doğrulanmadı."
+    ]
+  },
+  "known_gap": true,
+  "known_gap_reason": "semantic faithfulness (verdict vs. cited evidence) is not checked and has no deterministic test",
+  "current_result": {
+    "ok": true,
+    "reason": null
+  }
+}

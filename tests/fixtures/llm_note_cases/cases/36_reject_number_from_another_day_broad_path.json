@@ -1,0 +1,28 @@
+{
+  "case_id": "reject_number_from_another_day_broad_path",
+  "description": "Same wrong-day 250, but the reason cites every day, so the number is 'under the path'.",
+  "expected": "reject",
+  "expected_reason": "evidence_path",
+  "note": {
+    "assessments": [
+      {
+        "symbol": "SYNA",
+        "rule_id": "H2",
+        "as_of": "2026-01-09",
+        "assessment": "destekliyor",
+        "plain_explanation": "Bu kural, günün son fiyatının hacim ağırlıklı ortalama fiyatın altında kalmasını arar. Veri bu koşulun sağlandığını gösteriyor. Hipotez, bu tür baskının kısmen geri döneceğini varsayar.",
+        "reasons": [
+          {
+            "text": "2026-01-09 tarihinde AAA net_size 250.",
+            "evidence_paths": [
+              "/symbols/SYNA/days"
+            ]
+          }
+        ]
+      }
+    ],
+    "data_caveats": [
+      "Metadata sağlayıcı hesabıdır; doğrulanmadı."
+    ]
+  }
+}

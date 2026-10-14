@@ -27,9 +27,11 @@ false rejections, but values are never rounded or computed:
   a raw, unrounded value;
 - ISO dates are separate: each must be a date string present in the packet;
 - spelled-out numbers cannot be audited, so ``find_number_words`` flags the
-  common Turkish number words and ``yüzde <word>`` ("bir" is not flagged: it
-  is also the indefinite article; fractions such as "yarı" are not either --
-  documented limits).
+  common Turkish number words (also their inflected forms: ikisi, beşi,
+  üçüncü, ikişer; "-larca/-lerce"), English number words, ``yüzde <word>`` and
+  digit-like symbols (½, ², ①, Roman numerals) ("bir" is not flagged: it is
+  also the indefinite article; "on"/"yüz"/"altı"/"bin" are flagged only as
+  whole words; fractions such as "yarı" are not either -- documented limits).
 
 ``mask_names`` blanks known identifiers (symbols, rule ids, institution
 names) before extraction so ``H2`` or a broker title with a digit is not
@@ -41,6 +43,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Context, Decimal, InvalidOperation
 import re
+import unicodedata
 
 
 ISO_DATE = re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)")
@@ -52,6 +55,18 @@ _NUMBER_WORDS = (
     "trilyon", "yarım", "çeyrek",
 )
 _NUMBER_WORD = re.compile(r"(?<!\w)(?:" + "|".join(_NUMBER_WORDS) + r")(?!\w)")
+# Inflected / derived forms of the unambiguous Turkish number stems (ikisi, beşi, üçüncü, ikişer,
+# kırkı) and the plural "-larca/-lerce" forms. "on", "yüz", "altı" and "bin" alone are not given a
+# free tail: onu/yüzey/altında/binek are ordinary words.
+_NUMBER_STEMS = ("iki", "üç", "dört", "dörd", "beş", "yedi", "sekiz", "dokuz", "yirmi", "otuz", "kırk", "elli",
+                 "altmış", "yetmiş", "seksen", "doksan")
+_NUMBER_INFLECTED = re.compile(
+    r"(?<!\w)(?:(?:" + "|".join(_NUMBER_STEMS) + r")\w{0,6}"
+    r"|(?:on|yüz|bin|milyon|milyar|trilyon)(?:larca|lerce))(?!\w)")
+# English spelled-out numbers (a Turkish note should not contain them; "one" is not listed: article).
+_ENGLISH_NUMBER_WORD = re.compile(
+    r"(?<!\w)(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty|"
+    r"sixty|seventy|eighty|ninety|hundred|thousand|million|billion|trillion|percent|half|quarter)(?!\w)")
 _PERCENT_WORD = re.compile(r"(?<!\w)yüzde\s+\w+")
 _TR_LOWER = str.maketrans({"İ": "i", "I": "ı"})
 
@@ -137,7 +152,12 @@ def find_number_words(text: str) -> list[str]:
     """Spelled-out numbers and ``yüzde <word>`` in ``text`` (names already
     masked). Not flagged: "bir" (also the article) -- a documented limit."""
     lowered = text.translate(_TR_LOWER).lower()
-    return sorted(set(_NUMBER_WORD.findall(lowered)) | set(_PERCENT_WORD.findall(lowered)))
+    found = set(_NUMBER_WORD.findall(lowered)) | set(_PERCENT_WORD.findall(lowered))
+    found |= set(_NUMBER_INFLECTED.findall(lowered)) | set(_ENGLISH_NUMBER_WORD.findall(lowered))
+    # digit-like symbols the digit tokenizer does not read: vulgar fractions, superscripts,
+    # circled digits (category No), Roman-numeral letters (Nl)
+    found |= {ch for ch in text if unicodedata.category(ch) in ("No", "Nl")}
+    return sorted(found)
 
 
 def normalise(value: Decimal) -> Decimal:

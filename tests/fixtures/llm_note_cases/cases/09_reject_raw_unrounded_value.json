@@ -1,0 +1,28 @@
+{
+  "case_id": "reject_raw_unrounded_value",
+  "description": "More than four decimals: a raw value pasted into the text.",
+  "expected": "reject",
+  "expected_reason": "number_format",
+  "note": {
+    "assessments": [
+      {
+        "symbol": "SYNA",
+        "rule_id": "H2",
+        "as_of": "2026-01-09",
+        "assessment": "destekliyor",
+        "plain_explanation": "Bu kural, günün son fiyatının hacim ağırlıklı ortalama fiyatın altında kalmasını arar. Veri bu koşulun sağlandığını gösteriyor. Hipotez, bu tür baskının kısmen geri döneceğini varsayar.",
+        "reasons": [
+          {
+            "text": "En büyük kurum payı 0,08064516129.",
+            "evidence_paths": [
+              "/symbols/SYNA/scans/0/observations/1/features/0/value"
+            ]
+          }
+        ]
+      }
+    ],
+    "data_caveats": [
+      "Metadata sağlayıcı hesabıdır; doğrulanmadı."
+    ]
+  }
+}
