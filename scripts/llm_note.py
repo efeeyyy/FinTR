@@ -163,11 +163,15 @@ _ISTANBUL = timezone(timedelta(hours=3))  # Europe/Istanbul is fixed UTC+3 since
 
 def generation_provenance(as_of: date, now_utc: datetime) -> dict:
     """Backfill marker (Efe kararı 2026-10-14): ``generated_late`` is true when the generation
-    date (Europe/Istanbul) is more than 1 calendar day after ``as_of`` + 1. Such notes were
-    written after the fact and must never feed any study, holdout test or model/prompt choice."""
+    date (Europe/Istanbul) is later than the next weekday after ``as_of`` (Fri -> Mon is not late).
+    Holidays are ignored (no calendar in the repo). Such notes were written after the fact and
+    must never feed any study, holdout test or model/prompt choice."""
     local_day = now_utc.astimezone(_ISTANBUL).date()
+    next_weekday = as_of + timedelta(days=1)
+    while next_weekday.weekday() >= 5:
+        next_weekday += timedelta(days=1)
     return {"generated_on_local": local_day.isoformat(),
-            "generated_late": local_day > as_of + timedelta(days=2)}
+            "generated_late": local_day > next_weekday}
 
 
 def _size_summary(outcomes: list[SymbolOutcome]) -> str:

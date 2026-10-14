@@ -263,8 +263,9 @@ eklenmez.
 metni hiçbir istatistiksel çalışmaya, holdout testine, model/kural/eşik seçimine ya da holdout
 verisiyle istem optimizasyonuna girdi olmaz (`docs/prereg/DECISIONS.md` 2026-10-14). Her
 `record.json` model kimliğini (`model_requested`, `model_reported`) ve zamanı (`started_at_utc`)
-taşır; üretim günü (Europe/Istanbul) `as_of` + 1'den bir günden fazla sonraysa
-`generated_late: true` yazılır (sonradan üretilmiş not).
+taşır; üretim günü (Europe/Istanbul) `as_of`'tan sonraki ilk hafta içi günden (cuma → pazartesi)
+sonraysa `generated_late: true` yazılır (sonradan üretilmiş not). Tatiller yok sayılır (repoda
+takvim yok).
 
 `notify_observations.py --llm-note-dir data/interim/llm_notes` verilirse **yalnız**
 Opus 5.5 analiz notu, kendi mesajı ve kendi makbuzuyla (`note_receipt.json`)
