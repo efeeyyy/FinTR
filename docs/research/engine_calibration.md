@@ -93,10 +93,39 @@ Yorum: Bağımsız günlerde motor nominal düzeyde (aile ≈ %5). Kalıcı, piy
 kümelenen koşul + GARCH + AR(1) içeren `dependent` senaryoda E1 blok bootstrap (L=5) standart
 hatayı ~%25 düşük tahmin ediyor ve aile yanlış-pozitif oranı nominalin yaklaşık iki katı
 (%10,3). Bu senaryonun bağımlılık düzeyi bir modelleme varsayımıdır (`latent_phi=0.9`,
-`latent_loading=0.35`); gerçek koşul kümelenmesinin bu kadar güçlü olup olmadığı ölçülmedi.
+`latent_loading=0.35`); gerçek koşul kümelenmesi aşağıdaki T-29 bölümünde ölçüldü.
 Ortak piyasa payı (0,4) gerçek train verisiyle uyumlu (TRIAL_LOG T-28: ort. ikili korelasyon
 0,41). Dondurulmuş spec ve train sonuçları değişmedi; olası değişiklik yalnız Efe kararıyla,
 holdout'tan önce `DECISIONS.md`'ye yazılarak yapılır.
+
+## Gerçek koşul bayrağı kümelenmesi (T-29, 2026-10-14)
+
+`scripts/measure_condition_clustering.py`: 20 geliştirme hissesi, train 2025-09-26..2026-09-25;
+yalnız dondurulmuş H1-H4 koşullarının (sembol, tarih) bayrağı, motorun kendi koşul kodu ve
+veri-kalitesi düşüşleriyle (ratio-regime, değerlendirilemeyen, takas ölçek sıçraması).
+Getiri, ortalama veya çalışma çıktısı hesaplanmadı/okunmadı. Aynı istatistikler sentetik `iid` ve
+`dependent` dünyalarda (varsayılan `MarketConfig`, null, 5 tohum) hesaplandı. Çıktı:
+`data/interim/research/condition_clustering_2026-10-14.{json,md}` (Git dışı).
+
+| H1 / H2 | gerçek | iid | dependent |
+|---|---|---|---|
+| bayrak sıklığı | 0,135 / 0,168 | 0,10 | 0,07 |
+| dağılım indeksi (aynı tarihte semboller arası; 1 = bağımsız) | 5,17 / 5,05 | 1,00 / 0,98 | 2,35 / 1,81 |
+| sembol başına bayrak otokorelasyonu lag 1 | 0,00 / 0,03 | 0,00 / 0,00 | 0,16 / 0,16 |
+| günlük bayrak sayısı otokorelasyonu lag 1 / lag 5 | -0,02, -0,10 / 0,08, -0,09 | ~0 | 0,56, 0,33 / 0,43, 0,26 |
+| tasarım etkisi, zaman kısmı (K=10) | 0,94 / 1,57 | 1,0 / 0,92 | 5,05 / 3,78 |
+| tasarım etkisi, toplam (K=10) | 4,8 / 7,9 | 1,0 / 0,9 | 12,6 / 7,4 |
+
+Bulgu: gerçek bayraklar **aynı gün semboller arasında** `dependent` dünyadan da güçlü kümelenir
+(bayrakların %80-85'i ≥3 bayraklı tarihlerde), ancak **zaman içinde** kalıcılık yoktur
+(otokorelasyonlar, sembol başına ve günlük sayı için, bağımsızlık referansının aralığında; yalnız
+H2 sayı lag 10 = 0,18 aralık dışına yakın). `dependent` dünyası ise her iki boyutta kalıcıdır
+(`latent_phi=0,9`). E1 yeniden örnekleme birimi tarihtir, bu yüzden aynı-gün bağımlılığı
+yapısal olarak korunur; L=5'in yakalayamadığı kalıcı (L'den uzun) bağımlılık gerçek bayraklarda
+görünmüyor. Bu, `dependent` sonucunun (FWER %10,3) gerçek veriye doğrudan aktarılamayacağını
+gösterir ama bayrak-getiri bağımlılığını (üreteçteki volatilite bağımlılığı) ölçmez; ayrıştırma için
+"aynı-gün kümelenmiş, zamanda bağımsız" bir sentetik senaryo sonraki adımdır. H3/H4 bayrakları
+çok seyrek (10 ve 8 bayrak) olduğu için bilgi vermez.
 
 ## Sınırlar
 
