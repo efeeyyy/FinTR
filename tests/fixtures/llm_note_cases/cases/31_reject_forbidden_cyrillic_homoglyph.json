@@ -24,11 +24,5 @@
     "data_caveats": [
       "Metadata sağlayıcı hesabıdır; doğrulanmadı."
     ]
-  },
-  "known_gap": true,
-  "known_gap_reason": "look-alike letters from other scripts are not folded to Latin",
-  "current_result": {
-    "ok": true,
-    "reason": null
   }
 }

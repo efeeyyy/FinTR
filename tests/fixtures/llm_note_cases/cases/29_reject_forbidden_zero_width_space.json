@@ -24,11 +24,5 @@
     "data_caveats": [
       "Metadata sağlayıcı hesabıdır; doğrulanmadı."
     ]
-  },
-  "known_gap": true,
-  "known_gap_reason": "invisible format characters (U+200B) split the stem",
-  "current_result": {
-    "ok": true,
-    "reason": null
   }
 }

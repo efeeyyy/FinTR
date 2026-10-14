@@ -611,6 +611,18 @@ class ForbiddenTests(unittest.TestCase):
         self.assertTrue(find_forbidden("KESİN"))
         self.assertTrue(find_forbidden("POZİSYON"))
 
+    def test_evasive_spellings_are_normalised(self):
+        for text in ("k a z a n ç", "h.e.d.e.f fiyat", "s t o p", "ka zanç", "get iri", "kâr", "KÂR", "kârlılık",
+                     "kârı", "karlılık", "he​def", "ge­tiri", "ｋａｚａｎç", "yukselecek", "dusecek",
+                     "oneri", "firsat", "kasit", "kаzanç", "hedefе", "ｈｅｄｅｆ"):
+            self.assertTrue(find_forbidden(text), text)
+
+    def test_normalisation_does_not_flag_ordinary_words(self):
+        for text in ("karar ve karşı yön", "kararlı gün", "kara liste", "Kesinleşmemiş gün", "alınan veri",
+                     "satış ve alıcı kayıtları", "AAA ve BBB net alıcı", "net 100 lot", "H2 kuralı", "A ve B kurumları",
+                     "sayı 5 ve 6", "takas verisi gecikmeli", "veri durumu belirsiz", "Δ_5 farkı", "tutarı 5000"):
+            self.assertEqual(find_forbidden(text), [], text)
+
 
 # --- validator --------------------------------------------------------------------
 

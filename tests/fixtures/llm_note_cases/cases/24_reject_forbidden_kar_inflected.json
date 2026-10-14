@@ -24,11 +24,5 @@
     "data_caveats": [
       "Metadata sağlayıcı hesabıdır; doğrulanmadı."
     ]
-  },
-  "known_gap": true,
-  "known_gap_reason": "the kâr entry has no inflection tail (kar itself must stay word-bounded: 'karar')",
-  "current_result": {
-    "ok": true,
-    "reason": null
   }
 }

@@ -24,11 +24,5 @@
     "data_caveats": [
       "Metadata sağlayıcı hesabıdır; doğrulanmadı."
     ]
-  },
-  "known_gap": true,
-  "known_gap_reason": "word-boundary stem matching only sees contiguous words",
-  "current_result": {
-    "ok": true,
-    "reason": null
   }
 }
