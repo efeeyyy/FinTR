@@ -3,8 +3,9 @@
 
 Missing data is reported as ``None`` ("yok"), never coerced to a date or to
 a zero-length gap. Custody normally settles behind AKD by server date
-(T+2); ``custody_flagged_stale`` marks a gap of 2 or more listed server
-dates so a stale custody panel is never silently treated as current.
+(T+2 today); ``custody_flagged_stale`` marks a gap of at least the
+settlement lag effective on ``as_of`` (``configs/market/settlement_cycle.json``)
+in listed server dates so a stale custody panel is never silently treated as current.
 """
 
 from __future__ import annotations
@@ -14,10 +15,8 @@ from datetime import date
 
 from fintr.data.period_capture import PeriodCapture
 from fintr.data.price_history import PriceHistoryCapture
+from fintr.data.settlement_cycle import SettlementCycle
 from fintr.research.engine import tradeable_price_bars
-
-
-CUSTODY_STALE_SERVER_DATE_GAP = 2  # T+2 settlement
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,10 +26,12 @@ class FreshnessReport:
     last_price_date: date | None
     custody_behind_akd_server_dates: int | None
     custody_flagged_stale: bool
+    custody_settlement_lag: int
 
 
 def build_freshness_report(
     capture: PeriodCapture, price: PriceHistoryCapture, *, as_of: date,
+    settlement_cycle: SettlementCycle,
 ) -> FreshnessReport:
     server_dates = tuple(d for d in capture.server_dates if d <= as_of)
     last_akd = server_dates[-1] if server_dates else None
@@ -45,11 +46,13 @@ def build_freshness_report(
             gap = server_dates.index(last_akd) - server_dates.index(last_custody)
         else:
             gap = sum(1 for d in server_dates if last_custody < d <= last_akd)
-    flagged = gap is not None and gap >= CUSTODY_STALE_SERVER_DATE_GAP
+    lag = settlement_cycle.lag_on(as_of)
+    flagged = gap is not None and gap >= lag
     return FreshnessReport(
         last_akd_server_date=last_akd,
         last_custody_date=last_custody,
         last_price_date=last_price,
         custody_behind_akd_server_dates=gap,
         custody_flagged_stale=flagged,
+        custody_settlement_lag=lag,
     )

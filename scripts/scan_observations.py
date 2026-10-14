@@ -35,6 +35,11 @@ from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
 from fintr.features.price_join import DEFAULT_ADJUSTMENT_RATIO_EPSILON, DEFAULT_RATIO_REGIME_TOLERANCE
 from fintr.research.compose_period_capture import CaptureInput, CompositionError, compose_period_capture
 from fintr.research.engine import tradeable_price_bars
+from fintr.data.settlement_cycle import (
+    DEFAULT_SETTLEMENT_CYCLE_PATH,
+    SettlementCycleError,
+    load_settlement_cycle,
+)
 from fintr.scanner.freshness import build_freshness_report
 from fintr.scanner.observe import evaluate_rule_for_symbol
 from fintr.scanner.report import (
@@ -303,6 +308,12 @@ def _run(args: argparse.Namespace) -> int:
     rules_file_sha256 = hashlib.sha256(args.rules_file.read_bytes()).hexdigest()
 
     try:
+        settlement_cycle = load_settlement_cycle(PROJECT_ROOT / DEFAULT_SETTLEMENT_CYCLE_PATH)
+    except SettlementCycleError as exc:
+        print(f"Scan failed: invalid settlement cycle config ({exc})", file=sys.stderr)
+        return 1
+
+    try:
         guards = load_active_guards()
     except SymbolGuardError as exc:
         print(f"Scan failed: {exc}", file=sys.stderr)
@@ -510,7 +521,9 @@ def _run(args: argparse.Namespace) -> int:
 
         scans = []
         for as_of in as_of_dates:
-            freshness = build_freshness_report(capture, price, as_of=as_of)
+            freshness = build_freshness_report(
+                capture, price, as_of=as_of, settlement_cycle=settlement_cycle,
+            )
             observations = [
                 evaluate_rule_for_symbol(
                     rule, capture, price, as_of=as_of,

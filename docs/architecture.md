@@ -622,7 +622,9 @@ grammar'ı, yalnız dondurulmuş spec dosyalarının `condition` alanından
 okuyarak, hiçbir yeni eşik eklemeden kullanmak -- seçildi.
 
 Karar: Yeni paket `src/fintr/scanner/` (`rules.py`, `freshness.py`,
-`observe.py`, `report.py`) ve `scripts/scan_observations.py` eklendi. Hiçbir
+`observe.py`, `report.py`) ve `scripts/scan_observations.py` eklendi. Tazelik
+raporunun takas gecikmesi (T+2) koddan değil tarih-etkin
+`configs/market/settlement_cycle.json`'dan okunur (2026-10-14). Hiçbir
 formül yeniden yazılmadı: `fintr.research.conditions.evaluate_condition`,
 `fintr.research.features.truncate_period_capture`/`evaluate_feature`,
 `fintr.research.engine.load_symbol_data`/`detect_custody_scale_jumps`/

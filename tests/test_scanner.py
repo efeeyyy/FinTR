@@ -35,6 +35,7 @@ from fintr.data.price_history import DailyBar, PriceHistoryCapture, PriceHistory
 from fintr.evaluation import symbol_exclusions, symbol_split
 from fintr.research.compose_period_capture import CaptureInput, compose_period_capture
 from fintr.research.study_spec import parse_study_spec
+from fintr.data.settlement_cycle import SettlementCycle, SettlementPeriod
 from fintr.scanner.freshness import build_freshness_report
 from fintr.scanner.observe import evaluate_rule_for_symbol
 from fintr.scanner.report import RESULT_SCHEMA_V1, RESULT_SCHEMA_V2, build_document, observation_payload
@@ -59,6 +60,8 @@ scan = _load_script("scan_observations")
 
 
 D = [date(2027, 3, day) for day in range(1, 11)]  # D[0] = 2027-03-01 .. D[9]
+T_PLUS_2 = SettlementCycle((SettlementPeriod(date(2000, 1, 1), 2),))
+T_PLUS_1 = SettlementCycle((SettlementPeriod(date(2000, 1, 1), 1),))
 
 
 def _capture(
@@ -363,17 +366,32 @@ class FreshnessTests(unittest.TestCase):
             server_dates=D[:3],
             daily_custody_lots=(DatedCodeValues(D[0], (CodeValue("AAA", Decimal(1)),)),),
         )
-        report = build_freshness_report(capture, price, as_of=D[2])
+        report = build_freshness_report(capture, price, as_of=D[2], settlement_cycle=T_PLUS_2)
         self.assertEqual(report.last_akd_server_date, D[2])
         self.assertEqual(report.last_custody_date, D[0])
         self.assertEqual(report.custody_behind_akd_server_dates, 2)
         self.assertTrue(report.custody_flagged_stale)
+        self.assertEqual(report.custody_settlement_lag, 2)
+
+    def test_gap_of_one_flagged_only_under_t_plus_1(self):
+        bars = tuple(_bar(d, o=10, h=10, l=10, c=10, adj=10, v=100) for d in D[:2])
+        price = _price("TST", bars)
+        capture = _capture(
+            server_dates=D[:2],
+            daily_custody_lots=(DatedCodeValues(D[0], (CodeValue("AAA", Decimal(1)),)),),
+        )
+        two = build_freshness_report(capture, price, as_of=D[1], settlement_cycle=T_PLUS_2)
+        one = build_freshness_report(capture, price, as_of=D[1], settlement_cycle=T_PLUS_1)
+        self.assertEqual(two.custody_behind_akd_server_dates, 1)
+        self.assertFalse(two.custody_flagged_stale)
+        self.assertTrue(one.custody_flagged_stale)
+        self.assertEqual(one.custody_settlement_lag, 1)
 
     def test_missing_custody_reported_as_none_not_zero(self):
         bars = (_bar(D[0], o=10, h=10, l=10, c=10, adj=10, v=100),)
         price = _price("TST", bars)
         capture = _capture(server_dates=D[:1])  # no custody data at all
-        report = build_freshness_report(capture, price, as_of=D[0])
+        report = build_freshness_report(capture, price, as_of=D[0], settlement_cycle=T_PLUS_2)
         self.assertIsNone(report.last_custody_date)
         self.assertIsNone(report.custody_behind_akd_server_dates)
         self.assertFalse(report.custody_flagged_stale)
