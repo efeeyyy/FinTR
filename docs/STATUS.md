@@ -202,6 +202,16 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      (madde 1), resmî BIST tatil takvimi (Efe resmî listeyi doğrular), haftalık replay, LLM
      altın/negatif seti, T+2 gecikmesini yapılandırmaya taşıma. Pazartesi 10-12 ve Salı 10-13
      verisi henüz toplanmadı (Efe).
+   - 2026-10-13/14: 10-12 ve 10-13 toplandı (yalnız veri, mesaj yok); tarama + forward log
+     (10-12 backfilled) yönetici tarafından. Motor kalibrasyonu (sentetik, `docs/research/engine_calibration.md`):
+     iid nominal (aile 5,3%), `dependent` ~2x liberal (10,3%); aday yöntemler (MBB 10/20, DK)
+     düzeltmiyor. Gerçek train bayrakları (T-29): aynı günde güçlü kümelenme, zamanda süreklilik
+     yok; ortak piyasa payı 0,40 (T-28). Gerçeğe benzer `xsection` dünyasında dondurulmuş yöntem
+     aile 6,0% [4,4; 8,0] → değişiklik yok. Açık: bayrak–oynaklık bağı ölçülmedi; aday yöntemlerin
+     tam koşusu (2+ saat) isteğe bağlı. Sıradaki aday işler: resmî BIST tatil takvimi (Efe resmî
+     listeyi doğrular), haftalık replay, LLM altın/negatif seti, T+2 gecikmesini yapılandırmaya
+     taşıma, maliyet duyarlılık ızgarası (holdout öncesi DECISIONS). Train p-değerlerinin
+     yorumu için kalibrasyon notu finans sohbetine.
    - İzinler (Efe, 2026-10-04): `.claude/settings.local.json` (git dışı) → env PYTHONPATH=src,
      PYTHONIOENCODING=utf-8; allow: git merge, `git push origin *`, venv python ile
      run_daily_pipeline/notify_observations/scan_observations/collect_daily/llm_note. Yeni

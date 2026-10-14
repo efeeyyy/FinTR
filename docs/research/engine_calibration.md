@@ -255,7 +255,18 @@ $env:PYTHONPATH="src"; $env:PYTHONIOENCODING="utf-8"
   --method frozen mbb10 mbb20 dk10 dk20 --workers 12
 ```
 
-### Sınırlar (adaylar)
+#### Belirleyici koşu: dondurulmuş yöntem, `xsection` dünyası (2026-10-14, R=700, commit `d1a277a`)
+
+Çıktı: `data/interim/research/engine_calibration/2026-10-14_frozen_xsection/` (Git dışı).
+`xsection`: gerçek train bayraklarına benzer (aynı günde güçlü kümelenme, zamanda süreklilik yok;
+TRIAL_LOG T-29/T-30). Boş hipotez altında Holm red: H1 3,3% [2,1; 4,9], H2 2,9% [1,8; 4,4];
+aile 6,0% [4,4; 8,0]; SE_boot/SD_gözlem 0,97 / 0,97. Güven aralığı nominal %5'i içeriyor:
+gerçeğe benzeyen bağımlılık yapısında dondurulmuş E1 (L=5) yaklaşık nominal. `dependent`
+dünyasındaki ~2x şişme zamanda kalıcı kümelenmeden geliyor; gerçek train bayraklarında bu
+görülmedi. Karar: dondurulmuş yöntem değişmez, DECISIONS kaydı gerekmez. Sınır: yalnız bayrak
+istatistiklerine dayalı benzerlik; bayrak–getiri/oynaklık bağı ölçülmedi; tek panel.
+
+## Sınırlar (adaylar)
 
 - L=20'de ~245 tarihte ~12 blok kalır; bootstrap varyans tahmini daha oynak olur (hem boyut hem
   güç etkilenebilir). Gerçek bayraklarda zaman kalıcılığı görülmedi (T-29), ama bayrak-getiri/
