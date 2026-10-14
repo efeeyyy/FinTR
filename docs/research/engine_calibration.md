@@ -76,6 +76,28 @@ $env:PYTHONPATH="src"
 - Yavaş: `FINTR_SLOW_TESTS=1` ile, 12 sembol x 150 gün, R=300/varyant, FWER'in tam %95 aralığının
   alt sınırının ≤ 0,05 ve nokta tahmininin ≤ 0,10 olduğunu doğrular (birkaç dakika, çok çekirdek).
 
+## Sonuçlar (2026-10-14, R_null=700, R_alt=150, commit `3af447c`)
+
+Çıktı: `data/interim/research/engine_calibration/2026-10-13/calibration.{json,md}` (Git dışı).
+Yalnız sentetik veri; piyasalar hakkında bir şey söylemez.
+
+| Senaryo | H1 Holm red | H2 Holm red | Aile (herhangi bir red) | SE_boot / SD_gözlem |
+|---|---|---|---|---|
+| iid / null | 2,7% [1,6; 4,2] | 2,9% [1,8; 4,4] | 5,3% [3,7; 7,2] | 0,98 / 0,96 |
+| dependent / null | 6,6% [4,9; 8,7] | 5,0% [3,5; 6,9] | 10,3% [8,1; 12,8] | 0,75 / 0,76 |
+
+Güç (Holm red): iid'de 0,01 etkide ≥99%; dependent'ta 0,01: 67% / 70%, 0,02: 98% / 96%,
+0,03: ≥99%; README güç modeliyle (n_eff ≈ 130–140) uyumlu.
+
+Yorum: Bağımsız günlerde motor nominal düzeyde (aile ≈ %5). Kalıcı, piyasa genelinde
+kümelenen koşul + GARCH + AR(1) içeren `dependent` senaryoda E1 blok bootstrap (L=5) standart
+hatayı ~%25 düşük tahmin ediyor ve aile yanlış-pozitif oranı nominalin yaklaşık iki katı
+(%10,3). Bu senaryonun bağımlılık düzeyi bir modelleme varsayımıdır (`latent_phi=0.9`,
+`latent_loading=0.35`); gerçek koşul kümelenmesinin bu kadar güçlü olup olmadığı ölçülmedi.
+Ortak piyasa payı (0,4) gerçek train verisiyle uyumlu (TRIAL_LOG T-28: ort. ikili korelasyon
+0,41). Dondurulmuş spec ve train sonuçları değişmedi; olası değişiklik yalnız Efe kararıyla,
+holdout'tan önce `DECISIONS.md`'ye yazılarak yapılır.
+
 ## Sınırlar
 
 - Sentetik üreteç gerçek BIST dinamiklerini temsil etmez (fiyat limiti, tatiller, açılış/kapanış
