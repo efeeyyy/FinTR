@@ -792,3 +792,21 @@ doğrulayın. Bu betik yeni bir eşik, kural veya spec eklemez.
 `normalized.date_source` alanı `gmtoffset_fallback` yerine
 `exchange_timezone_name` olur ([price_history.md](price_history.md)); yalnız
 kayıtlı yöntem alanı değişir.
+
+### 6k. Haftalık replay uzlaştırması: `replay_scans.py` (E3)
+
+Haftada bir (ör. Cumartesi; günlük boru hattına **eklenmez**), salt okunur ve
+çevrimdışı:
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+.\.venv\Scripts\python.exe scripts\replay_scans.py            # son 5 as_of, iki mod
+```
+
+Çıkış kodu: 0 = hepsi aynı, 2 = fark var, 1 = hata. Son satır
+`REPLAY: as_of=K identical=I diff=D errors=E`. `point-in-time` modunda fark
+**kod/kural kayması** (ya da özgün girdi dosyalarının sonradan değiştirilmesi)
+anlamına gelir ve araştırılmadan geçilmez; `current` modundaki fark, girdi
+dosyası kümesi değiştiyse veri revizyonudur. Rapor
+`data/interim/scanner_replay/<UTC>/replay_report.json` (üzerine yazmaz).
+Ayrıntı: [scanner.md](scanner.md) "Haftalık replay".

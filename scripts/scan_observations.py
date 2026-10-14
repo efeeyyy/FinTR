@@ -19,7 +19,7 @@ additional ``composition`` block plus a per-scan ``data_status`` marker.
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -60,8 +60,35 @@ _CAPTURE_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.json$"
 _PRICE_CAPTURE_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.json$")
 
 
-def find_period_capture(root: Path, symbol: str) -> Path | None:
-    """Most-recent-ending ``<S>_<E>.json`` capture under ``root/<symbol>/``."""
+class CutoffError(ValueError):
+    """A capture's provenance timestamp could not be read for ``--data-cutoff-utc``."""
+
+
+def parse_utc_timestamp(value: str) -> datetime:
+    """ISO-8601 timestamp with an explicit zone (``Z`` or offset) -> aware UTC datetime."""
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp has no timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _provenance_time(path: Path, field: str) -> datetime:
+    """``capture_metadata.<field>`` of a saved capture file (``captured_at_utc``
+    for period/daily captures, ``accessed_at_utc`` for price history)."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        return parse_utc_timestamp(document["capture_metadata"][field])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise CutoffError(f"cannot read capture_metadata.{field} of {path} ({exc})") from exc
+
+
+def find_period_capture(root: Path, symbol: str, *, captured_by: datetime | None = None) -> Path | None:
+    """Most-recent-ending ``<S>_<E>.json`` capture under ``root/<symbol>/``.
+    ``captured_by`` (opt-in, ``--data-cutoff-utc``): only captures whose
+    ``captured_at_utc`` is at or before it are candidates."""
     symbol_dir = root / symbol
     if not symbol_dir.is_dir():
         return None
@@ -73,6 +100,8 @@ def find_period_capture(root: Path, symbol: str) -> Path | None:
         if not match:
             continue
         end = date.fromisoformat(match.group(2))
+        if captured_by is not None and _provenance_time(entry, "captured_at_utc") > captured_by:
+            continue
         candidates.append((end, entry.name, entry))
     if not candidates:
         return None
@@ -101,8 +130,12 @@ def find_daily_captures(root: Path, symbol: str) -> list[Path]:
     return [item[2] for item in candidates]
 
 
-def discover_price_history(root: Path, symbol: str, start: date, end: date) -> Path | None:
-    """Best covering saved price-history file (same logic as analyze_period.py)."""
+def discover_price_history(
+    root: Path, symbol: str, start: date, end: date, *, accessed_by: datetime | None = None,
+) -> Path | None:
+    """Best covering saved price-history file (same logic as analyze_period.py).
+    ``accessed_by`` (opt-in, ``--data-cutoff-utc``): only files whose
+    ``accessed_at_utc`` is at or before it are candidates."""
     symbol_dir = root / symbol
     if not symbol_dir.is_dir():
         return None
@@ -116,6 +149,8 @@ def discover_price_history(root: Path, symbol: str, start: date, end: date) -> P
         file_start = date.fromisoformat(match.group(1))
         file_end = date.fromisoformat(match.group(2))
         if file_start > file_end or file_start > start or file_end < end:
+            continue
+        if accessed_by is not None and _provenance_time(entry, "accessed_at_utc") > accessed_by:
             continue
         candidates.append(((file_end - file_start).days, entry.name, entry))
     if not candidates:
@@ -139,6 +174,15 @@ def _date(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("expected YYYY-MM-DD") from exc
+
+
+def _utc_timestamp(value: str) -> datetime:
+    try:
+        return parse_utc_timestamp(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "expected an ISO-8601 UTC timestamp with timezone, e.g. 2026-10-13T18:55:51Z"
+        ) from exc
 
 
 def _positive_int(value: str) -> int:
@@ -199,6 +243,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--ratio-regime-tolerance", type=_decimal,
                          default=DEFAULT_RATIO_REGIME_TOLERANCE,
                          help=f"default: {DEFAULT_RATIO_REGIME_TOLERANCE}")
+    parser.add_argument(
+        "--data-cutoff-utc", type=_utc_timestamp, default=None,
+        help="default: off (all saved data). If given, only period/daily captures with "
+             "captured_at_utc and price-history files with accessed_at_utc at or before this "
+             "instant are used (point-in-time replay, scripts/replay_scans.py); the output "
+             "document then carries a top-level data_cutoff_utc field. Omitted, behavior and "
+             "output are unchanged.",
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR,
                          help=f"default: {DEFAULT_OUT_DIR}")
@@ -233,6 +285,15 @@ def _save(out_dir: Path, as_of_label: str, payload: bytes) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    try:
+        return _run(args)
+    except CutoffError as exc:
+        print(f"Scan failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run(args: argparse.Namespace) -> int:
+    cutoff: datetime | None = args.data_cutoff_utc
 
     try:
         rules = load_scanner_rules(args.rules_file, project_root=PROJECT_ROOT)
@@ -267,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     used_daily_root = args.daily_root is not None
     symbols_payload: dict[str, dict] = {}
     for symbol in requested:
-        base_path = find_period_capture(args.period_dir, symbol)
+        base_path = find_period_capture(args.period_dir, symbol, captured_by=cutoff)
         if base_path is None:
             print(f"Scan failed: no period capture found for {symbol} under {args.period_dir}",
                   file=sys.stderr)
@@ -282,7 +343,9 @@ def main(argv: list[str] | None = None) -> int:
         composition_payload: dict | None = None
         if not used_daily_root:
             capture = base_capture
-            price_path = discover_price_history(args.price_dir, capture.symbol, capture.start, capture.end)
+            price_path = discover_price_history(
+                args.price_dir, capture.symbol, capture.start, capture.end, accessed_by=cutoff,
+            )
             if price_path is None:
                 print(f"Scan failed: no price history found for {symbol} under {args.price_dir}",
                       file=sys.stderr)
@@ -307,6 +370,15 @@ def main(argv: list[str] | None = None) -> int:
                         file=sys.stderr,
                     )
                     return 1
+                if cutoff is not None:
+                    try:
+                        captured = parse_utc_timestamp(daily_capture.captured_at_utc)
+                    except ValueError as exc:
+                        raise CutoffError(
+                            f"cannot read captured_at_utc of {daily_path} ({exc})"
+                        ) from exc
+                    if captured > cutoff:
+                        continue  # --data-cutoff-utc: did not exist yet at the replayed instant
                 daily_loaded.append((daily_path, daily_bytes, daily_capture))
 
             inputs = [CaptureInput(base_capture, kind="base", label=str(base_path))]
@@ -323,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
 
             price_path = discover_price_history(
                 args.price_dir, base_capture.symbol, composed_start, composed_end,
+                accessed_by=cutoff,
             )
             if price_path is None:
                 print(f"Scan failed: no price history found for {symbol} under {args.price_dir}",
@@ -490,6 +563,8 @@ def main(argv: list[str] | None = None) -> int:
         split_guard=guards.report(processed_symbols=requested), symbols=symbols_payload,
         schema=RESULT_SCHEMA_V2 if used_daily_root else RESULT_SCHEMA_V1,
     )
+    if cutoff is not None:
+        document["data_cutoff_utc"] = cutoff.isoformat().replace("+00:00", "Z")
     payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
     if args.save:
