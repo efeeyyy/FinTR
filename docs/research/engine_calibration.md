@@ -98,6 +98,91 @@ Ortak piyasa payı (0,4) gerçek train verisiyle uyumlu (TRIAL_LOG T-28: ort. ik
 0,41). Dondurulmuş spec ve train sonuçları değişmedi; olası değişiklik yalnız Efe kararıyla,
 holdout'tan önce `DECISIONS.md`'ye yazılarak yapılır.
 
+## Aday yöntemler (2026-10-14, TRIAL_LOG T-30)
+
+Amaç: iki sentetik dünyada da nominale yakın, gücü makul bir varyans/çıkarım yöntemi bulmak; Efe
+holdout'tan **önce** ön kayıtlı bir değişiklik olarak benimseyebilir. **Hiçbiri benimsenmedi**;
+dondurulmuş E1 (L=5, B=9999), spec'ler, hash'ler ve motor varsayılanları değişmedi.
+
+### L=5 neden liberal (yaklaşık çözümleme)
+
+Fark `Δ̂ = m_c − m_b`'nin tarih skorları `u_t = (C_t − n_t m_c)/N_c − (B_t − b_t m_b)/N_b`
+(tüm sembollerin t günündeki olayları toplanır) için birinci mertebede `Δ̂ − Δ ≈ Σ_t u_t` ve
+`Var(Δ̂) ≈ Σ_k γ_u(k)`. Kabaca `u_t ≈ w_t (r̄_t − μ)`, `w_t = n_t/N_c − b_t/N_b` (günün ağırlık
+sapması), dolayısıyla `γ_u(k) ≈ E[w_t w_{t+k}] · Cov(r_t, r_{t+k})`:
+
+- 5 günlük ileri pencereler örtüşür: `Cov(r_t, r_{t+k}) ≈ (5−k)/5 · σ²` (k<5), piyasa payı tüm
+  sembollerde ortaktır; AR(1) biraz daha uzatır.
+- `iid` dünyada bayraklar zamanda bağımsızdır → `E[w_t w_{t+k}] ≈ 0` (k≠0), örtüşme kovaryansı
+  sönümlenir; L=5 yeterli (SE/SD 0,98).
+- `dependent` dünyada piyasa gizli değişkeni (AR φ=0,9, yarı ömür ~6,6 gün), sembol içi kalıcılık
+  (φ=0,3) ve oynaklıkla bağlı koşul olasılığı `w_t`'yi kalıcı yapar; aynı günde birçok sembol
+  birlikte tetiklendiği için piyasa bileşeni koşullu ortalamada ortalamayla yok olmaz →
+  1..4 gecikmede pozitif `γ_u`.
+- Hareketli blok bootstrap L ile yaklaşık `Σ_{|k|<L} (1−|k|/L) γ_u(k)`'yı tahmin eder (Bartlett
+  ağırlıkları). Üçgen MA(4) yapısında ve `w` kalıcılığı ~1 kabulüyle varyansın L=5'te ~%68'i
+  (SE oranı ~0,82), L=10'da ~%84'ü (~0,92), L=20'de ~%92'si (~0,96) yakalanır; MBB'nin sonlu
+  örneklem aşağı yanlılığı eklenince gözlenen 0,75 ile aynı mertebe. Bu bir yaklaşık hesaptır,
+  ölçüm değildir.
+
+### Tanımlar (aday kümesi koşudan önce sabitlendi)
+
+Tüm adaylar aynı replikatta, dondurulmuş `run_study`'nin kullandığı **aynı** havuzlanmış 5 gün
+olaylarıyla (yeni, isteğe bağlı `run_study(event_sink=...)`), aynı min-olay kuralı ve gerçek
+`holm_decisions` (m=2, α=0,05) ile değerlendirilir. Bootstrap adayları `frozen` ile aynı tohumu kullanır.
+
+| ad | yöntem |
+|---|---|
+| `frozen` | E1 hareketli blok bootstrap, sinyal tarihi ekseni, L=5, B=9999 (referans) |
+| `mbb10` | aynı motor fonksiyonu (`moving_block_bootstrap`), L=10, B=9999 |
+| `mbb20` | aynı, L=20, B=9999 |
+| `dk10` | Driscoll-Kraay: `u_t` üzerinde Bartlett HAC, 10 gecikme, `p = Φ(z)`/`1−Φ(z)` (normal referans) |
+| `dk20` | aynı, 20 gecikme |
+
+- Görevdeki "(b) tarih kümeli (kesitsel) blok bootstrap" ayrıca koşulmadı: motor zaten çekilen
+  tarihin tüm sembol olaylarını (koşullu ve baseline) birlikte taşır, koşullu ve baseline ortalamayı
+  aynı çekilmiş tarihler üzerinden alır; sentetik panelde her işlem günü bir sinyal tarihidir. Yani
+  (b) L=5 = `frozen`, L=10 = `mbb10`.
+- Kod: `src/fintr/research/candidate_inference.py` (DK formülleri `FORMULAS`'ta),
+  `scripts/calibrate_engine.py --method`. Testler: `tests/test_candidate_inference.py`
+  (`run_study` ve dondurulmuş replikat çıktısı `44fed3a`'da hesaplanan özetlerle bayt bayt aynı;
+  `event_sink` sonucu değiştirmez; aday yolunda L=5 dondurulmuş p'yi birebir verir; DK elle formül).
+
+### Pilot (yalnız kod kontrolü; R=100, null, `--workers 4`, commit `5f525c3`)
+
+PILOT_TABLE
+
+**Pilot, karar için değil.** R=100'de aile oranının %95 aralığı ±~5 puan genişliğindedir; yöntem
+sıralaması tam koşudan (R=700) yapılmalıdır.
+
+### Tam koşu (Efe başlatır)
+
+Tek komut tüm adayları, iki varyantı, null R=700 ve alt 0,01/0,02 R=150'yi kapsar; olay kurulumu
+replikat başına bir kez yapıldığından alt senaryoları tüm adaylar için koşmak ayrı komutlardan
+pahalı değildir. Kesilirse aynı komuta `--resume` eklenir.
+
+```powershell
+$env:PYTHONPATH="src"; $env:PYTHONIOENCODING="utf-8"
+.\.venv\Scripts\python.exe scripts\calibrate_engine.py `
+  --out data\interim\research\engine_calibration\2026-10-14_candidates `
+  --replicates-null 700 --replicates-alt 150 --effect-sizes 0.01 0.02 `
+  --method frozen mbb10 mbb20 dk10 dk20 --workers 12
+```
+
+FULL_RUN_ESTIMATE
+
+### Sınırlar (adaylar)
+
+- L=20'de ~245 tarihte ~12 blok kalır; bootstrap varyans tahmini daha oynak olur (hem boyut hem
+  güç etkilenebilir). L seçimi bağımlılık uzunluğuna dayanır; gerçek verinin bağımlılık uzunluğu
+  ölçülmedi.
+- DK normal referansla, b = M/T ≈ 0,04–0,08'de sabit-b kuramına göre hafif liberal kalabilir;
+  doğrusallaştırmaya dayanır (oran tipi istatistik).
+- Adaylar aynı sentetik tohumlarda karşılaştırılır; "en iyi" adayı seçmek bu sentetik dünyaya hafif
+  uyum (seçim iyimserliği) taşır. Bağımlılık düzeyi (`latent_phi=0.9`) bir modelleme varsayımıdır.
+- Benimsenecek yöntem holdout'tan önce `DECISIONS.md`'ye yazılmalı ve dondurulmuş spec'lerin
+  `block_bootstrap` değişikliği yeni spec hash'i gerektirir (Efe kararı).
+
 ## Sınırlar
 
 - Sentetik üreteç gerçek BIST dinamiklerini temsil etmez (fiyat limiti, tatiller, açılış/kapanış
