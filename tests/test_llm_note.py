@@ -532,6 +532,16 @@ class NumberTests(unittest.TestCase):
         for text in ("bir kurum", "altında", "onlar", "yüzdelik", "binek", "net alıcı", "yedekte"):
             self.assertEqual(numbers.find_number_words(text), [], text)
 
+    def test_inflected_english_and_symbolic_number_words(self):
+        for text in ("kurumların ikisi", "beşi net alıcı", "üçüncü gün", "ikişer lot", "dördü", "kırkı", "binlerce lot",
+                     "milyonlarca", "onlarca kurum", "five institutions", "Two days", "10 percent", "½ lot",
+                     "¾", "m²", "①", "Ⅳ"):
+            self.assertTrue(numbers.find_number_words(text), text)
+        for text in ("net alıcı konumunda", "kararlı gün", "takas verisi", "bilgi", "iyi", "elinde", "eleştiri",
+                     "üretim", "dönem", "tendency", "often", "gün sonu", "5 lot", "%40,5",
+                     "onu", "yüzey", "binanın"):
+            self.assertEqual(numbers.find_number_words(text), [], text)
+
     def test_rounded_quotes_match_at_the_quoted_precision(self):
         self.assertTrue(self.ok("10,46", "10.4567"))
         self.assertTrue(self.ok("10.46", "10.4567"))

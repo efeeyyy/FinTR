@@ -24,11 +24,5 @@
     "data_caveats": [
       "Metadata sağlayıcı hesabıdır; doğrulanmadı."
     ]
-  },
-  "known_gap": true,
-  "known_gap_reason": "the number-word list is Turkish only",
-  "current_result": {
-    "ok": true,
-    "reason": null
   }
 }
