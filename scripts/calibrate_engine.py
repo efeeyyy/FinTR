@@ -439,7 +439,8 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--out", type=Path, required=True,
                    help="output directory (must not exist or be empty; never overwritten)")
-    p.add_argument("--variants", nargs="+", choices=sm.VARIANTS, default=list(sm.VARIANTS))
+    p.add_argument("--variants", nargs="+", choices=sm.VARIANTS, default=["iid", "dependent"],
+                   help="synthetic worlds (default iid dependent; xsection = same-date clustering only, TRIAL_LOG T-30)")
     p.add_argument("--replicates-null", type=int, default=1000)
     p.add_argument("--replicates-alt", type=int, default=300)
     p.add_argument("--effect-sizes", type=float, nargs="*", default=[0.01, 0.02, 0.03],

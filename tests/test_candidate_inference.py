@@ -171,6 +171,37 @@ class DriscollKraayTests(unittest.TestCase):
                                               predicted_direction=None).p_value_one_sided)
 
 
+class XsectionWorldTests(unittest.TestCase):
+    """``xsection``: same-date cross-symbol flag clustering, no temporal persistence."""
+
+    def test_flags_cluster_across_symbols_not_in_time(self):
+        for seed in ("xs:a", "xs:b"):
+            world = sm.generate_world(sm.MarketConfig(variant="xsection", n_symbols=20, n_days=150), seed)
+            for hid in ("H1", "H2"):
+                rows = [world.flags[hid][s] for s in world.symbols]
+                n, T = len(rows), len(rows[0])
+                counts = [sum(row[t] for row in rows) for t in range(T)]
+                p = sum(counts) / (n * T)
+                self.assertTrue(0.11 <= p <= 0.19, p)
+                dispersion = sum((k - n * p) ** 2 for k in counts) / (T * n * p * (1 - p))
+                self.assertGreater(dispersion, 3.0)  # iid world ~1
+                mean = sum(counts) / T
+                acf1 = (sum((counts[t] - mean) * (counts[t + 1] - mean) for t in range(T - 1))
+                        / sum((c - mean) ** 2 for c in counts))
+                self.assertLess(abs(acf1), 0.25)
+
+    def test_engine_events_match_generator_flags(self):
+        cal = _load_script()
+        rec = cal.run_replicate(_task("xsection", {}))
+        for hid in ("H1", "H2"):
+            row = rec["hypotheses"][hid]
+            self.assertEqual(row["event_count"], row["truth_event_count"])
+
+    def test_harness_default_variants_unchanged(self):
+        cal = _load_script()
+        self.assertEqual(cal._parser().parse_args(["--out", "x"]).variants, ["iid", "dependent"])
+
+
 class MethodHarnessTests(unittest.TestCase):
     ARGV = ["--variants", "iid", "--replicates-null", "3", "--replicates-alt", "1",
             "--effect-sizes", "0.02", "--workers", "1", "--n-symbols", "6", "--n-days", "80",

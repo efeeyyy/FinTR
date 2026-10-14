@@ -17,7 +17,12 @@ Design
   idiosyncratic term, Student-t(6) innovations, weak AR(1) serial
   correlation, and a condition probability that moves with the market
   volatility and with a persistent market-wide latent (so conditioned days
-  cluster in time and in high-volatility regimes).
+  cluster in time and in high-volatility regimes). Variant ``xsection``
+  (added 2026-10-14, TRIAL_LOG T-30, from the real flag-only statistics of
+  T-29): returns exactly as ``iid``; the condition input loads on a
+  market-wide latent that is i.i.d. over days (no persistence), so flags
+  cluster across symbols on the same date (dispersion index ~5, frequency
+  ~0.15 per side) but not in time.
 * ``open[t] = close[t-1] * exp(GAP_SHARE * r[t])``,
   ``close[t] = close[t-1] * exp(r[t])`` (exact consistency, no adjustment
   boundary, volume non-zero so no bar is a holiday placeholder).
@@ -70,7 +75,10 @@ HYPOTHESES = ("H1", "H2", "H3", "H4")
 _X_LOW, _X_HIGH = Decimal("0.01"), Decimal("0.10")
 _TOP1_MIN = Decimal("0.10")
 
-VARIANTS = ("iid", "dependent")
+VARIANTS = ("iid", "dependent", "xsection")
+# xsection latent loading, calibrated on flags only (dispersion index ~5 at
+# frequency ~0.15; scripts in docs/research/engine_calibration.md "Aday yöntemler")
+XSECTION_LOADING = 0.65  # 5 seeds x 20x250: dispersion 5.1/5.2, frequency 0.15, flag/count acf lag1 ~0
 
 
 @dataclass(frozen=True)
@@ -95,6 +103,9 @@ class MarketConfig:
     latent_phi: float = 0.9  # persistence of the market-wide condition latent
     latent_loading: float = 0.35
     symbol_phi: float = 0.3  # within-symbol persistence of the condition input
+    # xsection variant: same-date cross-symbol clustering only (latent i.i.d. over days)
+    xsection_loading: float = XSECTION_LOADING
+    xsection_vwap_scale: float = 0.00965  # P(x >= 0.01) = P(x <= -0.01) ~ 0.15
 
     def __post_init__(self):
         if self.variant not in VARIANTS:
@@ -209,6 +220,7 @@ def generate_world(
     n, T, K = config.n_symbols, config.n_days, config.n_brokers
     symbols = tuple(f"SYN{i + 1:02d}" for i in range(n))
     dependent = config.variant == "dependent"
+    xsection = config.variant == "xsection"
 
     # ---- market-level series -------------------------------------------------
     rng_m = random.Random(f"{tag}:market")
@@ -218,7 +230,7 @@ def generate_world(
         vol_mult = [min(2.0, max(0.5, sd)) for sd in mkt_sd]
     else:
         mkt = [rng_m.gauss(0.0, 1.0) for _ in range(T)]
-        latent = [0.0] * T
+        latent = [rng_m.gauss(0.0, 1.0) for _ in range(T)] if xsection else [0.0] * T
         vol_mult = [1.0] * T
 
     ms = config.market_share
@@ -250,11 +262,12 @@ def generate_world(
         w = _ar1_gaussian(rng_x, T, config.symbol_phi) if dependent else [
             rng_x.gauss(0.0, 1.0) for _ in range(T)
         ]
-        a = config.latent_loading if dependent else 0.0
+        a = config.latent_loading if dependent else (config.xsection_loading if xsection else 0.0)
+        x_scale = config.xsection_vwap_scale if xsection else config.vwap_scale
         xs: list[float] = []
         for t in range(T):
             u = a * latent[t] + math.sqrt(1.0 - a * a) * w[t]
-            x = config.vwap_scale * vol_mult[t] * u
+            x = x_scale * vol_mult[t] * u
             if rng_x.random() < config.outlier_prob:
                 x = rng_x.choice((-1.0, 1.0)) * rng_x.uniform(0.11, 0.25)
             xs.append(x)
