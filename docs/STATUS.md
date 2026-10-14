@@ -1,6 +1,6 @@
 # Proje durumu (devir notu)
 
-Son güncelleme: 2026-10-04. Yeni bir yönetici oturumu uzun sohbet geçmişi yerine bu
+Son güncelleme: 2026-10-14. Yeni bir yönetici oturumu uzun sohbet geçmişi yerine bu
 dosyayı ve vault notunu (`Beynim/İkinci Beyin/notes/fintr-llm.md`) okuyarak devam eder.
 Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulur.
 
@@ -216,6 +216,23 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      `docs/scanner.md`; scanner'a opt-in `--data-cutoff-utc`). İlk gerçek koşu: point-in-time 5/5
      özdeş (kod kayması yok); current modda 09-30/10-02/10-09 yalnız `data_revision` (yeni dosyalar,
      kesinleşmemiş listeler), kural/gözlem alanı farkı yok. Haftalık (ör. Cumartesi) yönetici çalıştırır.
+   - 2026-10-14: Analiz notu politikası birleşti (DECISIONS 2026-10-14, TRIAL_LOG P-01): not
+     kelimesi/metni holdout dönemi çalışmalarına girdi olamaz; geç üretilen notlar `generated_late`.
+     Doğrulayıcı v2 birleşti (P-02, `da3c20a`/`645f704`): 43 vakalık sentetik iyi/bozuk not seti
+     (`tests/fixtures/llm_note_cases/`), yasak ifade normalizasyonu, yazıyla sayı çekimleri, kanıt
+     yolu ≤40 değer; kabul edilmiş 8 gerçek not v2'de de geçiyor; 4 anlamsal açık `known_gap`.
+     LLM altın/negatif seti maddesi böylece tamam.
+   - 2026-10-14: Takas gecikmesi tarihe bağlı yapılandırmada birleşti
+     (`configs/market/settlement_cycle.json`, `src/fintr/data/settlement_cycle.py`; şu an tek dönem
+     T+2, davranış aynı; rapor şeması değişmedi; 1445 test OK). T+1'e geçilirse yeni dönem satırı
+     eklenir ve "T+2" metin etiketleri (`scanner/report.py`, `notify/format.py`) ayrıca düzeltilmeli.
+     BIST tatil takvimi TASLAĞI birleşti (`configs/market/bist_holidays_draft.json`,
+     `docs/research/bist_holiday_calendar_draft.md`; `draft_unverified`, koda bağlı değil):
+     2023–2026 resmî BIST tatil tablosu PDF'lerinden, 2027 Ç1 Diyanet listesinden (`expected_not_announced`).
+     Yahoo'nun düşürdüğü 7 günün hepsi resmî tam kapanış. Efe doğrulaması bekleyen: 2023-02-08..14
+     deprem kapanışı (yalnız ikincil kaynak), 2023-10-28, hafta sonu arifeleri; 2027 tablosu ~Aralık 2026.
+     Kalan aday işler: tatil takvimini Efe doğrulayınca koda bağlama, maliyet duyarlılık ızgarası
+     (holdout öncesi DECISIONS, Efe kararı), T-24 train etkisi.
    - İzinler (Efe, 2026-10-04): `.claude/settings.local.json` (git dışı) → env PYTHONPATH=src,
      PYTHONIOENCODING=utf-8; allow: git merge, `git push origin *`, venv python ile
      run_daily_pipeline/notify_observations/scan_observations/collect_daily/llm_note. Yeni
