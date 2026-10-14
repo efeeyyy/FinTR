@@ -1,0 +1,29 @@
+{
+  "case_id": "accept_scanner_vocabulary_belirsiz",
+  "description": "Words that must not trip the wording list: Kesinleşmemiş, net alıcı, alınan, satış, belirsiz.",
+  "expected": "accept",
+  "expected_reason": null,
+  "note": {
+    "assessments": [
+      {
+        "symbol": "SYNA",
+        "rule_id": "H2",
+        "as_of": "2026-01-09",
+        "assessment": "belirsiz",
+        "plain_explanation": "Alınan veri gecikmeli olabilir; satış hacmi ve veri durumu belirsiz kaldığı için değerlendirme belirsizdir.",
+        "reasons": [
+          {
+            "text": "Kesinleşmemiş gün bildirimi yok; net alıcı konumunda AAA kodu net_size 175.",
+            "evidence_paths": [
+              "/symbols/SYNA/days/2026-01-09/akd/AAA",
+              "/symbols/SYNA/scans/0/data_status/unsettled_families"
+            ]
+          }
+        ]
+      }
+    ],
+    "data_caveats": [
+      "Metadata sağlayıcı hesabıdır; doğrulanmadı."
+    ]
+  }
+}

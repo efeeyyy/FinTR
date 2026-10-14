@@ -1,0 +1,343 @@
+{
+ "as_of": "2026-01-09",
+ "columns": {
+  "akd": [
+   "net_size",
+   "total_size",
+   "total_cost"
+  ],
+  "custody": "lot_count per institution code (custody balance)"
+ },
+ "observation_file": {
+  "rules_file_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "schema": "fintr_scanner_observations_v2",
+  "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+ },
+ "required_assessments": [
+  {
+   "as_of": "2026-01-09",
+   "rule_id": "H2",
+   "symbol": "SYNA"
+  }
+ ],
+ "rules": {
+  "H2": {
+   "condition": {
+    "op": "and",
+    "terms": [
+     {
+      "left": {
+       "feature": "vwap_proxy_vs_close"
+      },
+      "op": "ge",
+      "right": {
+       "const": "0.01"
+      }
+     },
+     {
+      "left": {
+       "feature": "vwap_proxy_vs_close"
+      },
+      "op": "le",
+      "right": {
+       "const": "0.10"
+      }
+     }
+    ]
+   },
+   "description": "Kapanış, AKD türevi VWAP proxy'sinin en az ~%1 altında (birincil ön kayıtlı kural, H1'in simetriği)",
+   "family_role": "primary",
+   "hypothesis_text": "- **H0:** `Δ_5 ≤ 0` — kapanışın VWAP proxy'sinin en az ~%1 altında olduğu\r\n  günlerin ardından 5 günlük ortalama net getiri baseline'dan yüksek değildir.\r\n- **H1 (beklenen):** `Δ_5 > 0`.\r\n\r\nH1'in simetriğidir; ayrı hipotez olarak tutulur çünkü satış yönlü ve alış\r\nyönlü fiyat baskısının geri dönüşü asimetrik olabilir (ör. açığa satış\r\nkısıtları veya likidite sağlayıcıların envanter maliyetleri iki yönde farklı\r\nolabilir; BIST'e özgü bir kaynak doğrulanmış olarak gösterilemiyor — belirsiz).\r\nKapanışın ortalama işlem fiyatının altında olması hiçbir tarafın niyetine\r\nveya manipülasyona kanıt sayılmaz.",
+   "predicted_direction": "positive",
+   "prereg_doc_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+   "rationale_text": "H1 ile aynı mekanizma: satış yönlü likidite talebinin kapanışı günün\r\nortalama işlem fiyatının altına itmesi ve bu geçici baskının kısmen geri\r\ndönmesi (Jegadeesh 1990, *JF*; Lehmann 1990, *QJE*; Nagel 2012, *RFS*;\r\nCampbell, Grossman & Wang 1993, *QJE*). Rakip açıklama gün içi momentum/\r\nbilgi temelli devamdır (Gao, Han, Li & Zhou 2018, *JFE*; Llorente, Michaely,\r\nSaar & Wang 2002, \"Dynamic Volume-Return Relation of Individual Stocks\",\r\n*Review of Financial Studies* 15(4)).",
+   "spec_description": "DONDURULDU — Efe onayı [tarih] (docs/prereg/DECISIONS.md); tavsiye değildir. Kapanış, AKD-türevi VWAP proxy'sinin en az ~%1 altında (vwap_proxy_vs_close >= 0.01; <= 0.10 bandı birim/ölçek uyumsuzluğunu dışlar) olan günlerin ardından, sonraki işlem günü açılışında girilen 5 işlem günlük net getirinin ortalaması baseline ortalamasından yüksek midir (H1'in simetriği)? Tarihsel istatistik araştırmasıdır; al/sat sinyali, niyet veya manipülasyon iddiası içermez. vwap_proxy doğrulanmamış derived_proxy_not_official_ohlc varsayımına, kapanış resmî olmayan Yahoo verisine dayanır."
+  }
+ },
+ "schema": "fintr_llm_note_packet_v1",
+ "symbols": {
+  "SYNA": {
+   "composition": {
+    "composition_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "gap_dates_in_window": [],
+    "revised_in_window": [],
+    "unsettled_in_window": []
+   },
+   "cutoff": "2026-01-09",
+   "days": {
+    "2026-01-05": {
+     "akd": {
+      "AAA": [
+       "120",
+       "1000",
+       "10.4"
+      ],
+      "BBB": [
+       "30",
+       "400",
+       "10.4"
+      ],
+      "CCC": [
+       "15",
+       "300",
+       "10.4"
+      ],
+      "DDD": [
+       "-5",
+       "210",
+       "10.5"
+      ]
+     },
+     "custody": {
+      "AAA": "5000",
+      "BBB": "3000",
+      "CCC": "1500",
+      "DDD": "800"
+     }
+    },
+    "2026-01-06": {
+     "akd": {
+      "AAA": [
+       "-60",
+       "900",
+       "10.45"
+      ],
+      "BBB": [
+       "-20",
+       "450",
+       "10.5"
+      ],
+      "CCC": [
+       "25",
+       "320",
+       "10.45"
+      ],
+      "DDD": [
+       "10",
+       "230",
+       "10.5"
+      ]
+     },
+     "custody": {
+      "AAA": "5100",
+      "BBB": "3010",
+      "CCC": "1510",
+      "DDD": "810"
+     }
+    },
+    "2026-01-07": {
+     "akd": {
+      "AAA": [
+       "100",
+       "1000",
+       "10.5"
+      ],
+      "BBB": [
+       "-40",
+       "500",
+       "10.5"
+      ],
+      "CCC": [
+       "-10",
+       "310",
+       "10.5"
+      ],
+      "DDD": [
+       "20",
+       "220",
+       "10.5"
+      ]
+     },
+     "custody": {
+      "AAA": "5200",
+      "BBB": "3020",
+      "CCC": "1520",
+      "DDD": "820"
+     }
+    },
+    "2026-01-08": {
+     "akd": {
+      "AAA": [
+       "250",
+       "1200",
+       "10.48"
+      ],
+      "BBB": [
+       "-90",
+       "520",
+       "10.5"
+      ],
+      "CCC": [
+       "-35",
+       "330",
+       "10.5"
+      ],
+      "DDD": [
+       "-15",
+       "240",
+       "10.5"
+      ]
+     },
+     "custody": {
+      "AAA": "5300",
+      "BBB": "3030",
+      "CCC": "1530",
+      "DDD": "830"
+     }
+    },
+    "2026-01-09": {
+     "akd": {
+      "AAA": [
+       "175",
+       "1100",
+       "10.5"
+      ],
+      "BBB": [
+       "-55",
+       "480",
+       "10.5"
+      ],
+      "CCC": [
+       "-20",
+       "340",
+       "10.5"
+      ],
+      "DDD": [
+       "45",
+       "250",
+       "10.5"
+      ]
+     },
+     "custody": {
+      "AAA": "5400",
+      "BBB": "3040",
+      "CCC": "1540",
+      "DDD": "840"
+     }
+    }
+   },
+   "institutions": {
+    "AAA": {
+     "short_title": "Alfa",
+     "title": "Alfa Yatırım Menkul"
+    },
+    "BBB": {
+     "short_title": "Hedef",
+     "title": "Hedef Menkul Değerler"
+    },
+    "CCC": {
+     "short_title": "Gamma",
+     "title": "Gamma Menkul Değerler"
+    },
+    "DDD": {
+     "short_title": "Delta",
+     "title": "Delta Yatırım"
+    }
+   },
+   "metadata_by_day": {
+    "2026-01-05": {
+     "institutional_pct": "61.8",
+     "investor_count": 1190,
+     "null_fields": [],
+     "retail_pct": "38.2"
+    },
+    "2026-01-06": {
+     "institutional_pct": "60.9",
+     "investor_count": 1205,
+     "null_fields": [],
+     "retail_pct": "39.1"
+    },
+    "2026-01-07": {
+     "institutional_pct": "60.1",
+     "investor_count": 1219,
+     "null_fields": [],
+     "retail_pct": "39.9"
+    },
+    "2026-01-08": {
+     "institutional_pct": "59.8",
+     "investor_count": 1226,
+     "null_fields": [],
+     "retail_pct": "40.2"
+    },
+    "2026-01-09": {
+     "institutional_pct": "59.5",
+     "investor_count": 1234,
+     "null_fields": [],
+     "retail_pct": "40.5"
+    }
+   },
+   "scans": [
+    {
+     "as_of": "2026-01-09",
+     "data_status": {
+      "revised_families": [],
+      "unsettled_families": []
+     },
+     "freshness": {
+      "custody_behind_akd_server_dates": 0,
+      "custody_flagged_stale_t_plus_2": false,
+      "last_akd_server_date": "2026-01-09",
+      "last_custody_date": "2026-01-09",
+      "last_price_date": "2026-01-09"
+     },
+     "observations": [
+      {
+       "as_of": "2026-01-09",
+       "condition_met": true,
+       "family_role": "primary",
+       "features": [
+        {
+         "data_families": [
+          "akd",
+          "price"
+         ],
+         "formula": "(daily_market_proxy.vwap_proxy[t] - price_bar.close[t]) / price_bar.close[t]; None unless both the AKD-derived proxy and a same-date price bar close are present and close != 0",
+         "max_date": "2026-01-09",
+         "min_date": "2026-01-09",
+         "name": "vwap_proxy_vs_close",
+         "value": "0.05"
+        }
+       ],
+       "not_evaluable_reason": null,
+       "rule_id": "H2",
+       "suppressed": null,
+       "validation_status": "preregistered_hypothesis_holdout_test_pending"
+      },
+      {
+       "as_of": "2026-01-09",
+       "condition_met": false,
+       "family_role": "secondary_descriptive",
+       "features": [
+        {
+         "data_families": [
+          "akd"
+         ],
+         "formula": "max_code(|daily_akd.net_size[code, t]|) / daily_market_proxy.sum_total_size[t]; None if the day has no daily_akd_market rows or sum_total_size[t] is 0",
+         "max_date": "2026-01-09",
+         "min_date": "2026-01-09",
+         "name": "top1_akd_net_share_of_volume",
+         "value": "0.08064516129032258064516129032"
+        },
+        {
+         "data_families": [
+          "akd",
+          "price"
+         ],
+         "formula": "(daily_market_proxy.vwap_proxy[t] - price_bar.close[t]) / price_bar.close[t]; None unless both the AKD-derived proxy and a same-date price bar close are present and close != 0",
+         "max_date": "2026-01-09",
+         "min_date": "2026-01-09",
+         "name": "vwap_proxy_vs_close",
+         "value": "0.05"
+        }
+       ],
+       "not_evaluable_reason": null,
+       "rule_id": "H3",
+       "suppressed": null,
+       "validation_status": "preregistered_hypothesis_holdout_test_pending"
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

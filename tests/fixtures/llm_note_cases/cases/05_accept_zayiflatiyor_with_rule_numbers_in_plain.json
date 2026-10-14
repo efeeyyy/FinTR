@@ -1,0 +1,34 @@
+{
+  "case_id": "accept_zayiflatiyor_with_rule_numbers_in_plain",
+  "description": "Opposite verdict word; plain text quotes numbers from the rule entry (%1, 5 günlük) and the cited metadata.",
+  "expected": "accept",
+  "expected_reason": null,
+  "note": {
+    "assessments": [
+      {
+        "symbol": "SYNA",
+        "rule_id": "H2",
+        "as_of": "2026-01-09",
+        "assessment": "zayıflatıyor",
+        "plain_explanation": "Kural, kapanışın VWAP proxy'sinin en az %1 altında kalmasını arar ve 5 günlük sonucu bekler. Metadata'da perakende oranı %40,5; bazı kurumlar net satıcı olduğu için tablo hipotezle tutarsız olabilir.",
+        "reasons": [
+          {
+            "text": "BBB kodu net satıcı; net_size -55.",
+            "evidence_paths": [
+              "/symbols/SYNA/days/2026-01-09/akd/BBB"
+            ]
+          },
+          {
+            "text": "Perakende oranı metadata'da bildirildi.",
+            "evidence_paths": [
+              "/symbols/SYNA/metadata_by_day/2026-01-09"
+            ]
+          }
+        ]
+      }
+    ],
+    "data_caveats": [
+      "Metadata sağlayıcı hesabıdır; doğrulanmadı."
+    ]
+  }
+}

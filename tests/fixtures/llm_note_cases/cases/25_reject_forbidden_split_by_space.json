@@ -1,0 +1,34 @@
+{
+  "case_id": "reject_forbidden_split_by_space",
+  "description": "A stem split by one space: 'ka zanç'.",
+  "expected": "reject",
+  "expected_reason": "forbidden_phrase",
+  "note": {
+    "assessments": [
+      {
+        "symbol": "SYNA",
+        "rule_id": "H2",
+        "as_of": "2026-01-09",
+        "assessment": "destekliyor",
+        "plain_explanation": "Bu kural, günün son fiyatının hacim ağırlıklı ortalama fiyatın altında kalmasını arar. Veri bu koşulun sağlandığını gösteriyor. Hipotez, bu tür baskının kısmen geri döneceğini varsayar.",
+        "reasons": [
+          {
+            "text": "AAA için ka zanç oluşmuş.",
+            "evidence_paths": [
+              "/symbols/SYNA/days/2026-01-09/akd/AAA"
+            ]
+          }
+        ]
+      }
+    ],
+    "data_caveats": [
+      "Metadata sağlayıcı hesabıdır; doğrulanmadı."
+    ]
+  },
+  "known_gap": true,
+  "known_gap_reason": "word-boundary stem matching only sees contiguous words",
+  "current_result": {
+    "ok": true,
+    "reason": null
+  }
+}

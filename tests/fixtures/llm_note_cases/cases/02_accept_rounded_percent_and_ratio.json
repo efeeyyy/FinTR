@@ -1,0 +1,29 @@
+{
+  "case_id": "accept_rounded_percent_and_ratio",
+  "description": "Ratio quoted as a ratio and as a percentage, rounded at the quoted precision (0.05 -> %5; 0.0806.. -> %8,06).",
+  "expected": "accept",
+  "expected_reason": null,
+  "note": {
+    "assessments": [
+      {
+        "symbol": "SYNA",
+        "rule_id": "H2",
+        "as_of": "2026-01-09",
+        "assessment": "destekliyor",
+        "plain_explanation": "Bu kural, günün son fiyatının hacim ağırlıklı ortalama fiyatın altında kalmasını arar. Veri bu koşulun sağlandığını gösteriyor. Hipotez, bu tür baskının kısmen geri döneceğini varsayar.",
+        "reasons": [
+          {
+            "text": "vwap_proxy_vs_close 0,05 yani %5; en büyük kurum payı %8,06.",
+            "evidence_paths": [
+              "/symbols/SYNA/scans/0/observations/0/features/0/value",
+              "/symbols/SYNA/scans/0/observations/1/features/0/value"
+            ]
+          }
+        ]
+      }
+    ],
+    "data_caveats": [
+      "Metadata sağlayıcı hesabıdır; doğrulanmadı."
+    ]
+  }
+}
