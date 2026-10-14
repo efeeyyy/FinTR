@@ -128,35 +128,49 @@ gösterir ama bayrak-getiri bağımlılığını (üreteçteki volatilite bağı
 çok seyrek (10 ve 8 bayrak) olduğu için bilgi vermez.
 ## Aday yöntemler (2026-10-14, TRIAL_LOG T-30)
 
-Amaç: iki sentetik dünyada da nominale yakın, gücü makul bir varyans/çıkarım yöntemi bulmak; Efe
+Amaç: sentetik dünyaların hepsinde nominale yakın, gücü makul bir varyans/çıkarım yöntemi bulmak; Efe
 holdout'tan **önce** ön kayıtlı bir değişiklik olarak benimseyebilir. **Hiçbiri benimsenmedi**;
 dondurulmuş E1 (L=5, B=9999), spec'ler, hash'ler ve motor varsayılanları değişmedi.
 
-### L=5 neden liberal (yaklaşık çözümleme)
+### L=5 neden liberal
 
 Fark `Δ̂ = m_c − m_b`'nin tarih skorları `u_t = (C_t − n_t m_c)/N_c − (B_t − b_t m_b)/N_b`
-(tüm sembollerin t günündeki olayları toplanır) için birinci mertebede `Δ̂ − Δ ≈ Σ_t u_t` ve
-`Var(Δ̂) ≈ Σ_k γ_u(k)`. Kabaca `u_t ≈ w_t (r̄_t − μ)`, `w_t = n_t/N_c − b_t/N_b` (günün ağırlık
-sapması), dolayısıyla `γ_u(k) ≈ E[w_t w_{t+k}] · Cov(r_t, r_{t+k})`:
+(t günündeki tüm sembol olayları toplanır) için birinci mertebede `Δ̂ − Δ ≈ Σ_t u_t`,
+`Var(Δ̂) ≈ Σ_k γ_u(k)`. Kabaca `u_t ≈ w_t (r̄_t − μ)`, `w_t = n_t/N_c − b_t/N_b`, yani
+`γ_u(k) ≈ E[w_t w_{t+k}] · Cov(r_t, r_{t+k})`; 5 günlük ileri pencereler örtüştüğü için
+`Cov(r_t, r_{t+k}) > 0` (k<5).
 
-- 5 günlük ileri pencereler örtüşür: `Cov(r_t, r_{t+k}) ≈ (5−k)/5 · σ²` (k<5), piyasa payı tüm
-  sembollerde ortaktır; AR(1) biraz daha uzatır.
-- `iid` dünyada bayraklar zamanda bağımsızdır → `E[w_t w_{t+k}] ≈ 0` (k≠0), örtüşme kovaryansı
-  sönümlenir; L=5 yeterli (SE/SD 0,98).
-- `dependent` dünyada piyasa gizli değişkeni (AR φ=0,9, yarı ömür ~6,6 gün), sembol içi kalıcılık
-  (φ=0,3) ve oynaklıkla bağlı koşul olasılığı `w_t`'yi kalıcı yapar; aynı günde birçok sembol
-  birlikte tetiklendiği için piyasa bileşeni koşullu ortalamada ortalamayla yok olmaz →
-  1..4 gecikmede pozitif `γ_u`.
-- Hareketli blok bootstrap L ile yaklaşık `Σ_{|k|<L} (1−|k|/L) γ_u(k)`'yı tahmin eder (Bartlett
-  ağırlıkları). Üçgen MA(4) yapısında ve `w` kalıcılığı ~1 kabulüyle varyansın L=5'te ~%68'i
-  (SE oranı ~0,82), L=10'da ~%84'ü (~0,92), L=20'de ~%92'si (~0,96) yakalanır; MBB'nin sonlu
-  örneklem aşağı yanlılığı eklenince gözlenen 0,75 ile aynı mertebe. Bu bir yaklaşık hesaptır,
-  ölçüm değildir.
+- `iid`/`xsection`: bayraklar zamanda bağımsız → `E[w_t w_{t+k}] ≈ 0` (k≠0); örtüşme kovaryansı
+  sönümlenir. Aynı-gün kümelenmesi yalnız `γ_u(0)`'ı büyütür ve tarih yeniden örneklemesi onu
+  yapısal olarak taşır. Ölçülen `u_t` otokorelasyonu lag 1-10'da ~0.
+- `dependent`: kalıcı bayraklar (gizli φ=0,9, sembol φ=0,3, oynaklık bağı) → `u_t` otokorelasyonu
+  lag 1-4'te 0,30 / 0,17 / 0,10 / 0,04, sonra hafif negatif.
+
+Tanı (yalnız üreteç, motor yok; 200 sentetik dünya, H1; `dependent` H2 benzer): gerçek
+`SD(Δ̂)`'ye göre ortalama DK varyansının karekökü
+`sqrt(mean V_M)/SD(Δ̂)`:
+
+| dünya | M=0 | M=5 | M=10 | M=20 | M=40 | M=60 |
+|---|---|---|---|---|---|---|
+| `iid` | 0,95 | 0,94 | 0,93 | 0,90 | 0,87 | 0,84 |
+| `xsection` | 1,11 | 1,10 | 1,08 | 1,06 | 1,01 | 0,97 |
+| `dependent` | 0,59 | 0,83 | 0,85 | 0,83 | 0,78 | 0,75 |
+| `dependent`, `latent_phi=0` | 0,76 | 0,93 | 0,94 | 0,92 | — | 0,82 |
+| `dependent`, GARCH yok | 0,63 | 0,83 | 0,86 | 0,86 | — | 0,81 |
+
+Sonuç: `dependent`'ta açık **L=5 kesmesi değil**. Pencere büyütülünce oran ~0,85'te tepe yapıp
+düşer: 250 tarihlik tek panelde kalıcı (düşük frekanslı) varyans parçası örneklem içi
+otokovaryanslardan geri kazanılamaz (skorlar `Σ u_t = 0` ile merkezlendiği için uzun gecikmelerde
+örneklem otokorelasyonu negatife çekilir, lag 11-30 toplamı −0,18; bilinen küçük örneklem HAC
+yanlılığı). Uzun blok/gecikme bu yanlılığı azaltmaz, tahminin oynaklığını artırır. Buna uygun
+olarak pilotta tüm adaylarda `dependent` SE/SD ≈ 0,75-0,81 kaldı (aşağıda). Önceki taslaktaki
+"L=10/20 varyansın %84/%92'sini yakalar" yaklaşık hesabı (yalnız örtüşmeyi sayıyordu) **yanlış
+çıktı** ve geri çekildi. Tanı betiği oturum scratchpad'indeydi (Git dışı; sonuç yalnız bu tablo).
 
 ### Tanımlar (aday kümesi koşudan önce sabitlendi)
 
-Tüm adaylar aynı replikatta, dondurulmuş `run_study`'nin kullandığı **aynı** havuzlanmış 5 gün
-olaylarıyla (yeni, isteğe bağlı `run_study(event_sink=...)`), aynı min-olay kuralı ve gerçek
+Tüm adaylar aynı replikatta, dondurulmuş `run_study`'nin kullandığı **aynı** havuzlanmış 5 günlük
+olaylarla (yeni, isteğe bağlı `run_study(event_sink=...)`), aynı min-olay kuralı ve gerçek
 `holm_decisions` (m=2, α=0,05) ile değerlendirilir. Bootstrap adayları `frozen` ile aynı tohumu kullanır.
 
 | ad | yöntem |
@@ -171,39 +185,81 @@ olaylarıyla (yeni, isteğe bağlı `run_study(event_sink=...)`), aynı min-olay
   tarihin tüm sembol olaylarını (koşullu ve baseline) birlikte taşır, koşullu ve baseline ortalamayı
   aynı çekilmiş tarihler üzerinden alır; sentetik panelde her işlem günü bir sinyal tarihidir. Yani
   (b) L=5 = `frozen`, L=10 = `mbb10`.
+- **Yeni dünya `xsection`** (TRIAL_LOG T-30 ek; yalnız T-29'un gerçek bayrak istatistiklerine göre,
+  hiçbir yöntem sonucuna bakmadan): getiriler `iid` ile aynı (tek faktör, pay 0,4, normal); koşul
+  girdisi günler arasında bağımsız bir piyasa-geneli gizli değişkene 0,65 yüklenir, `vwap` ölçeği
+  0,00965. 5 tohumda dağılım indeksi 5,1/5,2, sıklık 0,15, bayrak/sayı lag-1 otokorelasyonu ~0
+  (gerçek: 5,17/5,05, 0,135/0,168, ~0). Harness varsayılan varyantları `iid dependent` kaldı.
 - Kod: `src/fintr/research/candidate_inference.py` (DK formülleri `FORMULAS`'ta),
-  `scripts/calibrate_engine.py --method`. Testler: `tests/test_candidate_inference.py`
-  (`run_study` ve dondurulmuş replikat çıktısı `44fed3a`'da hesaplanan özetlerle bayt bayt aynı;
-  `event_sink` sonucu değiştirmez; aday yolunda L=5 dondurulmuş p'yi birebir verir; DK elle formül).
+  `scripts/calibrate_engine.py --method`, `tests/synthetic_market.py` (`xsection`). Testler:
+  `tests/test_candidate_inference.py` (`run_study` ve `iid`/`dependent` dondurulmuş replikat çıktısı
+  `44fed3a`'da hesaplanan özetlerle bayt bayt aynı; `event_sink` sonucu değiştirmez; aday yolunda
+  L=5 dondurulmuş p/SE/Holm'u birebir verir; DK elle formül; `xsection` kümelenme ve olay eşleşmesi).
 
-### Pilot (yalnız kod kontrolü; R=100, null, `--workers 4`, commit `5f525c3`)
+### Pilot (yalnız kod kontrolü; null, R=100, `--workers 4`, tohum 20261013)
 
-PILOT_TABLE
+`iid`/`dependent` commit `5f525c3` (1083 s), `xsection` commit `75c52dc` (529 s). Holm red oranı,
+tam %95 aralık; SE/SD = ortalama SE / gözlenen fark SD'si. **PİLOT — karar için değil**: R=100'de
+aile oranının aralığı ±~5 puan.
 
-**Pilot, karar için değil.** R=100'de aile oranının %95 aralığı ±~5 puan genişliğindedir; yöntem
-sıralaması tam koşudan (R=700) yapılmalıdır.
+| varyant | yöntem | H1 Holm red | H2 Holm red | aile (herhangi red) | SE/SD H1 / H2 |
+|---|---|---|---|---|---|
+| iid | `frozen` | 5% [2; 11] | 4% [1; 10] | 7% [3; 14] | 0,88 / 0,98 |
+| iid | `mbb10` | 6% [2; 13] | 5% [2; 11] | 9% [4; 16] | 0,86 / 0,96 |
+| iid | `mbb20` | 8% [4; 15] | 5% [2; 11] | 11% [6; 19] | 0,82 / 0,92 |
+| iid | `dk10` | 7% [3; 14] | 5% [2; 11] | 9% [4; 16] | 0,86 / 0,96 |
+| iid | `dk20` | 8% [4; 15] | 6% [2; 13] | 11% [6; 19] | 0,82 / 0,92 |
+| dependent | `frozen` | 8% [4; 15] | 1% [0; 5] | 9% [4; 16] | 0,79 / 0,75 |
+| dependent | `mbb10` | 6% [2; 13] | 2% [0; 7] | 7% [3; 14] | 0,81 / 0,78 |
+| dependent | `mbb20` | 6% [2; 13] | 4% [1; 10] | 9% [4; 16] | 0,80 / 0,75 |
+| dependent | `dk10` | 8% [4; 15] | 2% [0; 7] | 10% [5; 18] | 0,81 / 0,78 |
+| dependent | `dk20` | 7% [3; 14] | 2% [0; 7] | 9% [4; 16] | 0,80 / 0,76 |
+| xsection | `frozen` | 3% [1; 9] | 2% [0; 7] | 5% [2; 11] | 1,00 / 0,98 |
+| xsection | `mbb10` | 3% [1; 9] | 3% [1; 9] | 6% [2; 13] | 0,99 / 0,96 |
+| xsection | `mbb20` | 3% [1; 9] | 4% [1; 10] | 7% [3; 14] | 0,97 / 0,93 |
+| xsection | `dk10` | 3% [1; 9] | 3% [1; 9] | 6% [2; 13] | 0,99 / 0,96 |
+| xsection | `dk20` | 3% [1; 9] | 4% [1; 10] | 7% [3; 14] | 0,97 / 0,93 |
 
-### Tam koşu (Efe başlatır)
+Pilot okuması (kaba): hiçbir aday `dependent`'taki SE açığını kapatmıyor (yukarıdaki tanıyla
+tutarlı); `iid`/`xsection`'da uzun blok/gecikme SE'yi biraz düşürüp aile oranını hafif artırıyor.
+`xsection`'da `frozen` nominale yakın görünüyor. `dependent` için anlamlı bir aday ancak sabit-b
+(Kiefer-Vogelsang) kritik değerli DK gibi örneklem içi yanlılığı hesaba katan bir referans dağılımı
+olabilir; bu **koşulmadı**, ayrı bir TRIAL_LOG satırıyla önceden tanımlanması gerekir.
 
-Tek komut tüm adayları, iki varyantı, null R=700 ve alt 0,01/0,02 R=150'yi kapsar; olay kurulumu
-replikat başına bir kez yapıldığından alt senaryoları tüm adaylar için koşmak ayrı komutlardan
-pahalı değildir. Kesilirse aynı komuta `--resume` eklenir.
+### Tam koşu (Efe başlatır; sıra önemli)
+
+Kesilen koşu aynı komuta `--resume` eklenerek sürer. Her iki komut 50 sn başlatılıp öldürüldü ve
+`--resume` ile temiz devam ettiği doğrulandı (geçici klasörde; başlık aynı, tekrar kayıt yok).
+Süre tahmini: pilotta replikat başına ~20-21 sn CPU (adaylarla; yalnız `frozen` ~17 sn); 12
+işçide termal/paylaşım kaybıyla ~3-4 sn/replikat duvar süresi varsayıldı (2026-10-13'te 14 işçi:
+~3,5 sn).
+
+1. **Belirleyici koşu — `frozen`, `xsection`, null R=700** (~700 replikat, ~35-50 dk):
 
 ```powershell
 $env:PYTHONPATH="src"; $env:PYTHONIOENCODING="utf-8"
 .\.venv\Scripts\python.exe scripts\calibrate_engine.py `
-  --out data\interim\research\engine_calibration\2026-10-14_candidates `
-  --replicates-null 700 --replicates-alt 150 --effect-sizes 0.01 0.02 `
-  --method frozen mbb10 mbb20 dk10 dk20 --workers 12
+  --out data\interim\research\engine_calibration\2026-10-14_frozen_xsection `
+  --variants xsection --replicates-null 700 --effect-sizes --workers 12
 ```
 
-FULL_RUN_ESTIMATE
+2. **Adaylar — `iid` + `dependent`, null R=700 + alt 0,01/0,02 R=150, tüm adaylar tek koşuda**
+   (2000 replikat, ~1,7-2,5 sa). Olay kurulumu replikat başına bir kez yapıldığından alt
+   senaryolarını yalnız en iyi 1-2 aday yerine tüm adaylar için koşmak ek maliyet getirmez
+   (aday başına ~1,3 sn/replikat):
+
+```powershell
+.\.venv\Scripts\python.exe scripts\calibrate_engine.py `
+  --out data\interim\research\engine_calibration\2026-10-14_candidates `
+  --variants iid dependent --replicates-null 700 --replicates-alt 150 --effect-sizes 0.01 0.02 `
+  --method frozen mbb10 mbb20 dk10 dk20 --workers 12
+```
 
 ### Sınırlar (adaylar)
 
 - L=20'de ~245 tarihte ~12 blok kalır; bootstrap varyans tahmini daha oynak olur (hem boyut hem
-  güç etkilenebilir). L seçimi bağımlılık uzunluğuna dayanır; gerçek verinin bağımlılık uzunluğu
-  ölçülmedi.
+  güç etkilenebilir). Gerçek bayraklarda zaman kalıcılığı görülmedi (T-29), ama bayrak-getiri/
+  oynaklık bağı ve getirilerin kendi bağımlılığı gerçek veride ölçülmedi.
 - DK normal referansla, b = M/T ≈ 0,04–0,08'de sabit-b kuramına göre hafif liberal kalabilir;
   doğrusallaştırmaya dayanır (oran tipi istatistik).
 - Adaylar aynı sentetik tohumlarda karşılaştırılır; "en iyi" adayı seçmek bu sentetik dünyaya hafif
