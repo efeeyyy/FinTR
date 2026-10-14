@@ -47,8 +47,9 @@ sys.path.insert(0, str(PROJECT_ROOT / "tests"))
 
 import synthetic_market as sm  # noqa: E402  (tests/synthetic_market.py, synthetic only)
 
-from fintr.research.engine import load_symbol_data  # noqa: E402
-from fintr.research.family import evaluate_primary_family  # noqa: E402
+from fintr.research.candidate_inference import driscoll_kraay_test  # noqa: E402
+from fintr.research.engine import load_symbol_data, moving_block_bootstrap  # noqa: E402
+from fintr.research.family import evaluate_primary_family, holm_decisions  # noqa: E402
 from fintr.research.report import RunParameters, resolve_code_commit, run_study  # noqa: E402
 from fintr.research.study_spec import (  # noqa: E402
     BlockBootstrapConfig,
@@ -72,6 +73,22 @@ SIGMA_5_NOMINAL = 0.05  # generator design (docs/prereg/README.md assumption)
 README_N_EFF = (50, 170)  # README ~250 days x 20 symbols: n_eff ~ 50-170
 Z_975 = 1.959964
 P_THRESHOLDS = (0.01, 0.025, 0.05, 0.10, 0.25, 0.50)
+# Inference methods (docs/prereg/TRIAL_LOG.md T-30, candidate set fixed before any run).
+# "frozen" is the real run_study E1 result and is always computed; the others are
+# opt-in candidates evaluated on the SAME pooled horizon-5 events of the same replicate
+# (fintr.research.candidate_inference), never part of the frozen test.
+METHODS = {
+    "frozen": {"kind": "frozen", "definition": "E1 moving block bootstrap by signal date as frozen "
+                                               "(spec block_bootstrap: L=5, B=9999)"},
+    "mbb10": {"kind": "mbb", "block_length": 10,
+              "definition": "engine moving_block_bootstrap, L=10, B as frozen, same seed"},
+    "mbb20": {"kind": "mbb", "block_length": 20,
+              "definition": "engine moving_block_bootstrap, L=20, B as frozen, same seed"},
+    "dk10": {"kind": "dk", "lags": 10,
+             "definition": "Driscoll-Kraay (Bartlett HAC over signal-date scores), 10 lags, normal p"},
+    "dk20": {"kind": "dk", "lags": 20,
+             "definition": "Driscoll-Kraay (Bartlett HAC over signal-date scores), 20 lags, normal p"},
+}
 
 
 # --------------------------------------------------------------------------- stats
@@ -181,7 +198,8 @@ def run_replicate(task: dict) -> dict:
         for sym in world.symbols
     }
     bb_seed = _seed_int(f"bb:{seed}")
-    results = []
+    candidates = task.get("candidates") or []
+    results, pooled = [], []
     for hid in spec_ids:
         frozen = _frozen_spec(hid)
         if frozen.train_test_cutoff <= world.dates[-1]:
@@ -194,7 +212,10 @@ def run_replicate(task: dict) -> dict:
                 bb.block_length_signal_dates, task["block_resamples"] or bb.resamples, bb_seed,
             ),
         )
-        results.append(run_study(spec, symbol_data, split="train", params=_run_params(frozen)))
+        sink = {} if candidates else None
+        results.append(run_study(spec, symbol_data, split="train", params=_run_params(frozen),
+                                 event_sink=sink))
+        pooled.append(sink)
     family = evaluate_primary_family(results)
     holm = {row["hypothesis_id"]: row for row in family["primary"]}
     out_h = {}
@@ -216,10 +237,64 @@ def run_replicate(task: dict) -> dict:
             "oracle_difference": world.oracle_difference[hid],
             "frequency": world.frequencies[hid],
         }
-    return {
+    record = {
         "scenario": task["scenario"], "r": task["r"], "seed": seed, "block_bootstrap_seed": bb_seed,
-        "hypotheses": out_h, "per_event_shift": world.planted, "seconds": time.perf_counter() - started,
+        "hypotheses": out_h, "per_event_shift": world.planted,
     }
+    if candidates:
+        record["methods"] = {
+            name: candidate_results(name, spec_ids, pooled, out_h, bb_seed,
+                                    task["block_resamples"] or _frozen_spec("H1").block_bootstrap.resamples)
+            for name in candidates
+        }
+    record["seconds"] = time.perf_counter() - started
+    return record
+
+
+def candidate_results(name: str, spec_ids, pooled, frozen_rows: dict, seed: int, resamples: int) -> dict:
+    """Per-hypothesis p, SE and Holm decision of candidate ``name`` on the pooled
+    horizon-5 events the frozen run used. The minimum-event rule and Holm (m = 2,
+    the spec's familywise alpha, real ``holm_decisions``) are applied exactly as
+    for the frozen test; only the p-value/SE method differs."""
+    method = METHODS[name]
+    rows: dict[str, dict] = {}
+    for hid, sink in zip(spec_ids, pooled):
+        conditioned, baseline = sink[5]
+        direction = _frozen_spec(hid).preregistration.predicted_direction
+        if method["kind"] == "mbb":
+            res = moving_block_bootstrap(
+                conditioned, baseline, predicted_direction=direction,
+                config=BlockBootstrapConfig(method["block_length"], resamples, seed))
+            p05, p95 = res.percentile_05, res.percentile_95
+            p, se, undefined = res.p_value_one_sided, (
+                None if p05 is None or p95 is None else (p95 - p05) / (2 * 1.644854)), res.undefined_resamples
+        elif method["kind"] == "dk":
+            res = driscoll_kraay_test(conditioned, baseline, lags=method["lags"],
+                                      predicted_direction=direction)
+            p, se, undefined = res.p_value_one_sided, res.standard_error, 0
+        else:
+            raise ValueError(f"not a candidate method: {name}")
+        met = frozen_rows[hid]["min_events_met"]
+        rows[hid] = {"p_raw": p, "p_for_holm": (p if met and p is not None else 1.0),
+                     "boot_se": se, "undefined_resamples": undefined, "status": res.status}
+    primary = [h for h in spec_ids if h in PRIMARY]
+    alpha = _frozen_spec(primary[0]).preregistration.familywise_alpha
+    decisions = holm_decisions({h: rows[h]["p_for_holm"] for h in primary}, alpha, order=primary)
+    for hid in spec_ids:
+        rows[hid]["holm_rejected"] = decisions[hid]["rejected"] if hid in decisions else None
+    return rows
+
+
+def method_records(records: list[dict], name: str) -> list[dict]:
+    """Records whose per-hypothesis rows carry method ``name``'s p/SE/Holm values
+    (event counts, truth and observed difference are shared with the frozen run)."""
+    if name == "frozen":
+        return records
+    return [
+        {**rec, "hypotheses": {hid: {**row, **rec["methods"][name][hid]}
+                               for hid, row in rec["hypotheses"].items()}}
+        for rec in records
+    ]
 
 
 # --------------------------------------------------------------------------- summaries
@@ -310,6 +385,20 @@ def render_markdown(doc: dict) -> str:
         f"toplam CPU: {doc['timing']['cpu_seconds']:.0f} s",
         "", "Sapmalar: " + "; ".join(doc["deviations"]), "",
     ]
+    if any("method_summaries" in entry for entry in doc["scenarios"].values()):
+        lines += ["## Yontem karsilastirmasi (ayni olaylar; adaylar on kayitli test DEGILDIR)", "",
+                  "| senaryo | yontem | H1 Holm red | H2 Holm red | aile (herhangi red) | "
+                  "SE/SD H1 | SE/SD H2 |", "|---|---|---|---|---|---|---|"]
+        for scenario, entry in doc["scenarios"].items():
+            for name, s in entry.get("method_summaries", {}).items():
+                ratios = [s["hypotheses"][h]["bootstrap_se_over_empirical_sd"] for h in PRIMARY]
+                ratio_txt = ["n/a" if r is None or entry["planted_abs_shift"] else f"{r:.2f}" for r in ratios]
+                lines.append(
+                    f"| {scenario} | {name} | {_fmt_rate(s['hypotheses']['H1']['holm_reject'])} | "
+                    f"{_fmt_rate(s['hypotheses']['H2']['holm_reject'])} | "
+                    f"{_fmt_rate(s['familywise_any_holm_reject'])} | {ratio_txt[0]} | {ratio_txt[1]} |")
+        lines += ["", "Yontem tanimlari: " + "; ".join(
+            f"{name}: {d['definition']}" for name, d in doc["config"]["method_definitions"].items()), ""]
     for scenario, entry in doc["scenarios"].items():
         s = entry["summary"]
         lines += [f"## {scenario} (R={s['n_replicates']})", ""]
@@ -372,7 +461,17 @@ def _parser() -> argparse.ArgumentParser:
                    help="override the frozen E1 resamples (default: the frozen 9999)")
     p.add_argument("--iid-resamples", type=int, default=20,
                    help="draws of the secondary i.i.d. diagnostic bootstrap (frozen: 2000; not used for decisions)")
+    p.add_argument("--method", nargs="+", choices=list(METHODS), default=["frozen"],
+                   help="inference method(s) to calibrate (default: frozen only). The frozen E1 "
+                        "result is always computed; candidates (TRIAL_LOG T-30) are evaluated on "
+                        "the same events of the same replicate, so several in one run cost one "
+                        "event build. Candidates are NOT the pre-registered test")
     return p
+
+
+def candidate_names(methods: list[str]) -> list[str]:
+    """Candidates in registry order, without the always-computed frozen method."""
+    return [name for name in METHODS if name != "frozen" and name in methods]
 
 
 PARTIAL_NAME = "replicates.partial.jsonl"
@@ -419,6 +518,8 @@ def load_partial(path: Path, expected_reps: dict[str, int], fingerprint: dict) -
             raise ResumeError(f"seed mismatch at {scenario} r={r}")
         if set(doc.get("hypotheses", {})) != set(fingerprint["specs"]):
             raise ResumeError(f"hypothesis set mismatch at {scenario} r={r}")
+        if set(doc.get("methods", {})) != set(fingerprint.get("methods", [])):
+            raise ResumeError(f"method set mismatch at {scenario} r={r}")
         if (scenario, r) in seen:
             raise ResumeError(f"duplicate record {scenario} r={r}")
         seen.add((scenario, r))
@@ -443,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     out.mkdir(parents=True, exist_ok=True)
 
+    candidates = candidate_names(args.method)
     scenarios: dict[str, dict] = {}
     tasks: list[dict] = []
     for variant in args.variants:
@@ -457,6 +559,7 @@ def main(argv: list[str] | None = None) -> int:
                 "scenario": name, "variant": variant, "r": r, "seed": args.seed, "planted": planted,
                 "specs": list(args.specs), "n_symbols": args.n_symbols, "n_days": args.n_days,
                 "block_resamples": args.block_resamples, "iid_resamples": args.iid_resamples,
+                "candidates": candidates,
             } for r in range(reps)]
     order = {name: i for i, name in enumerate(scenarios)}
     # round-robin over scenarios so an interrupted run leaves balanced replicate counts
@@ -466,6 +569,8 @@ def main(argv: list[str] | None = None) -> int:
         "specs": list(args.specs), "block_resamples": args.block_resamples,
         "iid_resamples": args.iid_resamples,
     }
+    if candidates:  # absent for frozen-only runs: old partial files stay resumable
+        fingerprint["methods"] = candidates
     total = len(tasks)
     records: list[dict] = []
     if args.resume:
@@ -517,6 +622,10 @@ def main(argv: list[str] | None = None) -> int:
             entry["power_vs_readme"] = {
                 hid: power_vs_readme(entry["summary"], hid, entry["planted_abs_shift"])
                 for hid in PRIMARY}
+        if candidates:
+            entry["method_summaries"] = {
+                name: summarize(method_records(recs, name), spec_ids, alt=bool(entry["planted_abs_shift"]))
+                for name in ["frozen", *candidates]}
         entry["replicates_detail"] = recs
 
     spec_info = {}
@@ -548,6 +657,8 @@ def main(argv: list[str] | None = None) -> int:
             "block_length": first.block_bootstrap.block_length_signal_dates,
             "block_resamples": args.block_resamples or first.block_bootstrap.resamples,
             "iid_resamples": args.iid_resamples,
+            "methods": ["frozen", *candidates],
+            "method_definitions": {name: METHODS[name] for name in ["frozen", *candidates]},
             "market": {k: (v.isoformat() if hasattr(v, "isoformat") else v)
                        for k, v in sm.MarketConfig().__dict__.items()},
             "seed_rule": "replicate seed = f'{seed}:{r}' (shared by null and alt: common random "
@@ -559,7 +670,9 @@ def main(argv: list[str] | None = None) -> int:
             f"secondary i.i.d. bootstrap diagnostic uses {args.iid_resamples} draws (frozen 2000; not used for decisions)",
             "E1 block-bootstrap seed derived per replicate (frozen seed is one fixed number)",
             "symbols replaced by SYN01.. and symbol_holdout cleared; split=train; frozen spec files untouched",
-        ] + ([f"E1 resamples overridden to {args.block_resamples}"] if args.block_resamples else []),
+        ] + ([f"E1 resamples overridden to {args.block_resamples}"] if args.block_resamples else [])
+          + ([f"candidate inference methods {candidates} (TRIAL_LOG T-30) evaluated on the same pooled "
+              "horizon-5 events; they are NOT the pre-registered test"] if candidates else []),
         "timing": {"wall_seconds": wall, "workers": args.workers,
                    "cpu_seconds": sum(rec["seconds"] for rec in records),
                    "resumed_from_replicates": prior if args.resume else 0,
