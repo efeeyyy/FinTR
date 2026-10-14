@@ -199,3 +199,24 @@ içeriyor). `configs/llm_note/prompt_v3.md` = v2 + açık kural: "getiri", "kaza
 kullanılmaz; hipotez "hipotez, sonraki 5 işlem gününde fiyat hareketinin ... olacağını
 varsayar" kalıbıyla anlatılır. `config_v1.json` `prompt_file` v3'e işaret eder; v2 dosyası
 değişmedi; yasak liste ve doğrulayıcı gevşetilmedi.
+
+## 2026-10-14 — Analiz notu holdout dönemi çalışmalarına girdi olamaz (Efe kararı)
+
+Efe onayı 2026-10-14 (yönetici oturumu, "evet, 1 2 4'ü başlat"):
+
+- Analiz notunun kanıt değerlendirmesi kelimesi (`destekliyor`/`zayıflatıyor`/`belirsiz`) ve
+  metni **hiçbir** istatistiksel çalışmaya, holdout testine, model seçimine, kural/eşik
+  seçimine ya da holdout dönemi verisiyle yapılan istem (prompt) optimizasyonuna girdi
+  olmaz. 2026-10-01'den itibaren günlük veri holdout penceresindedir (2026-10-01..2027-03-31).
+  Gerekçe: LLM ileriye bakış/ezberleme riski (Gao, Jiang, Yan, arXiv 2512.23847; yalnız özet
+  okundu) ve AGENTS.md eval-verisi kuralı; bkz.
+  `docs/research/signal_bot_best_practices_2026-10-13.md` F2.
+- Geçmiş bir `as_of` için sonradan üretilen notlar (geç yeniden deneme/backfill) işaretlenir:
+  kayıtta `generated_late` (Europe/Istanbul üretim günü `as_of`'tan sonraki ilk hafta içi
+  günden sonraysa `true`; cuma → pazartesi geç değil; tatiller yok sayılır, repoda takvim yok) ve `generated_on_local`.
+- Her not kaydı model kimliğini ve üretim zamanını taşır (`model_requested`, `model_reported`,
+  `started_at_utc`; `record.json`).
+- Her istem/doğrulayıcı sürüm değişikliği, değerlendirilmeden önce `docs/prereg/TRIAL_LOG.md`'ye
+  yazılır.
+
+Kural, eşik veya spec değiştirmez. K4 ve holdout testi aynen geçerlidir.

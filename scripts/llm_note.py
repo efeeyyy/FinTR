@@ -37,7 +37,7 @@ import platform
 import statistics
 import sys
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fintr.evaluation.live_capture import LivePilotCaptureError, validate_context_contains_no_secrets
@@ -158,6 +158,22 @@ def _iso(moment: datetime) -> str:
     return moment.isoformat().replace("+00:00", "Z")
 
 
+_ISTANBUL = timezone(timedelta(hours=3))  # Europe/Istanbul is fixed UTC+3 since 2016
+
+
+def generation_provenance(as_of: date, now_utc: datetime) -> dict:
+    """Backfill marker (Efe kararı 2026-10-14): ``generated_late`` is true when the generation
+    date (Europe/Istanbul) is later than the next weekday after ``as_of`` (Fri -> Mon is not late).
+    Holidays are ignored (no calendar in the repo). Such notes were written after the fact and
+    must never feed any study, holdout test or model/prompt choice."""
+    local_day = now_utc.astimezone(_ISTANBUL).date()
+    next_weekday = as_of + timedelta(days=1)
+    while next_weekday.weekday() >= 5:
+        next_weekday += timedelta(days=1)
+    return {"generated_on_local": local_day.isoformat(),
+            "generated_late": local_day > next_weekday}
+
+
 def _size_summary(outcomes: list[SymbolOutcome]) -> str:
     sizes = [o.size for o in outcomes if o.size]
     if not sizes:
@@ -193,6 +209,7 @@ class _Run:
             "output_schema": {"path": config.schema_path.name, "sha256": config.schema_sha256},
             "model_requested": config.model, "effort": config.effort,
             "determinism_note": DETERMINISM_NOTE,
+            **generation_provenance(self.args.as_of, datetime.now(timezone.utc)),
         }
 
     def not_called(self, symbol: str, category: str, *, inputs: dict, detail: str | None = None) -> tuple[str, str]:
