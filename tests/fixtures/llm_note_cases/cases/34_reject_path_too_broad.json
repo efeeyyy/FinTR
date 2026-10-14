@@ -24,11 +24,5 @@
     "data_caveats": [
       "Metadata sağlayıcı hesabıdır; doğrulanmadı."
     ]
-  },
-  "known_gap": true,
-  "known_gap_reason": "the breadth limit is 600 leaf values, far above any real citation (max 8)",
-  "current_result": {
-    "ok": true,
-    "reason": null
   }
 }

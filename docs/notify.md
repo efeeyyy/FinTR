@@ -325,7 +325,7 @@ Durum: preregistered_hypothesis_holdout_test_pending
 - **Doğrulama:** not yalnız kodla doğrulandıysa gösterilir (şema, izinli değer,
   kapsam, kanıt yolları, yasak ifade, yazıyla sayı, rakam/tarih denetimi). Rakam
   denetimi: bir gerekçedeki her rakam/tarih, o gerekçenin kendi `evidence_paths`
-  yollarının altındaki değerlerden biri olmalıdır (yol çözülmezse veya 600'den çok
+  yollarının altındaki değerlerden biri olmalıdır (yol çözülmezse veya 40'tan çok
   değeri kapsıyorsa ret); işaret eşleşir (negatif değer yalnız `-x`/`−x` ile; "net
   satış 5" yazıp paketteki `-5`'i kastetmek reddedilir — katı kural, anlam
   okunmaz); `%` için `p%` paketteki `p` ile aynen, `p/100` yalnız `|değer| <= 1` olan

@@ -46,7 +46,7 @@ MAX_CAVEATS = 8
 MAX_TEXT_CHARS = 400
 MAX_PLAIN_CHARS = 800  # "plain_explanation": 2-4 short sentences asked for; length is the enforced bound
 MAX_PATH_CHARS = 300
-MAX_EVIDENCE_LEAVES = 600  # an evidence path may not point at "the whole packet"
+MAX_EVIDENCE_LEAVES = 40  # an evidence path may not point at "the whole packet" or several days/rows (real citations: <= 8)
 
 _TOP_KEYS = {"assessments", "data_caveats"}
 _ASSESSMENT_KEYS = {"symbol", "rule_id", "as_of", "assessment", "plain_explanation", "reasons"}
