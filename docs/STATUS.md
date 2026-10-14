@@ -212,6 +212,10 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      listeyi doğrular), haftalık replay, LLM altın/negatif seti, T+2 gecikmesini yapılandırmaya
      taşıma, maliyet duyarlılık ızgarası (holdout öncesi DECISIONS). Train p-değerlerinin
      yorumu için kalibrasyon notu finans sohbetine.
+   - 2026-10-14: Haftalık replay birleşti (`scripts/replay_scans.py --last 5 --mode both`,
+     `docs/scanner.md`; scanner'a opt-in `--data-cutoff-utc`). İlk gerçek koşu: point-in-time 5/5
+     özdeş (kod kayması yok); current modda 09-30/10-02/10-09 yalnız `data_revision` (yeni dosyalar,
+     kesinleşmemiş listeler), kural/gözlem alanı farkı yok. Haftalık (ör. Cumartesi) yönetici çalıştırır.
    - İzinler (Efe, 2026-10-04): `.claude/settings.local.json` (git dışı) → env PYTHONPATH=src,
      PYTHONIOENCODING=utf-8; allow: git merge, `git push origin *`, venv python ile
      run_daily_pipeline/notify_observations/scan_observations/collect_daily/llm_note. Yeni
