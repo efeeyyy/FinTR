@@ -1,0 +1,11 @@
+{
+  "schema": "fintr_settlement_cycle_v1",
+  "description": "Tarih-etkin takas gecikmesi (sunucu günü olarak). Tarayıcı tazelik raporu takasın AKD'nin bu kadar sunucu günü gerisinde kalmasını gecikmiş sayar. Dönemler effective_from'a göre artan sırada olmalıdır; ilk dönemden önceki as_of hata verir.",
+  "source": "Borsa İstanbul pay piyasası takası T+2. T+1'e kısaltma değerlendirmesi duyurusu (2025-05-05): https://borsaistanbul.com/en/announcement/14796/borsa-istanbul-initiates-evaluation-process-shortening-equity-market-settlement-cycle-t2-t1 . T+1 yürürlük tarihi 2026-10-14 itibarıyla bilinmiyor; karar bulunamadı.",
+  "periods": [
+    {
+      "effective_from": "2000-01-01",
+      "settlement_lag_server_dates": 2
+    }
+  ]
+}

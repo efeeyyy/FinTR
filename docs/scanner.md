@@ -76,8 +76,13 @@ Her iki durumda da `condition_met: null`, `features: []`.
 
 Her sembol × `as_of` için `freshness`: son AKD sunucu tarihi, son takas
 tarihi, son fiyat tarihi. Eksik veri `null` olarak raporlanır, asla sıfır
-sayılmaz. Takas AKD'nin en az 2 sunucu günü gerisindeyse (T+2 yerleşimi)
-`custody_flagged_stale_t_plus_2: true`.
+sayılmaz. Takas AKD'nin, `as_of` tarihinde geçerli takas gecikmesi kadar (şu an
+2, T+2 yerleşimi) sunucu günü veya daha fazla gerisindeyse
+`custody_flagged_stale_t_plus_2: true` (anahtar adı sabit kalır). Gecikme koddan
+değil, tarih-etkin `configs/market/settlement_cycle.json` dosyasından gelir
+(`fintr.data.settlement_cycle`; hatalı/sıralı olmayan dosya ya da ilk dönemden
+önceki `as_of` çalışmayı durdurur). Borsa İstanbul T+1 değerlendiriyor (duyuru
+2025-05-05); 2026-10-14 itibarıyla yürürlük tarihi bilinmiyor. Şema değişmedi.
 
 ## Hisse kapsamı
 
