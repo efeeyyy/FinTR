@@ -9,9 +9,11 @@ rejects the whole note. Categories (stable slugs, shown to Efe as
 ``coverage``            the (symbol, rule_id, as_of) set differs from the
                         packet's ``required_assessments`` (missing/extra/dup)
 ``evidence_path``       an ``evidence_paths`` entry does not resolve in the packet,
-                        or covers more than ``MAX_EVIDENCE_LEAVES`` values
-``forbidden_phrase``    wording forbidden by AGENTS.md (``forbidden.py``)
-``number_word``         a spelled-out number or "yüzde <word>" (cannot be audited)
+                        or covers more than ``MAX_EVIDENCE_LEAVES`` (40) values
+``forbidden_phrase``    wording forbidden by AGENTS.md (``forbidden.py``; compared after Unicode
+                        normalisation, ASCII/homoglyph folding and letter-spacing removal)
+``number_word``         a spelled-out number (also inflected/English), digit-like symbol or
+                        "yüzde <word>" (cannot be audited)
 ``number_not_in_input`` a number or ISO date in a reason is not under that
                         reason's own ``evidence_paths`` (sign- and
                         rounding-aware, see ``numbers.py``); one in the
@@ -39,6 +41,7 @@ from fintr.llm_note.forbidden import find_forbidden
 
 
 ASSESSMENT_VALUES = ("destekliyor", "zayıflatıyor", "belirsiz")
+VALIDATOR_VERSION = "2"  # 1: original; 2: wording normalisation, number-word forms, evidence path <= 40 values
 MAX_ASSESSMENTS = 200
 MAX_REASONS = 6
 MAX_PATHS_PER_REASON = 6

@@ -1161,6 +1161,7 @@ class ScriptTests(Env, unittest.TestCase):
             self.assertEqual(record["cli"]["version"], "fake-cli 0.0.1")
             self.assertIn("determin", record["determinism_note"].lower())
             self.assertEqual(record["validation"]["ok"], True)
+            self.assertEqual(record["validation"]["validator_version"], validate_mod.VALIDATOR_VERSION)
             self.assertTrue(record["called"])
             self.assertGreaterEqual(record["duration_seconds"], 0)
             self.assertEqual(record["usage"]["usage"], {"input_tokens": 11, "output_tokens": 22})
