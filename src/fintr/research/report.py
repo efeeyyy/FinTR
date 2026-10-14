@@ -190,8 +190,14 @@ def _ratio_regime_payload(regime) -> dict:
 def run_study(
     spec: StudySpec, symbol_data: dict[str, SymbolData], *, split: str, params: RunParameters,
     symbol_scope: str = "declared", test_window_end: date | None = None,
+    event_sink: dict | None = None,
 ) -> dict:
     """Build the full result dict for one split ("train" or "test").
+
+    ``event_sink`` (opt-in, used only by the synthetic calibration harness
+    ``scripts/calibrate_engine.py``): when a dict is given, the pooled
+    ``(conditioned, baseline)`` event lists of every horizon are stored in it
+    under the horizon; the returned result is identical with or without it.
 
     Refuses ("test_requires_frozen_spec") to build test-period results for
     a spec whose ``frozen`` is ``false`` -- the pre-registration gate. Train
@@ -255,6 +261,8 @@ def run_study(
     for horizon in spec.horizons_trading_days:
         all_conditioned = [event for symbol in required_symbols for event in per_symbol[symbol][horizon][0]]
         all_baseline = [event for symbol in required_symbols for event in per_symbol[symbol][horizon][1]]
+        if event_sink is not None:
+            event_sink[horizon] = (all_conditioned, all_baseline)
         overall_by_horizon[horizon] = summarize_horizon(
             all_conditioned, all_baseline, horizon=horizon,
             min_event_warning_threshold=spec.min_event_warning_threshold,
