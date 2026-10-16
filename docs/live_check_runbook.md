@@ -687,6 +687,15 @@ $env:PYTHONPATH = "$PWD\src"
   "already_scanned" sayılır (yeniden taranmaz) ve bildirime geçilir; `--send`
   ile makbuz zaten varsa adım 3 "already_sent" olur (yeniden gönderilmez,
   çıkış 0). Başka her tarama/bildirim hatası boru hattını durdurur.
+- `--accuracy` (varsayılan **kapalı**; [accuracy.md](accuracy.md)): en son adım olarak (bildirimden
+  ve `--forward-log`'dan sonra) `track_accuracy.py` çalışır ve geliştirme hisseleri için yürüyen yön isabetini
+  `data\interim\accuracy\<koşu günü>\accuracy.json` + `accuracy.md` olarak yazar
+  (üzerine yazmaz; aynı gün tekrarında özet `accuracy: exists`). Özet satırı
+  `accuracy: saved|exists|failed:...`; yalnız çıktı yolu basılır (isabet/getiri
+  değeri basılmaz). Hata ya da 900 sn zaman aşımı bildirimi ve çıkış kodunu
+  değiştirmez; Telegram'a hiçbir şey gönderilmez. Holdout sembolleri izlenmez.
+  Gerçek veride yaklaşık 4 dakika sürer; bildirimden sonra çalıştığı için mesajı
+  geciktirmez ve etkilemez. Boru hattı bildirimde durduysa çalışmaz. Sonuçlar finans sohbetinde okunur, burada tartışılmaz.
 
 Bu bölüm yalnız süreci anlatır; günlük toplamanın finansal sonuçları bu
 belgede veya yönetici sohbetinde tartışılmaz (`docs/STATUS.md`).

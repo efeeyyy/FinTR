@@ -229,7 +229,7 @@ AKFIS H1: <kural açıklaması> — vwap_proxy_vs_close=... — beklenen yön: a
 - **Değişmeyenler:** kural, eşik ve spec değişmez; tarayıcı çıktı şeması değişmez;
   etiket gözleme yeni bilgi eklemez, yalnız spec'te kayıtlı yönü ifade eder. Getiri,
   puan, sıralama, hedef fiyat, stop seviyesi, pozisyon büyüklüğü eklenmez. Holdout
-  testi ve K4 geçerlidir; etiket bir avantaj iddiası değildir.
+  testi geçerlidir; K4, Efe'nin 2026-10-16 kararıyla (`docs/prereg/DECISIONS.md`) yalnız 20 geliştirme hissesi için kaldırıldı; holdout sembolleri hâlâ izlenmez. Etiket bir avantaj iddiası değildir.
 - **Kapatma:** `--no-direction-label` önceki metni birebir geri getirir (etiket, işaret
   ve ek uyarı yok). Karar kaydı: `docs/prereg/DECISIONS.md` 2026-10-02.
 

@@ -42,7 +42,8 @@ Yalnız prova modülü için komuta `-k holdout_rehearsal` ekleyin.
 - Test **bir kez** çalışır. `LOCK` veya `manifest.json` varsa tekrar çalışmaz;
   ikisi de silinmez, üzerine yazılmaz.
 - Sonuç ne olursa olsun raporlanır. 2027-03-31'e kadar ara performans
-  değerlendirmesi yoktur (K4).
+  değerlendirmesi yoktur (K4): holdout sembolleri için. K4, Efe'nin 2026-10-16 kararıyla (`docs/prereg/DECISIONS.md`)
+  yalnız 20 geliştirme hissesi için kaldırıldı; holdout sembolleri hâlâ izlenmez.
 - Sonuç dosyaları ve karar metni terminale basılmaz; yalnız JSON dosyalarında okunur.
 
 ## Kontrol listesi
