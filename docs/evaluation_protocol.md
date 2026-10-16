@@ -131,3 +131,16 @@ istisna açmaz.
 
 Testler: `tests/test_symbol_guard.py` (yalnız geçici dizinde sentetik ayrım,
 işaretçi, dışlama, capture, manifest ve evren dosyaları).
+
+## İşlem maliyeti duyarlılığı (karar girdisi değil)
+
+Holdout testinin birincil analizi donmuş maliyetle (10 bps/taraf) çalışır.
+`docs/prereg/DECISIONS.md` 2026-10-16'ya göre (`docs/prereg/TRIAL_LOG.md` P-03,
+`configs/studies/prereg/cost_sensitivity_v1.json`, hash'i DECISIONS.md'de
+kayıtlı ve çalıştırıcıda doğrulanır) aynı tek test yürütmesi, aynı dondurulmuş
+hesabı yalnız maliyeti 0/5/20/30 bps/taraf yaparak yeniden çalıştırır ve ayrı
+artefaktlara yazar (`scripts/run_holdout_test.py` varsayılan açık;
+`scripts/run_study.py --cost-sensitivity-config`). Bu sonuçlar tanımlayıcıdır:
+Holm kararına, hipotez sonucuna ve birincil rapora girmez; model seçimi, eşik
+veya spec değişikliği için kullanılamaz. Testler: `tests/test_cost_sensitivity.py`
+ve `tests/test_holdout_test_runner.py` (yalnız sentetik fikstür).

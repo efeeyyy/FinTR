@@ -53,6 +53,7 @@ FREEZE_DOC = Path("docs/prereg/FREEZE.md")
 DECISIONS_DOC = Path("docs/prereg/DECISIONS.md")
 PREREG_DIR = Path("configs/studies/prereg")
 TEST_PLAN = PREREG_DIR / "test_plan_v1.json"
+COST_SENSITIVITY = PREREG_DIR / "cost_sensitivity_v1.json"
 SCANNER_DIR = Path("data/interim/scanner_daily")
 # Mirrors run_daily_pipeline.NOTIFY_DIR (a test pins the equality; the pipeline
 # script is not imported here). Receipts live here, not under scanner_daily.
@@ -413,6 +414,22 @@ def check_test_plan_hash(root: Path) -> Result:
     return Result(OK, label, f"{TEST_PLAN.as_posix()} sha256'sı kayıtla eşleşiyor")
 
 
+def check_cost_sensitivity_hash(root: Path) -> Result:
+    """Same record-in-DECISIONS.md mechanism as the test plan (2026-10-16:
+    the pre-registered, non-decisional cost-sensitivity grid)."""
+    from fintr.research.cost_sensitivity import (
+        CostSensitivityError, load_cost_sensitivity_config, verify_recorded_hash,
+    )
+
+    label = "duyarlılık config hash (DECISIONS.md)"
+    try:
+        config = load_cost_sensitivity_config(root / COST_SENSITIVITY)
+        verify_recorded_hash(config, root / DECISIONS_DOC)
+    except CostSensitivityError as exc:
+        return Result(ERR, label, f"{COST_SENSITIVITY.as_posix()}: {exc}")
+    return Result(OK, label, f"{COST_SENSITIVITY.as_posix()} sha256'sı kayıtla eşleşiyor")
+
+
 def check_other_configs(root: Path) -> list[Result]:
     """Readability of the LLM-note and notify-delivery configs (loaders reused)."""
     results: list[Result] = []
@@ -656,6 +673,9 @@ def collect_results(
     results.append(_guarded("tarayıcı kuralları", lambda: check_scanner_rules(root)))
     results.append(check_split_hash_in_specs(root, guards.split.split_sha256 if guards else None))
     results.append(check_test_plan_hash(root))
+    results.append(_guarded(
+        "duyarlılık config hash (DECISIONS.md)", lambda: check_cost_sensitivity_hash(root),
+    ))
     results.extend(check_other_configs(root))
 
     capture_root = _capture_root(root, config)

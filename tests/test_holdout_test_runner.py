@@ -12,12 +12,16 @@ import importlib.util
 import io
 import json
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from fintr.research import cost_sensitivity
 from fintr.research.study_spec import load_study_spec
 
 import test_period_analysis as period_fixtures
@@ -39,6 +43,14 @@ def _load_script(name: str):
 
 
 runner = _load_script("run_holdout_test")
+
+
+class _FixedDatetime:
+    """Frozen clock for ``fintr.research.report`` so result bytes are comparable."""
+
+    @staticmethod
+    def now(tz=None):
+        return datetime(2027, 4, 1, 6, 0, tzinfo=tz or timezone.utc)
 
 
 def _spec_doc(hypothesis_id: str, symbols: list[str], symbol_holdout: list[str], **overrides) -> dict:
@@ -152,7 +164,32 @@ class HoldoutTestRunnerTests(guard_fixtures.GuardEnvMixin, unittest.TestCase):
         doc.update(overrides)
         path = self.tmp / "test_plan.json"
         path.write_text(json.dumps(doc), encoding="utf-8")
+        self._write_sensitivity(path)
         return path
+
+    def _write_sensitivity(self, plan_path: Path, **overrides) -> None:
+        """Synthetic pre-registered sensitivity config bound to this plan, and a
+        synthetic DECISIONS.md recording its sha256 (like the real pair)."""
+        doc = {
+            "schema": "fintr_cost_sensitivity_v1", "config_id": "synthetic_cost_sensitivity",
+            "decision_status": "non_decisional",
+            "test_plan": {"sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest()},
+            "primary_cost_bps_per_side": "10",
+            "grid_cost_bps_per_side": ["0", "5", "20", "30"],
+            "scopes": ["primary", "secondary"], "hypotheses": ["H1", "H2"],
+        }
+        doc.update(overrides)
+        self.sens_config = self.tmp / "cost_sensitivity.json"
+        self.sens_config.write_text(json.dumps(doc), encoding="utf-8")
+        self._record_sensitivity_hash(hashlib.sha256(self.sens_config.read_bytes()).hexdigest())
+
+    def _record_sensitivity_hash(self, sha256: str) -> None:
+        self.decisions = self.tmp / "DECISIONS.md"
+        self.decisions.write_text(
+            "# synthetic decisions\n\nDuyarlılık config'i: "
+            f"`{cost_sensitivity.CONFIG_RELATIVE_PATH}`, SHA-256 `{sha256}`.\n",
+            encoding="utf-8",
+        )
 
     def _write_all_symbol_files(self, **kwargs) -> None:
         for symbol in ("DEVA", "DEVB", "HOLDA", "HOLDB"):
@@ -171,6 +208,7 @@ class HoldoutTestRunnerTests(guard_fixtures.GuardEnvMixin, unittest.TestCase):
             "--out-dir", str(self.out_dir),
             "--test-dir", str(self.test_dir),
             "--repo-root", str(self.repo_root),
+            "--cost-sensitivity-config", str(self.sens_config), "--decisions-doc", str(self.decisions),
         ]
 
     def _run(self, argv: list[str]):
@@ -340,6 +378,292 @@ class HoldoutTestRunnerTests(guard_fixtures.GuardEnvMixin, unittest.TestCase):
         code, out, _err = self._run(self._base_argv(plan) + ["--dry-run"])
         self.assertEqual(code, 1)
         self.assertIn("[FAIL] 1. plan_and_spec_hashes", out)
+
+    # --- pre-registered cost-sensitivity grid (DECISIONS.md 2026-10-16) ------------
+    # Non-decisional: separate artifacts, never an input to the Holm step; the
+    # primary results must not change. Synthetic fixtures only.
+
+    def _direct_study(self, plan: Path, *, sensitivity: bool, out_dir: Path, scope: str = "primary",
+                      hypothesis: str = "H1", extra_cost: str | None = None):
+        """Runs run_study once through the runner's own argv builder (the
+        exact invocation ``--execute`` uses), with a frozen clock so the
+        result bytes are comparable."""
+        checks, context = runner.run_dry_run_checks(self._parsed_args(plan))
+        self.assertTrue(all(c["ok"] for c in checks), checks)
+        spec_ref = next(r for r in context["plan"].specs if r.spec_id == f"synthetic_{hypothesis.lower()}")
+        symbols = context["primary_symbols"] if scope == "primary" else context["secondary_symbols"]
+        with patch("fintr.research.report.datetime", _FixedDatetime):
+            return runner._run_study_for(
+                spec_path=Path(spec_ref.path), test_plan_path=plan, test_scope=scope,
+                cost_bps=Decimal(extra_cost or context["plan"].cost_bps_per_side), symbols=symbols,
+                symbol_checks=context["symbol_checks"], out_dir=out_dir,
+                sensitivity=(self.sens_config, self.decisions) if sensitivity else None,
+            )
+
+    def test_dry_run_lists_the_sensitivity_check_and_default_is_on(self):
+        plan = self._standard_plan()
+        code, out, _err = self._run(self._base_argv(plan) + ["--dry-run"])
+        self.assertEqual(code, 0, out)
+        self.assertIn("[OK] 7. cost_sensitivity_config: ok", out)
+        self.assertEqual(len([l for l in out.splitlines() if l.startswith("[OK]")]), 7)
+        defaults = runner._parser().parse_args([])
+        self.assertFalse(defaults.no_cost_sensitivity)
+        self.assertEqual(defaults.cost_sensitivity_config, runner.DEFAULT_COST_SENSITIVITY)
+        self.assertEqual(defaults.decisions_doc, runner.DEFAULT_DECISIONS_DOC)
+
+    def test_exit_code_constant_matches_run_study(self):
+        self.assertEqual(runner._EXIT_SENSITIVITY_FAILED, runner._load_script_module("run_study").EXIT_SENSITIVITY_FAILED)
+
+    def test_execute_writes_separate_non_decisional_artifacts(self):
+        plan = self._standard_plan()
+        code, out, _err = self._run(self._base_argv(plan) + ["--execute"])
+        self.assertEqual(code, 0, out)
+        manifest = json.loads((self.test_dir / "manifest.json").read_text(encoding="utf-8"))
+        block = manifest["cost_sensitivity"]
+        self.assertTrue(block["enabled"] and block["non_decisional"])
+        self.assertEqual(block["grid_cost_bps_per_side"], ["0", "5", "20", "30"])
+        self.assertEqual(block["config_sha256"], hashlib.sha256(self.sens_config.read_bytes()).hexdigest())
+        self.assertEqual(block["errors"], {})
+        self.assertEqual(sorted(block["artifacts"]), sorted(manifest["results"]))
+        sensitivity_dir = self.out_dir / "cost_sensitivity"
+        # primary result directory holds only the 4 primary/secondary results
+        self.assertEqual(len(list(self.out_dir.glob("*.json"))), 4)
+        self.assertEqual(len(list(sensitivity_dir.glob("*_cost_sensitivity.json"))), 4)
+        decision = json.loads(Path(manifest["family_decision_path"]).read_text(encoding="utf-8"))
+        for key, entry in block["artifacts"].items():
+            path = Path(entry["path"])
+            self.assertEqual(path.parent, sensitivity_dir)
+            self.assertEqual(entry["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+            self.assertNotIn(str(path), decision["input_result_sha256"])  # never reaches Holm
+            artifact = json.loads(path.read_text(encoding="utf-8"))
+            primary = json.loads(Path(manifest["results"][key]["path"]).read_text(encoding="utf-8"))
+            self.assertEqual(artifact["schema"], "fintr_cost_sensitivity_result_v1")
+            self.assertEqual(artifact["label"], "duyarlılık, karar girdisi değil")
+            self.assertIs(artifact["decisional"], False)
+            self.assertEqual(artifact["primary_cost_bps_per_side"], "10")
+            self.assertEqual(artifact["primary_result_sha256"], manifest["results"][key]["sha256"])
+            self.assertEqual(artifact["config"]["sha256"], block["config_sha256"])
+            self.assertEqual(artifact["test_plan_sha256"], manifest["test_plan_sha256"])
+            self.assertEqual(artifact["spec_sha256"], primary["spec_sha256"])
+            self.assertEqual(artifact["test_scope"], primary["test_scope"])
+            costs = [run["transaction_cost_bps"] for run in artifact["runs"]]
+            self.assertEqual(costs, ["0", "5", "20", "30"])
+            self.assertNotIn("10", costs)  # the primary cost is not in the grid
+            self.assertEqual([run["round_trip_cost_bps"] for run in artifact["runs"]], ["0", "10", "40", "60"])
+            for run in artifact["runs"]:
+                self.assertEqual(set(run["overall"]), set(primary["overall"]))
+                self.assertEqual(run["parameters"]["transaction_cost_bps"], run["transaction_cost_bps"])
+                for horizon, stats in run["overall"].items():
+                    # same events, same difference/bootstrap; only the net mean level moves
+                    self.assertEqual(stats["event_count"], primary["overall"][horizon]["event_count"])
+                    self.assertLess(
+                        abs(Decimal(stats["difference_mean"]) - Decimal(primary["overall"][horizon]["difference_mean"])),
+                        Decimal("1e-12"),
+                    )  # the cost cancels in the difference (numerically; formatting may differ)
+                    boot, primary_boot = stats["block_bootstrap_difference"], primary["overall"][horizon]["block_bootstrap_difference"]
+                    for field in ("status", "distinct_signal_dates", "seed", "resamples"):
+                        self.assertEqual(boot[field], primary_boot[field])
+                    gap = Decimal(stats["mean_return"]) - Decimal(primary["overall"][horizon]["mean_return"])
+                    expected = (Decimal(10) - Decimal(run["transaction_cost_bps"])) * 2 / Decimal(10000)
+                    self.assertLess(abs(gap - expected), Decimal("1e-12"))
+                test = run["hypothesis_test"]
+                for holm_field in ("p_value_for_holm", "enters_holm_family", "family_size", "familywise_alpha"):
+                    self.assertNotIn(holm_field, test)
+                self.assertEqual(test["p_value_one_sided"], primary["hypothesis_test"]["p_value_one_sided"])
+
+    def test_primary_artifacts_are_byte_identical_with_and_without_sensitivity(self):
+        plan = self._standard_plan()
+        without_dir, with_dir = self.tmp / "without", self.tmp / "with"
+        for scope in ("primary", "secondary"):
+            for hypothesis in ("H1", "H2"):
+                code0, saved0, _ = self._direct_study(plan, sensitivity=False, out_dir=without_dir, scope=scope,
+                                                      hypothesis=hypothesis)
+                code1, saved1, err1 = self._direct_study(plan, sensitivity=True, out_dir=with_dir, scope=scope,
+                                                         hypothesis=hypothesis)
+                self.assertEqual((code0, code1), (0, 0), err1)
+                self.assertEqual(saved0.name, saved1.name)
+                self.assertEqual(saved0.read_bytes(), saved1.read_bytes())
+        self.assertFalse((without_dir / "cost_sensitivity").exists())
+        self.assertEqual(len(list((with_dir / "cost_sensitivity").glob("*.json"))), 4)
+
+    def test_full_holdout_primary_results_and_family_unchanged_by_sensitivity(self):
+        plan = self._standard_plan()
+        self.assertEqual(self._run(self._base_argv(plan) + ["--execute"])[0], 0)
+        first = self._normalized_outputs(self.out_dir, self.test_dir)
+        shutil.rmtree(self.out_dir)
+        shutil.rmtree(self.test_dir)
+        self.assertEqual(self._run(self._base_argv(plan) + ["--execute", "--no-cost-sensitivity"])[0], 0)
+        second = self._normalized_outputs(self.out_dir, self.test_dir)
+        self.assertEqual(first, second)
+        manifest = json.loads((self.test_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertIs(manifest["cost_sensitivity"]["enabled"], False)
+        self.assertFalse((self.out_dir / "cost_sensitivity").exists())
+
+    @staticmethod
+    def _normalized_outputs(out_dir: Path, test_dir: Path) -> dict:
+        """Primary results and the family decision, minus the wall-clock stamp
+        and the (hash-of-bytes-including-that-stamp) input digests."""
+        outputs = {}
+        for path in sorted(out_dir.glob("*.json")):
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["reproducibility"].pop("generated_at_utc")
+            outputs[path.name] = document
+        family = json.loads((test_dir / "family_decision_primary.json").read_text(encoding="utf-8"))
+        family.pop("input_result_sha256")
+        outputs["family"] = family
+        return outputs
+
+    def test_hash_mismatch_with_decisions_doc_fails_closed(self):
+        plan = self._standard_plan()
+        self._record_sensitivity_hash("0" * 64)
+        code, out, _err = self._run(self._base_argv(plan) + ["--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("[FAIL] 7. cost_sensitivity_config", out)
+        self.assertIn("cost_sensitivity_config_sha256_mismatch", out)
+        code, _out, err = self._run(self._base_argv(plan) + ["--execute"])
+        self.assertEqual(code, 1)
+        self.assertIn("Execute refused", err)
+        self.assertFalse((self.test_dir / "LOCK").exists())  # the single run was not consumed
+        self.assertFalse(self.out_dir.exists())
+
+    def test_config_edited_after_recording_fails_closed(self):
+        plan = self._standard_plan()
+        self.sens_config.write_bytes(self.sens_config.read_bytes() + b"\n")
+        code, out, _err = self._run(self._base_argv(plan) + ["--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("cost_sensitivity_config_sha256_mismatch", out)
+
+    def test_missing_decisions_record_fails_closed(self):
+        plan = self._standard_plan()
+        self.decisions.write_text("# no record of the sensitivity config here\n", encoding="utf-8")
+        code, out, _err = self._run(self._base_argv(plan) + ["--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("no_recorded_cost_sensitivity_hash_in_decisions_doc", out)
+
+    def test_run_study_refuses_a_mismatched_config_before_computing_anything(self):
+        plan = self._standard_plan()
+        checks, context = runner.run_dry_run_checks(self._parsed_args(plan))
+        self.assertTrue(all(c["ok"] for c in checks), checks)
+        self._record_sensitivity_hash("1" * 64)
+        out_dir = self.tmp / "refused"
+        code, saved, err = self._direct_study_unchecked(plan, context, out_dir)
+        self.assertEqual(code, 1)
+        self.assertIsNone(saved)
+        self.assertIn("cost sensitivity config rejected", err)
+        self.assertFalse(out_dir.exists())  # not even the primary was computed
+
+    def _direct_study_unchecked(self, plan, context, out_dir, *, cost: str = "10"):
+        spec_ref = next(r for r in context["plan"].specs if r.spec_id == "synthetic_h1")
+        return runner._run_study_for(
+            spec_path=Path(spec_ref.path), test_plan_path=plan, test_scope="primary",
+            cost_bps=Decimal(cost), symbols=context["primary_symbols"],
+            symbol_checks=context["symbol_checks"], out_dir=out_dir,
+            sensitivity=(self.sens_config, self.decisions),
+        )
+
+    def test_run_study_refuses_a_non_primary_cost(self):
+        plan = self._standard_plan()
+        _checks, context = runner.run_dry_run_checks(self._parsed_args(plan))
+        out_dir = self.tmp / "refused_cost"
+        code, saved, err = self._direct_study_unchecked(plan, context, out_dir, cost="5")
+        self.assertEqual(code, 1)
+        self.assertIsNone(saved)
+        self.assertIn("is not the primary cost", err)
+        self.assertFalse(out_dir.exists())
+
+    def test_config_bound_to_the_plan_primary_cost_and_hash(self):
+        plan = self._standard_plan()
+        # Same plan hash recorded, but the config pre-registers another primary cost.
+        self._write_sensitivity(plan, primary_cost_bps_per_side="12")
+        code, out, _err = self._run(self._base_argv(plan) + ["--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("cost_sensitivity_config_primary_cost_mismatch", out)
+        self._write_sensitivity(plan, test_plan={"sha256": "2" * 64})
+        code, out, _err = self._run(self._base_argv(plan) + ["--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("cost_sensitivity_config_test_plan_sha256_mismatch", out)
+
+    def test_config_must_cover_every_spec_and_scope(self):
+        plan = self._standard_plan()
+        self._write_sensitivity(plan, hypotheses=["H1"])
+        code, out, _err = self._run(self._base_argv(plan) + ["--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("hypothesis 'H2' is not covered", out)
+        self._write_sensitivity(plan, scopes=["primary"])
+        code, out, _err = self._run(self._base_argv(plan) + ["--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("test_scope 'secondary' is not covered", out)
+
+    def test_grid_containing_the_primary_cost_is_rejected(self):
+        plan = self._standard_plan()
+        self._write_sensitivity(plan, grid_cost_bps_per_side=["0", "10", "20"])
+        code, out, _err = self._run(self._base_argv(plan) + ["--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("must not contain the primary cost", out)
+
+    def test_decisional_config_is_rejected(self):
+        plan = self._standard_plan()
+        self._write_sensitivity(plan, decision_status="decisional")
+        code, out, _err = self._run(self._base_argv(plan) + ["--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("cost_sensitivity_must_be_non_decisional", out)
+
+    def test_run_study_sensitivity_requires_save(self):
+        plan = self._standard_plan()
+        _checks, context = runner.run_dry_run_checks(self._parsed_args(plan))
+        spec_ref = next(r for r in context["plan"].specs if r.spec_id == "synthetic_h1")
+        module = runner._load_script_module("run_study")
+        argv = ["--spec", spec_ref.path, "--test-plan", str(plan), "--test-scope", "primary", "--split", "test",
+                "--cost-bps", "10", "--out-dir", str(self.tmp / "nosave"),
+                "--cost-sensitivity-config", str(self.sens_config), "--decisions-doc", str(self.decisions)]
+        for symbol in context["primary_symbols"]:
+            sc = context["symbol_checks"][symbol]
+            argv += ["--data", f"{symbol}={sc.period_paths_used[0]},{sc.price_path}"]
+        code, _stderr = runner._run_module_main(module, argv)
+        self.assertEqual(code, 1)
+        self.assertFalse((self.tmp / "nosave").exists())
+
+    def test_sensitivity_failure_never_touches_primary_results_or_the_family(self):
+        plan = self._standard_plan()
+        with patch("fintr.research.cost_sensitivity.build_artifact", side_effect=RuntimeError("boom")):
+            code, out, _err = self._run(self._base_argv(plan) + ["--execute"])
+        self.assertEqual(code, 0, out)
+        manifest = json.loads((self.test_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertIs(manifest["completed"], True)
+        self.assertEqual(len(manifest["results"]), 4)
+        self.assertTrue(Path(manifest["family_decision_path"]).exists())
+        block = manifest["cost_sensitivity"]
+        self.assertEqual(block["artifacts"], {})
+        self.assertEqual(sorted(block["errors"]), sorted(manifest["results"]))
+        self.assertIn("cost_sensitivity FAILED", out)
+        self.assertFalse((self.out_dir / "cost_sensitivity").exists())
+
+    def test_lock_is_still_o_excl_with_sensitivity_enabled(self):
+        plan = self._standard_plan()
+        checks, context = runner.run_dry_run_checks(self._parsed_args(plan))
+        self.assertTrue(all(c["ok"] for c in checks))
+        self.test_dir.mkdir(parents=True, exist_ok=True)
+        (self.test_dir / "LOCK").write_text("{}", encoding="utf-8")
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = runner.execute(self._parsed_args(plan), checks, context)
+        self.assertEqual(code, 1)
+        self.assertFalse(self.out_dir.exists())
+
+    def test_no_cost_sensitivity_flag_skips_check_and_artifacts(self):
+        plan = self._standard_plan()
+        self._record_sensitivity_hash("0" * 64)  # would fail if it were checked
+        code, out, _err = self._run(self._base_argv(plan) + ["--dry-run", "--no-cost-sensitivity"])
+        self.assertEqual(code, 0, out)
+        self.assertIn("[OK] 7. cost_sensitivity_config: disabled by --no-cost-sensitivity", out)
+
+    def test_execute_stdout_has_no_sensitivity_numbers(self):
+        plan = self._standard_plan()
+        code, out, _err = self._run(self._base_argv(plan) + ["--execute"])
+        self.assertEqual(code, 0, out)
+        for forbidden in ("transaction_cost_bps", "mean_return", "p_value", "round_trip"):
+            self.assertNotIn(forbidden, out)
+        self.assertEqual(out.count("cost_sensitivity saved:"), 4)
 
 
 if __name__ == "__main__":

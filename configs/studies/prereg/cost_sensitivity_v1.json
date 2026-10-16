@@ -1,0 +1,23 @@
+{
+  "schema": "fintr_cost_sensitivity_v1",
+  "config_id": "prereg_bist30_cost_sensitivity_v1",
+  "description": "Pre-registered transaction-cost SENSITIVITY grid for the one-shot holdout test (docs/prereg/DECISIONS.md 2026-10-16, Efe karari; docs/prereg/TRIAL_LOG.md P-03). Descriptive only: it never enters the Holm decision, the hypothesis verdict or the primary report. Nothing here changes a frozen spec, threshold or the test plan.",
+  "decision_status": "non_decisional",
+  "label_tr": "duyarlılık, karar girdisi değil",
+  "test_plan": {
+    "path": "configs/studies/prereg/test_plan_v1.json",
+    "sha256": "b5070b39ed17c5c432cb2567fdb1917d52c1a4e4f552c4ae114a747f11d9182a"
+  },
+  "primary_cost_bps_per_side": "10",
+  "grid_cost_bps_per_side": ["0", "5", "20", "30"],
+  "cost_basis": "per_side (round_trip = 2 x cost_bps_per_side); net = gross - 2 * bps / 10000, same engine formula as the primary analysis",
+  "scopes": ["primary", "secondary"],
+  "hypotheses": ["H1", "H2", "H3", "H4"],
+  "only_changed_parameter": "transaction_cost_bps",
+  "rules": [
+    "Same frozen specs, same data, same test window, same seeds and horizons as the primary run; only --cost-bps differs.",
+    "The primary cost (10 bps per side) is the primary analysis and is not part of this grid.",
+    "Results are written to separate artifacts and are never passed to scripts/evaluate_study_family.py.",
+    "No sensitivity statistic changes a Holm decision, a hypothesis outcome or the primary report."
+  ]
+}

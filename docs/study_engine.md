@@ -192,6 +192,15 @@ records it as `parameters.transaction_cost_basis`. It is an assumption, not
 a sourced commission figure. Because the same cost is subtracted from
 conditioned and baseline events, it does not change `difference_mean`.
 
+`--cost-sensitivity-config` (opt-in; `--split test` with the split guard,
+`--save` and the plan's cost, e.g. 10) re-runs the same frozen computation after
+the primary result is saved, changing only `cost_bps` to each value of the
+pre-registered, hash-verified grid (`configs/studies/prereg/cost_sensitivity_v1.json`,
+0/5/20/30), and writes a separate non-decisional artifact
+(`<out-dir>/cost_sensitivity/<spec_id>_test_<scope>_cost_sensitivity.json`,
+"duyarlılık, karar girdisi değil"). The primary result file is unchanged; Holm
+fields are stripped from the artifact. See `docs/prereg/DECISIONS.md` 2026-10-16.
+
 ## E1: moving block bootstrap by signal date (primary test)
 
 Same-day events across symbols share the market move, and 5-day holding

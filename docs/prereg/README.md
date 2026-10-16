@@ -310,7 +310,7 @@ taşıyan bir spec `block_bootstrap` olmadan yüklenmez.
 Nisan 2027'de, pencere (`2026-10-01..2027-03-31`) bittikten ve fiyat/AKD
 verisi toplandıktan sonra, tek seferlik test şu sırayla çalıştırılır.
 `scripts/run_holdout_test.py` **varsayılan olarak `--dry-run`'dır**; hiçbir
-dosya yazmaz, yalnız aşağıdaki altı denetimi ✓/✗ olarak listeler. Gerçek
+dosya yazmaz, yalnız aşağıdaki yedi denetimi ✓/✗ olarak listeler. Gerçek
 çalıştırma için açıkça `--execute` gerekir.
 
 1. **Toplama.** Pencereyi kapsayan (`start >= 2026-10-01`) dönem kayıtları
@@ -330,13 +330,16 @@ dosya yazmaz, yalnız aşağıdaki altı denetimi ✓/✗ olarak listeler. Gerç
      --test-plan configs/studies/prereg/test_plan_v1.json
    ```
 
-   Altı denetim: (1) plan ve dört spec hash'i doğru; (2) git çalışma ağacı
+   Yedi denetim: (1) plan ve dört spec hash'i doğru; (2) git çalışma ağacı
    temiz; (3) her sembol için pencere içinde başlayan (`start >=
    2026-10-01`) en az bir dönem kaydı var (varsa E4 ile birleştirilir); (4)
    fiyat geçmişinde `2027-03-31` sonrası en az 25 tradeable bar var; (5) AKD
    sunucu tarihleri pencere içindeki tradeable fiyat günlerini kapsıyor; (6)
    kilit (`data/interim/studies/test/LOCK`) veya önceki test çıktısı
-   (`manifest.json`) yok. Hepsi ✓ olana kadar tekrar toplama/güncelleme
+   (`manifest.json`) yok; (7) ön kayıtlı maliyet duyarlılık config'inin
+   (`cost_sensitivity_v1.json`) SHA-256'sı `DECISIONS.md`'deki kayıtla
+   eşleşiyor, plana bağlı ve dört spec × iki kapsamı kapsıyor (aşağıdaki
+   "Maliyet duyarlılık ızgarası"). Hepsi ✓ olana kadar tekrar toplama/güncelleme
    yapılır; dry-run hiçbir zaman dosya yazmaz.
 4. **Execute.**
 
@@ -361,6 +364,24 @@ dosya yazmaz, yalnız aşağıdaki altı denetimi ✓/✗ olarak listeler. Gerç
    yolları ve ✓/✗ durumları yazılır -- getiri, p değeri veya karar metni
    yalnız kaydedilen JSON dosyalarındadır, hiçbir zaman terminale
    basılmaz.
+
+### Maliyet duyarlılık ızgarası (karar girdisi değil)
+
+`DECISIONS.md` 2026-10-16 (Efe kararı, `TRIAL_LOG.md` P-03): birincil analiz
+aynen kalır (maliyet 10 bps/taraf, H1+H2, Holm m=2). Bunun yanında, aynı tek
+execute içinde, aynı dondurulmuş hesap yalnız `--cost-bps` değişerek taraf
+başına **0, 5, 20, 30 bps** için yeniden çalıştırılır
+(`configs/studies/prereg/cost_sensitivity_v1.json`; dört spec × iki kapsam).
+Sonuçlar `data/interim/studies/cost_sensitivity/<spec_id>_test_<kapsam>_cost_sensitivity.json`
+dosyalarına yazılır ("duyarlılık, karar girdisi değil"); Holm adımına, hipotez
+sonucuna ve birincil rapora girmez, birincil sonuç dosyaları duyarlılık
+açıkken de kapalıyken de aynıdır (zaman damgası dışında bayt bayt). Varsayılan
+**açıktır** (ön kayıtlı olduğu için); yalnız prova için `--no-cost-sensitivity`
+vardır ve manifest `cost_sensitivity.enabled: false` kaydeder. Izgara hesabı
+birincil sonuç kaydedildikten sonra çalışır; hata verirse birincil sonuçlar ve
+Holm kararı etkilenmez, hata manifestte `cost_sensitivity.errors` altındadır.
+Tek başına çalıştırma: `scripts/run_study.py ... --split test --save
+--cost-sensitivity-config <config> [--decisions-doc <DECISIONS.md>]`.
 
 **Karara bağlandı (2026-09-28, DECISIONS.md "Holdout fiyat geçmişi kararı"): tam geçmiş kullanılır.** Önceki açık soru: `fintr.features.price_join.
 join_price_history`'nin düzeltme sınırı ve ratio-regime tespiti, sembolün

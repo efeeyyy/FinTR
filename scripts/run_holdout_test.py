@@ -7,8 +7,16 @@ the primary H1+H2 results only. See ``docs/prereg/README.md`` ("Holdout
 testi çalıştırma") and ``docs/prereg/DECISIONS.md`` (2026-09-28) for the
 protocol this implements.
 
+Cost sensitivity (docs/prereg/DECISIONS.md 2026-10-16, TRIAL_LOG P-03): unless
+``--no-cost-sensitivity`` is given, each ``run_study`` invocation also re-runs
+the same frozen computation for the pre-registered extra per-side costs and
+writes a separate, non-decisional ``..._cost_sensitivity.json`` artifact (under
+``<out-dir>/cost_sensitivity/``) -- inside this single test execution, never a
+second test run. It never reaches the family (Holm) step. Pre-flight check 7
+verifies the config's sha256 against DECISIONS.md.
+
 Default mode is ``--dry-run``: it writes nothing and only reports which of
-six pre-flight checks pass. ``--execute`` requires every dry-run check to
+seven pre-flight checks pass. ``--execute`` requires every dry-run check to
 pass first, then atomically creates a lock file
 (``data/interim/studies/test/LOCK``, ``O_EXCL``) before doing anything else,
 so two concurrent invocations cannot both run the one-shot test. A lock or a
@@ -53,6 +61,8 @@ import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TEST_PLAN = PROJECT_ROOT / "configs" / "studies" / "prereg" / "test_plan_v1.json"
+DEFAULT_COST_SENSITIVITY = PROJECT_ROOT / "configs" / "studies" / "prereg" / "cost_sensitivity_v1.json"
+DEFAULT_DECISIONS_DOC = PROJECT_ROOT / "docs" / "prereg" / "DECISIONS.md"
 DEFAULT_PERIOD_ROOT = PROJECT_ROOT / "data" / "interim" / "period_analysis"
 DEFAULT_PRICE_ROOT = PROJECT_ROOT / "data" / "interim" / "price_history"
 DEFAULT_OUT_DIR = PROJECT_ROOT / "data" / "interim" / "studies"
@@ -66,6 +76,7 @@ _CAPTURE_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.json$")
 from fintr.data.period_capture import PeriodCaptureError, load_period_capture
 from fintr.data.price_history import PriceHistoryCaptureError, load_price_history_capture
 from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
+from fintr.research import cost_sensitivity
 from fintr.research.capture_merge import CaptureMergeError, CaptureSource, merge_period_captures
 from fintr.research.engine import tradeable_price_bars
 from fintr.research.study_spec import StudySpecError, load_study_spec
@@ -328,7 +339,43 @@ def run_dry_run_checks(args: argparse.Namespace) -> tuple[list[dict], dict]:
     })
     context["lock_path"] = lock_path
     context["manifest_path"] = manifest_path
+
+    checks.append(_check_cost_sensitivity(args, plan, specs, context))
     return checks, context
+
+
+def _check_cost_sensitivity(args: argparse.Namespace, plan, specs: dict, context: dict) -> dict:
+    """Check 7: the pre-registered, non-decisional cost-sensitivity config is
+    the one recorded in DECISIONS.md, matches the frozen test plan and covers
+    every spec/scope this run will execute (docs/prereg/DECISIONS.md
+    2026-10-16). Fails closed; a failing check refuses ``--execute`` before
+    the lock is created."""
+    name = "cost_sensitivity_config"
+    context["cost_sensitivity_config"] = None
+    if args.no_cost_sensitivity:
+        return {
+            "id": 7, "name": name, "ok": True,
+            "detail": "disabled by --no-cost-sensitivity (pre-registered grid will NOT be computed)",
+        }
+    if plan is None:
+        return {"id": 7, "name": name, "ok": False, "detail": "skipped: test plan did not load (see check 1)"}
+    try:
+        config = cost_sensitivity.load_verified_config(
+            args.cost_sensitivity_config, args.decisions_doc, plan,
+        )
+        for spec in specs.values():
+            prereg = spec.preregistration
+            for scope in ("primary", "secondary"):
+                cost_sensitivity.require_covered(
+                    config, hypothesis_id=None if prereg is None else prereg.hypothesis_id, test_scope=scope,
+                )
+    except cost_sensitivity.CostSensitivityError as exc:
+        return {"id": 7, "name": name, "ok": False, "detail": str(exc)}
+    context["cost_sensitivity_config"] = config
+    return {
+        "id": 7, "name": name, "ok": True,
+        "detail": f"ok (non-decisional grid {[str(c) for c in config.grid_cost_bps_per_side]} bps per side)",
+    }
 
 
 def _previous_output_status(lock_path: Path, manifest_path: Path) -> str | None:
@@ -395,18 +442,26 @@ def _run_module_main(module, argv: list[str]) -> tuple[int, str]:
 
 
 _SAVED_RE = re.compile(r"^Result saved: (.+)$", re.MULTILINE)
+_SENSITIVITY_SAVED_RE = re.compile(r"^Cost sensitivity saved: (.+)$", re.MULTILINE)
+_SENSITIVITY_FAILED_RE = re.compile(r"^Cost sensitivity failed.*$", re.MULTILINE)
 
 
 def _run_study_for(
     *, spec_path: Path, test_plan_path: Path, test_scope: str, cost_bps: Decimal,
     symbols: list[str], symbol_checks: dict[str, "SymbolCheck"], out_dir: Path,
+    sensitivity: tuple[Path, Path] | None = None,
 ) -> tuple[int, Path | None, str]:
+    """``sensitivity`` = ``(config_path, decisions_doc)`` adds the opt-in
+    non-decisional cost-sensitivity grid to this same run_study invocation
+    (same loaded data, primary result saved first, separate artifact)."""
     module = _load_script_module("run_study")
     argv = [
         "--spec", str(spec_path), "--test-plan", str(test_plan_path), "--test-scope", test_scope,
         "--split", "test", "--cost-bps", str(cost_bps), "--out-dir", str(out_dir), "--save",
         "--format", "json",
     ]
+    if sensitivity is not None:
+        argv += ["--cost-sensitivity-config", str(sensitivity[0]), "--decisions-doc", str(sensitivity[1])]
     for symbol in symbols:
         sc = symbol_checks[symbol]
         for period_path in sc.period_paths_used:
@@ -423,6 +478,42 @@ def _run_family_for(result_paths: list[Path], out_path: Path) -> tuple[int, str]
     for path in result_paths:
         argv += ["--result", str(path)]
     return _run_module_main(module, argv)
+
+
+# Mirrors scripts/run_study.py EXIT_SENSITIVITY_FAILED (a test pins the equality).
+_EXIT_SENSITIVITY_FAILED = 3
+
+
+def _sensitivity_manifest_block(args: argparse.Namespace, config) -> dict:
+    if config is None:
+        return {
+            "enabled": False, "non_decisional": True,
+            "reason": "--no-cost-sensitivity" if args.no_cost_sensitivity else "not configured",
+        }
+    return {
+        "enabled": True, "non_decisional": True, "label": cost_sensitivity.LABEL_TR,
+        "config_path": str(args.cost_sensitivity_config), "config_sha256": config.config_sha256,
+        "decisions_doc": str(args.decisions_doc),
+        "primary_cost_bps_per_side": str(config.primary_cost_bps_per_side),
+        "grid_cost_bps_per_side": [str(cost) for cost in config.grid_cost_bps_per_side],
+        "artifacts": {}, "errors": {},
+    }
+
+
+def _record_sensitivity(block: dict, key: str, code: int, stderr_text: str) -> None:
+    """Records one run's sensitivity artifact (path + sha256) or its failure
+    in the manifest, and prints only the file path / a status line."""
+    match = _SENSITIVITY_SAVED_RE.search(stderr_text)
+    if code == 0 and match is not None:
+        artifact_path = Path(match.group(1))
+        block["artifacts"][key] = {
+            "path": str(artifact_path), "sha256": hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+        }
+        print(f"  cost_sensitivity saved: {artifact_path}")
+        return
+    failure = _SENSITIVITY_FAILED_RE.search(stderr_text)
+    block["errors"][key] = failure.group(0) if failure else "no cost-sensitivity artifact reported"
+    print("  cost_sensitivity FAILED (primary result unaffected; see manifest)")
 
 
 def execute(args: argparse.Namespace, checks: list[dict], context: dict) -> int:
@@ -447,6 +538,10 @@ def execute(args: argparse.Namespace, checks: list[dict], context: dict) -> int:
     plan = context["plan"]
     specs = context["specs"]
     symbol_checks = context["symbol_checks"]
+    sensitivity_config = context.get("cost_sensitivity_config")
+    sensitivity_arg = (
+        None if sensitivity_config is None else (args.cost_sensitivity_config, args.decisions_doc)
+    )
     hypothesis_to_spec_path: dict[str, Path] = {}
     manifest = {
         "schema": MANIFEST_SCHEMA,
@@ -471,6 +566,7 @@ def execute(args: argparse.Namespace, checks: list[dict], context: dict) -> int:
         "python_version": platform.python_version(),
         "input_file_sha256": {},
         "results": {},
+        "cost_sensitivity": _sensitivity_manifest_block(args, sensitivity_config),
         "completed": False,
     }
     try:
@@ -492,15 +588,25 @@ def execute(args: argparse.Namespace, checks: list[dict], context: dict) -> int:
                 code, saved_path, stderr_text = _run_study_for(
                     spec_path=spec_path, test_plan_path=args.test_plan, test_scope=scope,
                     cost_bps=plan.cost_bps_per_side, symbols=symbols, symbol_checks=symbol_checks,
-                    out_dir=args.out_dir,
+                    out_dir=args.out_dir, sensitivity=sensitivity_arg,
                 )
-                print(f"run_study {spec_id} scope={scope}: {'ok' if code == 0 else 'FAILED'}")
-                if code != 0 or saved_path is None:
+                # Exit code 3: the primary result is saved, only the opt-in
+                # non-decisional sensitivity grid failed (recorded below).
+                sensitivity_failed = (
+                    sensitivity_arg is not None and code == _EXIT_SENSITIVITY_FAILED and saved_path is not None
+                )
+                primary_ok = code == 0 or sensitivity_failed
+                print(f"run_study {spec_id} scope={scope}: {'ok' if primary_ok else 'FAILED'}")
+                if not primary_ok or saved_path is None:
                     raise RuntimeError(f"run_study failed for {spec_id} scope={scope}: {stderr_text.strip()}")
                 print(f"  saved: {saved_path}")
                 manifest["results"][f"{spec_id}:{scope}"] = {
                     "path": str(saved_path), "sha256": hashlib.sha256(saved_path.read_bytes()).hexdigest(),
                 }
+                if sensitivity_arg is not None:
+                    _record_sensitivity(
+                        manifest["cost_sensitivity"], f"{spec_id}:{scope}", code, stderr_text,
+                    )
                 if scope == "primary" and spec.preregistration is not None:
                     hypothesis_to_spec_path[spec.preregistration.hypothesis_id] = saved_path
 
@@ -547,6 +653,15 @@ def _parser() -> argparse.ArgumentParser:
                          help="where LOCK, manifest.json and the family decision are written")
     parser.add_argument("--repo-root", type=Path, default=None,
                          help="override the git repository root (tests only)")
+    parser.add_argument("--cost-sensitivity-config", type=Path, default=DEFAULT_COST_SENSITIVITY,
+                         help="pre-registered non-decisional cost-sensitivity grid "
+                              "(docs/prereg/DECISIONS.md 2026-10-16); computed inside the same "
+                              "single test execution, on by default")
+    parser.add_argument("--decisions-doc", type=Path, default=DEFAULT_DECISIONS_DOC,
+                         help="DECISIONS.md that records the cost-sensitivity config sha256")
+    parser.add_argument("--no-cost-sensitivity", action="store_true",
+                         help="rehearsal/debug only: skip the pre-registered sensitivity grid "
+                              "(recorded in the manifest; the primary results are identical)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="default: checks only, writes nothing")
     mode.add_argument("--execute", action="store_true",
