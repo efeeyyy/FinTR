@@ -231,8 +231,34 @@ Bu dosya finansal sonuç içermez; sonuçlar ayrı "finans" sohbetinde konuşulu
      2023–2026 resmî BIST tatil tablosu PDF'lerinden, 2027 Ç1 Diyanet listesinden (`expected_not_announced`).
      Yahoo'nun düşürdüğü 7 günün hepsi resmî tam kapanış. Efe doğrulaması bekleyen: 2023-02-08..14
      deprem kapanışı (yalnız ikincil kaynak), 2023-10-28, hafta sonu arifeleri; 2027 tablosu ~Aralık 2026.
-     Kalan aday işler: tatil takvimini Efe doğrulayınca koda bağlama, maliyet duyarlılık ızgarası
-     (holdout öncesi DECISIONS, Efe kararı), T-24 train etkisi.
+   - 2026-10-16 (Efe kararları, DECISIONS 2026-10-16):
+     - Tatil takvimi onaylandı → `configs/market/bist_holidays.json` (`fintr.data.market_calendar`);
+       pipeline yeni-veri koruması resmî tatilde atlar (ilk: 10-29), `generated_late` işlem gününe göre.
+     - Maliyet duyarlılık ızgarası 0/5/20/30 bps ön kayıtlı (P-03, `cost_sensitivity_v1.json`, hash
+       DECISIONS'ta); `run_holdout_test.py --execute` içinde varsayılan açık, karar girdisi değil,
+       birincil çıktılar bayt düzeyinde aynı. Gerçek veride süre ölçülmedi (sentetik prova ~4→~21 dk).
+     - K4 yalnız 20 geliştirme hissesi için kalktı (T-31): `scripts/track_accuracy.py`,
+       pipeline `--accuracy` (en son adım, Telegram'a hiçbir şey gitmez); 5 gün birincil, 1 gün
+       ikincil, taban oran + Wilson GA, train dönemi/sonrası ayrı. 30 hisselik birincil test kalır ama
+       dev hisseleri bakımından kör değil; E5 kör. İlk koşu `data/interim/accuracy/2026-10-16/`
+       (yeniden kurulan 480 tahmin kayıtlılarla birebir). Sonuç değerleri yalnız finans sohbetinde.
+     - Veri: 10-14..10-16 toplandı (10-16 v3 mesajı gitti; 10-14/15 tarama + forward log backfilled,
+       etiket `forward-log-2026-10-16`). AYGAZ (evren dışı, keşif): `period_analysis/AYGAZ/
+       2025-10-16_2026-10-16.json` + rapor, fiyat `price_history/AYGAZ/2023-01-02_2026-10-16.json`.
+     - Günlük komut artık: `run_daily_pipeline.py --allow-session-takeover --send --llm-note
+       --price-diff --forward-log --accuracy`.
+     - Maliyet ızgarası birleşti; yavaş holdout provası (60 test) ve check_env hash kontrolleri OK.
+     - T-24 kapandı (T-32, `data/interim/research/t24_structural_2026-10-16/report.md`): train
+       girdileri/olayları yeni Yahoo dosyalarıyla yapısal olarak özdeş (işaret satırlarını motor
+       zaten düşürüyor; `adjusted_close` yalnız sınır tespitinde, sınırlar aynı).
+     - Takas lot biçimi değişti (`data/interim/research/custody_revisions_2026-10-16/report.md`):
+       2026-10-09'dan önceki çekimlerde lot 2 ondalıklı, sonrakilerde tam sayı; "revize" günlerin
+       takas kısmı bu (göreli medyan ~1e-8). AÇIK: 42 (eski çekim, gün) çiftinde bir kurum satırı yeni
+       çekimde yok, 178'inde fark yuvarlamayla açıklanmıyor — nedeni doğrulanmadı, holdout öncesi bak.
+       AKD'de revizyon yok. Haftalık replay (2026-10-16): point-in-time 5/5 özdeş; current'ta 10-12/13
+       yalnız data_revision.
+     Kalan aday işler: takas kayıp satır sorusu, doğruluk takibinde resmî takvim çapraz kontrolü,
+     2027 BIST tatil tablosu (~Aralık 2026), haftalık replay (Cumartesi), eski worktree temizliği.
    - İzinler (Efe, 2026-10-04): `.claude/settings.local.json` (git dışı) → env PYTHONPATH=src,
      PYTHONIOENCODING=utf-8; allow: git merge, `git push origin *`, venv python ile
      run_daily_pipeline/notify_observations/scan_observations/collect_daily/llm_note. Yeni
