@@ -69,6 +69,13 @@ skipped_dry_run|failed:...``; a failure (e.g. files changed since an earlier
 entry: use ``forward_log.py append --revision`` by hand) never changes the
 notice or the exit code. Committing the manifest stays a manual step.
 
+Optional accuracy tracking (``--accuracy``, default off; docs/accuracy.md): right after the
+scan, ``track_accuracy.py`` writes the walk-forward directional accuracy of the frozen rules
+for the development symbols to ``data/interim/accuracy/<run date>/`` (never overwrites; a
+same-day re-run reports ``exists``). The summary shows ``accuracy: <saved|exists|failed:...>``;
+it prints only the output path (no metric), sends nothing to Telegram and, whatever happens
+(failure, timeout), the notice step and the exit code are unchanged.
+
 Missing-close warning (after the steps): when the scan's as_of is older than the
 collected window end E, E is a weekday without a close in the saved price
 history (not a holiday; Yahoo had not published it, so the price step did not
@@ -128,6 +135,9 @@ LLM_NOTE_TIMEOUT_MARGIN_SECONDS = 300
 LLM_STATUS_PREFIX = "LLM_NOTE_STATUS: "
 FORWARD_LOG_STATUS_PREFIX = "FORWARD_LOG_STATUS: "
 FORWARD_LOG_TIMEOUT_SECONDS = 120
+ACCURACY_SAVED_PREFIX = "ACCURACY_SAVED: "
+ACCURACY_TIMEOUT_SECONDS = 900
+ACCURACY_EXIT_EXISTS = 3  # track_accuracy.py: output of this run date already exists
 SAVED_PREFIX = "Observations saved:"
 EXISTS_PREFIX = "Scan failed: output file already exists (no overwrite):"
 RECEIPT_EXISTS_MARK = "receipt zaten var"
@@ -184,6 +194,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "docs/forward_log.md). Default off; the summary shows "
                              "forward_log: appended|noop|skipped_dry_run|failed:...; its failure "
                              "never changes the notice or the exit code")
+    parser.add_argument("--accuracy", action="store_true",
+                        help="after the scan, run track_accuracy.py (walk-forward directional "
+                             "accuracy of the frozen rules, development symbols only; "
+                             "docs/accuracy.md) into data/interim/accuracy/<run date>/. Default "
+                             "off; sends nothing to Telegram; its failure never changes the "
+                             "notice or the exit code; summary line accuracy: "
+                             "saved|exists|failed:...")
     return parser
 
 
@@ -318,6 +335,39 @@ def run_llm_note(as_of: str, timeout: float | None = None) -> str:
         if line.startswith(LLM_STATUS_PREFIX):
             return line[len(LLM_STATUS_PREFIX):].strip() or f"error:exit_{proc.returncode}"
     return f"error:exit_{proc.returncode}"
+
+
+def accuracy_command(run_date_arg: str | None) -> list[str]:
+    cmd = [sys.executable, _script("track_accuracy.py"), "--daily-root", DAILY_ROOT,
+           "--scanner-dir", SCANNER_DIR]
+    if run_date_arg:
+        cmd += ["--run-date", run_date_arg]
+    return cmd
+
+
+def run_accuracy(run_date_arg: str | None) -> str:
+    """Run the accuracy tracker; return ``saved``, ``exists`` or ``failed:...``.
+    Never raises and never decides the pipeline's exit code. Only the output
+    path is printed (the tracker's counts and metrics stay in its files)."""
+    try:
+        proc = subprocess.run(accuracy_command(run_date_arg), cwd=ROOT, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                              errors="replace", env=_child_env(), timeout=ACCURACY_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return "failed:timeout"
+    except Exception as exc:  # the tracker must never stop or change the notice
+        return f"failed:{type(exc).__name__}"
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    if proc.returncode == ACCURACY_EXIT_EXISTS:
+        return "exists"
+    if proc.returncode != 0:
+        return f"failed:exit_{proc.returncode}"
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith(ACCURACY_SAVED_PREFIX):
+            print(f"accuracy output: {line[len(ACCURACY_SAVED_PREFIX):].strip()}")
+            return "saved"
+    return "failed:no_output_path"
 
 
 def run_forward_log(as_of: str) -> str:
@@ -540,6 +590,11 @@ def main(argv: list[str] | None = None) -> int:
             return _fail(results, "scan", 1)
         as_of, saved = found
         results.append(("scan", "0"))
+
+    if args.accuracy:
+        # Right after the scan, before the notice; bounded by a timeout and
+        # never able to stop or alter the notice (any status is only reported).
+        results.append(("accuracy", run_accuracy(args.run_date)))
 
     v3_note = args.layout == "v3" and args.llm_note
     if v3_note:

@@ -26,7 +26,9 @@ TELEGRAM_ENV = {"FINTR_TELEGRAM_BOT_TOKEN": "test-token", "FINTR_TELEGRAM_CHAT_I
 
 
 def _go(argv, codes=(0, 0, 0), saved=True, scan_err=None, notify_err="", env=None,
-        forward=(0, "forward_log: appended\nFORWARD_LOG_STATUS: appended\n")):
+        forward=(0, "forward_log: appended\nFORWARD_LOG_STATUS: appended\n"),
+        accuracy=(0, "ACCURACY_SAVED: data/interim/accuracy/2026-10-16/accuracy.json\n"
+                     "counts period=train_window horizon=5 signals=9 resolved=7 pending=2 dropped=0\n")):
     calls = []
     if env is None:
         env = TELEGRAM_ENV if "--send" in argv else {}
@@ -38,6 +40,10 @@ def _go(argv, codes=(0, 0, 0), saved=True, scan_err=None, notify_err="", env=Non
                 raise forward
         if Path(cmd[1]).name == "forward_log.py":
             return subprocess.CompletedProcess(cmd, forward[0], stdout=forward[1], stderr="")
+        if Path(cmd[1]).name == "track_accuracy.py":
+            if isinstance(accuracy, Exception):
+                raise accuracy
+            return subprocess.CompletedProcess(cmd, accuracy[0], stdout=accuracy[1], stderr="")
         idx = STEP_INDEX[Path(cmd[1]).name]
         err = ""
         if idx == 1:
@@ -295,6 +301,48 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(rdp.extract_as_of("Observations saved: data/a/2026-09-30/observations.json")[0],
                          "2026-09-30")
         self.assertIsNone(rdp.extract_as_of("nothing"))
+
+    def test_accuracy_is_off_by_default(self):
+        rc, calls, out, _ = _go(["--allow-session-takeover"])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("track_accuracy.py", _names(calls))
+        self.assertNotIn("accuracy:", out)
+
+    def test_accuracy_runs_after_scan_before_notify_and_prints_only_the_path(self):
+        rc, calls, out, err = _go(["--allow-session-takeover", "--accuracy", "--run-date", "2026-10-16"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            _names(calls),
+            ["collect_daily.py", "scan_observations.py", "track_accuracy.py", "notify_observations.py"],
+        )
+        accuracy = calls[2]
+        self.assertEqual(accuracy[0][2:], ["--daily-root", rdp.DAILY_ROOT, "--scanner-dir", rdp.SCANNER_DIR,
+                                           "--run-date", "2026-10-16"])
+        self.assertEqual(accuracy[1]["timeout"], rdp.ACCURACY_TIMEOUT_SECONDS)
+        self.assertIn("accuracy: saved", out)
+        self.assertIn("accuracy output: data/interim/accuracy/2026-10-16/accuracy.json", out)
+        self.assertNotIn("counts period", out + err)  # no count or metric line is echoed
+        self.assertNotIn("--accuracy", calls[3][0])  # the notice command is unchanged
+
+    def test_accuracy_exists_and_failures_never_block_notify_or_change_exit_code(self):
+        cases = [
+            ((3, ""), "accuracy: exists"),
+            ((1, ""), "accuracy: failed:exit_1"),
+            ((0, "no path line\n"), "accuracy: failed:no_output_path"),
+            (subprocess.TimeoutExpired(["x"], 1), "accuracy: failed:timeout"),
+            (OSError("boom"), "accuracy: failed:OSError"),
+        ]
+        for accuracy, expected in cases:
+            rc, calls, out, _ = _go(["--send", "--accuracy"], accuracy=accuracy)
+            self.assertEqual(rc, 0, expected)
+            self.assertEqual(_names(calls)[-1], "notify_observations.py", expected)
+            self.assertIn(expected, out)
+            self.assertIn("sent: yes", out)
+
+    def test_accuracy_not_run_when_the_scan_failed(self):
+        rc, calls, _, _ = _go(["--accuracy"], codes=(0, 1, 0), saved=False)
+        self.assertEqual(rc, 1)
+        self.assertNotIn("track_accuracy.py", _names(calls))
 
 
 class PriceDiffStepTests(unittest.TestCase):
