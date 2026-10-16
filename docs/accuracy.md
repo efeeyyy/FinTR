@@ -94,8 +94,11 @@ stdout yalnız çıktı yolunu ve **sayıları** (sinyal/sonuçlanan/bekleyen/d�
 oranı veya getiri basmaz.
 
 Günlük boru hattında opt-in: `run_daily_pipeline.py --accuracy` (varsayılan kapalı) taramadan
-sonra çalışır, özet satırı `accuracy: saved|exists|failed:...`; hata/zaman aşımı (900 sn)
-bildirimi ve çıkış kodunu değiştirmez; Telegram'a hiçbir şey gitmez.
+en son adım olarak (bildirim ve `--forward-log` sonrası) çalışır, özet satırı
+`accuracy: saved|exists|failed:...`; hata/zaman aşımı (900 sn) yalnız bu satırda görünür, önceki
+adımların sonuçlarını ve çıkış kodunu değiştirmez; Telegram'a hiçbir şey gitmez. Resmî takvim
+(`fintr.data.market_calendar`) kullanılmaz: işlem günleri kayıtlı fiyat geçmişindeki işlem
+görmüş barlardan gelir (motorla aynı); takvimle çapraz denetim ayrı bir iş olarak bırakıldı.
 
 ## Çıktı (`fintr_accuracy_v1`)
 

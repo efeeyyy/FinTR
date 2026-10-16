@@ -849,7 +849,8 @@ Bileşenler:
   satırlık veri durumu (boşluk / kesinleşmemiş / revize gün sayısı) ekler
   (`docs/notify.md`).
 
-Veri bütünlüğü kuralları: Efe K4 -- 2027-03-31'e kadar H1-H4 için test
+Veri bütünlüğü kuralları (güncelleme: K4, Efe'nin 2026-10-16 kararıyla (`docs/prereg/DECISIONS.md`) yalnız 20 geliştirme hissesi için kaldırıldı; holdout sembolleri hâlâ izlenmez; aşağıdaki K4 metni bu
+kararla yalnız geliştirme hisseleri için geçersizdir): Efe K4 -- 2027-03-31'e kadar H1-H4 için test
 penceresi verisiyle ara performans değerlendirmesi yapılmaz (gözlem sonrası
 getiri hesabı veya isabet sayımı dahil); kural ve eşikler dondurulmuş
 hâliyle kalır. Günlük kayıtlar `run_holdout_test.py` girdisi değildir;

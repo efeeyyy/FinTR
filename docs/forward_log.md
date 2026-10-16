@@ -70,7 +70,7 @@ bildirimde makbuz oluşmadığından kayıt yazılmaz (sonradan revizyon gerekti
   bağlı OpenTimestamps benzeri harici damga, [belirsiz]) olmadan yerel kanıt zayıftır.
 - Makbuzu sonradan değişen gün (ör. v2'de kısmi gönderimin tamamlanması) için `--revision`
   gerekir; revizyonlar zincirde görünür kalır.
-- Bu araç bir performans değerlendirmesi değildir; K4 (2027-03-31) ve holdout kuralları aynen geçerlidir.
+- Bu araç bir performans değerlendirmesi değildir; holdout kuralları aynen geçerlidir. K4, Efe'nin 2026-10-16 kararıyla (`docs/prereg/DECISIONS.md`) yalnız 20 geliştirme hissesi için kaldırıldı; holdout sembolleri hâlâ izlenmez (isabet izleme: `accuracy.md`).
 
 ## Karar ve alternatifler
 

@@ -73,8 +73,8 @@ skipped_dry_run|failed:...``; a failure (e.g. files changed since an earlier
 entry: use ``forward_log.py append --revision`` by hand) never changes the
 notice or the exit code. Committing the manifest stays a manual step.
 
-Optional accuracy tracking (``--accuracy``, default off; docs/accuracy.md): right after the
-scan, ``track_accuracy.py`` writes the walk-forward directional accuracy of the frozen rules
+Optional accuracy tracking (``--accuracy``, default off; docs/accuracy.md): as the very last
+step, after notify and ``--forward-log``, ``track_accuracy.py`` writes the walk-forward directional accuracy of the frozen rules
 for the development symbols to ``data/interim/accuracy/<run date>/`` (never overwrites; a
 same-day re-run reports ``exists``). The summary shows ``accuracy: <saved|exists|failed:...>``;
 it prints only the output path (no metric), sends nothing to Telegram and, whatever happens
@@ -207,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "forward_log: appended|noop|skipped_dry_run|failed:...; its failure "
                              "never changes the notice or the exit code")
     parser.add_argument("--accuracy", action="store_true",
-                        help="after the scan, run track_accuracy.py (walk-forward directional "
+                        help="after notify and --forward-log, run track_accuracy.py (walk-forward directional "
                              "accuracy of the frozen rules, development symbols only; "
                              "docs/accuracy.md) into data/interim/accuracy/<run date>/. Default "
                              "off; sends nothing to Telegram; its failure never changes the "
@@ -626,11 +626,6 @@ def main(argv: list[str] | None = None) -> int:
         as_of, saved = found
         results.append(("scan", "0"))
 
-    if args.accuracy:
-        # Right after the scan, before the notice; bounded by a timeout and
-        # never able to stop or alter the notice (any status is only reported).
-        results.append(("accuracy", run_accuracy(args.run_date)))
-
     v3_note = args.layout == "v3" and args.llm_note
     if v3_note:
         # Before the single message, which never waits on the outcome: any
@@ -671,6 +666,13 @@ def main(argv: list[str] | None = None) -> int:
             results.append(("forward_log", run_forward_log(as_of)))
         else:
             results.append(("forward_log", "skipped_dry_run"))
+
+    if args.accuracy:
+        # After notify and forward_log (Efe, 2026-10-16 review): it can never delay or
+        # affect the Telegram message. Bounded by a timeout; a failure only shows up as
+        # its summary line (accuracy: failed:...), earlier steps' results and the exit
+        # code stand. Not reached when the pipeline already stopped on a failed step.
+        results.append(("accuracy", run_accuracy(args.run_date)))
 
     _summary(results, **summary)
     if already_sent:
