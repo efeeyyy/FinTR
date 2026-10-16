@@ -13,10 +13,11 @@ The deterministic hash checks reuse the repository's own loaders
 compare against the values recorded in ``docs/prereg/FREEZE.md`` /
 ``docs/prereg/DECISIONS.md`` and in the frozen specs. The "which window
 end E would the pipeline target" line uses the same pure planner as
-``collect_daily.py --dry-run`` (``plan_daily_collection``), offline. There is
-no exchange-holiday calendar in this repository, so whether E is a holiday is
-not checked (the line says so); only weekends and an already-collected E are
-recognised as "no new data expected".
+``collect_daily.py --dry-run`` (``plan_daily_collection``), offline. This
+script does not consult the BIST holiday calendar
+(``configs/market/bist_holidays.json``; the pipeline's no-new-data guard does),
+so whether E is a holiday is not checked here (the line says so); only weekends
+and an already-collected E are recognised as "no new data expected".
 
 See ``docs/live_check_runbook.md`` ("Sabah: önce check_env.py").
 """
