@@ -1,7 +1,9 @@
-# BIST Pay Piyasası tatil takvimi taslağı (2023-01-01 .. 2027-03-31)
+# BIST Pay Piyasası tatil takvimi (2023-01-01 .. 2027-03-31)
 
-Durum: `draft_unverified` (`verified_by: null`). Dosya: `configs/market/bist_holidays_draft.json`.
-Araştırma tarihi: 2026-10-14 (UTC erişim zamanları JSON `sources` içinde). Koda bağlanmadı; Efe resmi listeyle doğrulayana kadar kullanılmamalı.
+Durum: **onaylandı** (`status: "approved"`, `verified_by: "Efe"`, `verified_on: "2026-10-16"`). Dosya: `configs/market/bist_holidays.json` (eski adı `bist_holidays_draft.json`); yükleyici `src/fintr/data/market_calendar.py`.
+Araştırma tarihi: 2026-10-14 (UTC erişim zamanları JSON `sources` içinde).
+
+Onay notu (Efe, 2026-10-16): aşağıdaki açık noktalar (2023-02-08..14 deprem kapanışı ikincil kaynaklardan, 2023-10-28, hafta sonuna denk gelen arifelerin tam kapalı kaydı, 2027 Q1'in Diyanet listesinden `expected_not_announced` olarak alınması) **birincil kaynak kontrolü yapılmadan** Efe tarafından kabul edildi; gün başına `status` alanı (`official` / `uncertain` / `expected_not_announced`) korunur. BIST 2027 tablosunu yayımlayınca (tahmini Aralık 2026) 2027 günleri yeniden kontrol edilecek.
 
 ## Yıl yıl bulgular
 

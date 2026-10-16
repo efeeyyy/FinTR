@@ -52,14 +52,18 @@ and its exit code is unchanged (studies and the scanner read prices as before).
 No-new-data guard (before step 1; no initData prompt, no connection): the
 planner's window end ``E = R - end_offset_days`` is checked offline
 (``fintr.collection.new_data_guard``). If no new trading day is expected
-(weekend; holiday per the saved price-history calendar; or every planned
-symbol's last saved window end is already ``>= E``) and no unsettled day is
+(weekend; an official full closure in the approved BIST holiday calendar,
+``configs/market/bist_holidays.json``; holiday per the saved price-history
+calendar; or every planned symbol's last saved window end is already ``>= E``) and no unsettled day is
 pending in the latest saved scan, the pipeline prints ``yeni veri beklenmiyor
 (son işlem günü X); toplama atlandı`` and exits 0 -- no collect, scan or
 notify, so nothing is sent (an already sent day is never sent again). An
 unsettled day (or an unreadable settlement state) keeps the collection, for
 custody settlement. ``--force-collect`` bypasses the guard; ``--dry-run`` and
 ``--skip-collect`` are not guarded. Any guard error falls back to collecting.
+If ``E`` lies outside the holiday calendar's coverage (or the calendar cannot be
+read), a note goes to stderr and the official-holiday reason is simply not used:
+the price-history heuristic decides as before (no silent claim either way).
 
 Optional last step ``--forward-log`` (default off; docs/forward_log.md): after a
 sent (or already sent) notice, ``forward_log.py append --as-of <as_of>`` adds the
@@ -116,6 +120,13 @@ from fintr.collection.planner import (
     scan_base_capture_ends,
     scan_last_success,
 )
+from fintr.data.market_calendar import (
+    DEFAULT_MARKET_CALENDAR_PATH,
+    KIND_FULL_CLOSURE,
+    MarketCalendarError,
+    OutsideCoverageError,
+    load_market_calendar,
+)
 from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -129,6 +140,7 @@ PRICE_DIFF_DIR = os.path.join("data", "interim", "price_revisions")
 PRICE_DIFF_TIMEOUT_SECONDS = 600
 PRICE_DIFF_SUMMARY_PREFIX = "PRICE_DIFF: "
 DAILY_CONFIG = ROOT / "configs" / "collection" / "daily_miniapp_v1.json"
+MARKET_CALENDAR = ROOT / DEFAULT_MARKET_CALENDAR_PATH
 LLM_NOTE_CONFIG = ROOT / "configs" / "llm_note" / "config_v1.json"
 LLM_NOTE_DEFAULT_RUN_SECONDS = 1800  # the config's max_run_seconds, if the file cannot be read
 LLM_NOTE_TIMEOUT_MARGIN_SECONDS = 300
@@ -443,6 +455,26 @@ def extract_as_of(stderr_text: str, prefix: str = SAVED_PREFIX) -> tuple[str, st
     return None
 
 
+def official_holiday_name(window_end: date) -> str | None:
+    """The BIST calendar's closure name when ``window_end`` is a listed full closure on a
+    weekday, else ``None``. Outside the calendar's coverage, or when the calendar cannot be
+    read, it says so on stderr and answers ``None`` (the price-history heuristic decides)."""
+    try:
+        calendar = load_market_calendar(MARKET_CALENDAR)
+        entry = calendar.listed_day(window_end)
+    except OutsideCoverageError:
+        print(f"BIST holiday calendar does not cover {window_end.isoformat()}; "
+              "official-holiday check skipped (price-history heuristic only).", file=sys.stderr)
+        return None
+    except MarketCalendarError as exc:
+        print(f"BIST holiday calendar unusable ({exc}); official-holiday check skipped "
+              "(price-history heuristic only).", file=sys.stderr)
+        return None
+    if entry is not None and entry.kind == KIND_FULL_CLOSURE:
+        return entry.name_tr
+    return None
+
+
 def new_data_decision(run_date_arg: str | None) -> NewDataDecision | None:
     """The offline no-new-data check; ``None`` = could not decide (collect).
 
@@ -475,6 +507,7 @@ def new_data_decision(run_date_arg: str | None) -> NewDataDecision | None:
             calendar=load_price_calendar(ROOT / PRICE_DIR, planned),
             last_saved=last_saved_end(planned, last_success, base_ends),
             unsettled_pending=scanner_unsettled_pending(ROOT / SCANNER_DIR),
+            official_holiday_name=official_holiday_name(plan.window_end),
         )
     except (CollectionPlannerError, SymbolGuardError, OSError, ValueError) as exc:
         print(f"No-new-data check could not run ({type(exc).__name__}); collecting.", file=sys.stderr)
@@ -550,6 +583,8 @@ def main(argv: list[str] | None = None) -> int:
             results += [("collect", "skipped_no_new_data"), ("scan", "skipped"), ("notify", "skipped")]
             _summary(results)
             print(f"  reason: {decision.reason} (window end {decision.window_end.isoformat()})")
+            if decision.official_holiday_name is not None:
+                print(f"  resmî tatil: {decision.official_holiday_name}")
             return 0
 
     if args.skip_collect:

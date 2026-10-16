@@ -643,11 +643,19 @@ $env:PYTHONPATH = "$PWD\src"
   `yeni veri beklenmiyor (son işlem günü X); toplama atlandı` yazar, 0 ile
   çıkar; toplama, tarama ve bildirim çalışmaz. Beklenmeme nedenleri:
   1. E Cumartesi veya Pazar;
-  2. E hafta içi ama fiyat geçmişi E'yi kapsıyor ve hiçbir sembolün fiyat
-     geçmişinde E için işlem görmüş bar yok (tatil; takvim yalnız
-     `data\interim\price_history` dosyalarından türetilir, resmî tatil listesi
-     yoktur);
-  3. her planlı sembolün son kaydedilen pencere sonu (çalıştırma kayıtları +
+  2. E, onaylı BIST tatil takviminde (`configs\market\bist_holidays.json`,
+     Efe onayı 2026-10-16) tam kapanış günü: `reason: official_holiday` ve
+     `resmî tatil: <ad>` satırı yazılır. Yarım gün işlem günüdür, atlanmaz.
+     E takvimin kapsamı (2023-01-01..2027-03-31) dışındaysa ya da takvim
+     okunamazsa stderr'e not düşer ve bu neden kullanılmaz (sessiz karar yok);
+     aşağıdaki fiyat geçmişi sezgisi eskisi gibi çalışır. 2027 günleri
+     `expected_not_announced` (Diyanet listesi) ve BIST 2027 tablosu
+     yayımlanınca (~Aralık 2026) yeniden kontrol edilecek;
+  3. E hafta içi ama fiyat geçmişi E'yi kapsıyor ve hiçbir sembolün fiyat
+     geçmişinde E için işlem görmüş bar yok (tatil; takvim bu sezgi için yalnız
+     `data\interim\price_history` dosyalarından türetilir; takvimde olmayan
+     olağanüstü kapanışları da yakalar, ama henüz çekilmemiş günü bilemez);
+  4. her planlı sembolün son kaydedilen pencere sonu (çalıştırma kayıtları +
      taban yakalama, planlayıcıdaki kural) zaten E veya sonrası.
 
   **Kesinleşmemiş gün varsa toplama yine yapılır** (takas düzelmesi için):
