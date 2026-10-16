@@ -107,7 +107,7 @@ PYTHONPATH=src python scripts/run_holdout_test.py \
   --test-plan configs/studies/prereg/test_plan_v1.json
 ```
 
-- [ ] Beklenen çıktı, çıkış kodu `0`, tam altı satır:
+- [ ] Beklenen çıktı, çıkış kodu `0`, tam yedi satır:
 
   ```
   [OK] 1. plan_and_spec_hashes: ok
@@ -116,6 +116,7 @@ PYTHONPATH=src python scripts/run_holdout_test.py \
   [OK] 4. min_tradeable_bars_after_window_end: ok
   [OK] 5. akd_dates_cover_tradeable_window_dates: ok
   [OK] 6. no_lock_or_previous_output: ok
+  [OK] 7. cost_sensitivity_config: ok (non-decisional grid ['0', '5', '20', '30'] bps per side)
   ```
 
 - [ ] Herhangi bir `[FAIL]` varsa `--execute` çalıştırılmaz. Satır, sembolü adıyla
@@ -129,6 +130,7 @@ PYTHONPATH=src python scripts/run_holdout_test.py \
   | 4 | `<N> tradeable bar(s) after 2027-03-31 (need >= 25)` | fiyatı güncelle / bekle |
   | 5 | `missing AKD server date(s): [...]` | eksik günleri topla |
   | 6 | `LOCK`/`manifest.json` var | **dur**; test zaten çalışmış ya da yarım kalmış, Efe kararı |
+  | 7 | duyarlılık config'i `DECISIONS.md` kaydıyla uyuşmuyor / plana bağlı değil | dur; dosya veya kayıt değişmiş, Efe'ye bildir (ızgara karar girdisi değildir ama ön kayıtlıdır; `--no-cost-sensitivity` yalnız prova içindir, gerçek koşuda kullanılmaz) |
 
 - [ ] Dry-run kendiliğinden `data/interim/studies/test/` oluşturmamıştır.
 
@@ -143,13 +145,15 @@ PYTHONPATH=src python scripts/run_holdout_test.py \
 
 - [ ] Süre: 30 sembolle 4–5 dakika (iid bootstrap ve sinyal günü başına AKD proxy
   hesabı ağırdır). Süreç kesilirse **yeniden başlatmayın** (adım 7).
-- [ ] Beklenen stdout (altı `[OK]` satırından sonra), yalnız yollar ve durumlar:
+- [ ] Beklenen stdout (yedi `[OK]` satırından sonra), yalnız yollar ve durumlar:
 
   ```
   run_study <spec_id> scope=primary: ok
     saved: data/interim/studies/<spec_id>_test_primary.json
+    cost_sensitivity saved: data/interim/studies/cost_sensitivity/<spec_id>_test_primary_cost_sensitivity.json
   run_study <spec_id> scope=secondary: ok
     saved: data/interim/studies/<spec_id>_test_secondary.json
+    cost_sensitivity saved: data/interim/studies/cost_sensitivity/<spec_id>_test_secondary_cost_sensitivity.json
   ... (H1, H2, H3, H4 için; toplam 8 çalıştırma)
   evaluate_study_family (primary H1+H2): ok
     saved: data/interim/studies/test/family_decision_primary.json
@@ -157,12 +161,19 @@ PYTHONPATH=src python scripts/run_holdout_test.py \
   ```
 
   Çıkış kodu `0`. Stdout'ta getiri, p değeri ya da karar metni **yoktur**.
+  Bir koşuda `cost_sensitivity FAILED (primary result unaffected; ...)` satırı çıkarsa
+  birincil sonuçlar ve Holm kararı geçerlidir; hata manifestte
+  `cost_sensitivity.errors` altındadır (ızgara karar girdisi değildir). Izgara
+  birincil analize göre 4 ek yeniden hesap içerir; süre 4–5 dakikanın üstüne çıkabilir
+  (ölçülmedi, gerçek veride bilinmiyor).
 
 ### 6. Çıktı doğrulaması (sonuç yorumlanmadan önce)
 
 - [ ] `data/interim/studies/test/` içinde `LOCK`, `manifest.json`,
   `family_decision_primary.json`; `data/interim/studies/` içinde 8 sonuç dosyası
-  (`*_test_primary.json` ×4, `*_test_secondary.json` ×4).
+  (`*_test_primary.json` ×4, `*_test_secondary.json` ×4); `data/interim/studies/cost_sensitivity/`
+  içinde 8 `*_cost_sensitivity.json` ("duyarlılık, karar girdisi değil"; manifest
+  `cost_sensitivity.artifacts` altında yol + SHA-256, `errors` boş).
 - [ ] `manifest.json`: `schema = fintr_holdout_test_manifest_v1`, `completed: true`,
   `error` alanı yok, `code_commit` = adım 2'deki HEAD, `test_plan_sha256` =
   `b5070b39…9182a`, `specs` altında dört spec için ham/kanonik hash ve seed

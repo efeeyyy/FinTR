@@ -393,10 +393,11 @@ class OneShotExecutionTests(RehearsalCase):
         return {key: json.loads(Path(entry["path"]).read_text(encoding="utf-8"))
                 for key, entry in self.manifest["results"].items()}
 
-    def test_dry_run_before_execute_passed_all_six_checks(self):
+    def test_dry_run_before_execute_passed_all_seven_checks(self):
         code, out, _err = self.dry
         self.assertEqual(code, 0, out)
-        self.assertEqual(len(re.findall(r"^\[OK\] \d\.", out, re.MULTILINE)), 6)
+        self.assertEqual(len(re.findall(r"^\[OK\] \d\.", out, re.MULTILINE)), 7)
+        self.assertIn("[OK] 7. cost_sensitivity_config: ok", out)
 
     def test_execute_succeeded(self):
         code, out, err = self.first
@@ -413,6 +414,7 @@ class OneShotExecutionTests(RehearsalCase):
             r"\[(OK|FAIL)\] \d\. \w+: .*",
             r"run_study \S+ scope=(primary|secondary): ok",
             r"  saved: \S+\.json",
+            r"  cost_sensitivity saved: \S+_cost_sensitivity\.json",
             r"evaluate_study_family \(primary H1\+H2\): ok",
             r"Manifest written: \S+manifest\.json",
         )
@@ -533,6 +535,27 @@ class OneShotExecutionTests(RehearsalCase):
                          if key.endswith(":primary") and ("_h1_" in key or "_h2_" in key)}
         self.assertEqual(set(family["input_result_sha256"]), primary_files)
         self.assertEqual(len(primary_files), 2)
+
+    def test_cost_sensitivity_grid_is_separate_and_non_decisional(self):
+        manifest = self.manifest
+        block = manifest["cost_sensitivity"]
+        self.assertEqual((block["enabled"], block["non_decisional"], block["errors"]), (True, True, {}))
+        self.assertEqual(block["grid_cost_bps_per_side"], ["0", "5", "20", "30"])
+        self.assertEqual(sorted(block["artifacts"]), sorted(manifest["results"]))  # 8 runs, 8 artifacts
+        family = json.loads(Path(manifest["family_decision_path"]).read_text(encoding="utf-8"))
+        for key, entry in block["artifacts"].items():
+            path = Path(entry["path"])
+            self.assertEqual(path.parent, self.out_dir / "cost_sensitivity")
+            self.assertEqual(entry["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+            self.assertNotIn(str(path), family["input_result_sha256"])
+            artifact = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(artifact["label"], "duyarlılık, karar girdisi değil")
+            self.assertIs(artifact["decisional"], False)
+            self.assertEqual([r["transaction_cost_bps"] for r in artifact["runs"]], ["0", "5", "20", "30"])
+            self.assertEqual(artifact["primary_result_sha256"], manifest["results"][key]["sha256"])
+            self.assertNotIn("p_value_for_holm", json.dumps(artifact))
+        # the primary result directory still holds exactly the 8 primary/secondary results
+        self.assertEqual(len(list(self.out_dir.glob("*.json"))), 8)
 
     def test_second_execute_is_refused_by_the_lock_and_changes_nothing(self):
         before = self._hash_tree(self.out_dir), self._hash_tree(self.test_dir)

@@ -59,6 +59,16 @@ feature/context katmanına bağlandığı anlamına gelmez.
   deterministik text renderer.
 - `fintr.inference.prompts`: model çağrısından bağımsız analysis prompt şablonu.
 - `fintr.evaluation`: piyasa mikroyapısı rubric'i ve deterministik kontroller.
+- `fintr.research.cost_sensitivity`: ön kayıtlı, karar girdisi olmayan işlem maliyeti
+  duyarlılık ızgarası (`configs/studies/prereg/cost_sensitivity_v1.json`;
+  `DECISIONS.md` 2026-10-16). Config sha256'sı `DECISIONS.md`'deki kayıtla (test planı
+  ile aynı kayıt kuralı) ve test planıyla doğrulanır, uyuşmazlık fail-closed'dır.
+  Karar: `scripts/run_study.py` birincil sonucu kaydettikten sonra aynı yüklenmiş veriyle
+  `run_study`'yi yalnız `cost_bps` değiştirerek yeniden çağırır ve ayrı artefakt yazar;
+  `run_holdout_test.py` bunu tek execute içinde varsayılan açık çalıştırır. Reddedilen
+  alternatifler: ayrı ikinci test koşusu (tek-sefer kilidini ve "tek test" kuralını
+  bozar), sonuç dosyasına ek alan yazmak (birincil artefakt bayt değişir, Holm girdisiyle
+  karışır), tüm veriyi her maliyet için yeniden yüklemek (aynı çıktı, gereksiz G/Ç).
 
 ## Veri modelleri
 

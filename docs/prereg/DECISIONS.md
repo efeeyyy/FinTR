@@ -220,3 +220,47 @@ Efe onayı 2026-10-14 (yönetici oturumu, "evet, 1 2 4'ü başlat"):
   yazılır.
 
 Kural, eşik veya spec değiştirmez. K4 ve holdout testi aynen geçerlidir.
+
+## 2026-10-16 — İşlem maliyeti duyarlılık ızgarası (Efe kararı; holdout testinden önce, veri okunmadan)
+
+Efe kararı 2026-10-16 (proje sahibi; `docs/prereg/TRIAL_LOG.md` P-03): holdout testinden **önce**
+işlem maliyeti duyarlılık ızgarası ön kaydedilir.
+
+- **Birincil analiz aynen dondurulduğu gibi kalır:** H1+H2, Holm m=2, vade 5 gün, E1 blok
+  bootstrap, maliyet **10 bps/taraf** (`FREEZE.md`, `test_plan_v1.json`; plan dosyası ve
+  hash'i değişmedi). Spec, eşik, plan ve birincil artefaktlar değişmez.
+- **Izgara (taraf başına bps):** 0, 5, 20, 30. Birincil 10 bps ızgarada yoktur (birincil
+  artefakttadır). Gidiş-dönüş = 2 × taraf başına değer; formül aynı motor formülüdür
+  (`net = brüt − 2 × bps/10000`).
+- **Kapsam:** test planının dört spec'i (H1-H4) ve iki kapsamı (birincil: 30 sembol,
+  ikincil: yalnız holdout), aynı pencere, aynı vadeler, aynı tohumlar. Yalnız maliyet
+  parametresi değişir; hesap, tek holdout yürütmesinin (`scripts/run_holdout_test.py`,
+  O_EXCL kilidi) içinde, aynı yüklenmiş veriyle yeniden çalıştırılır (ayrı bir test koşusu
+  değildir).
+- **Karar girdisi değildir:** Duyarlılık sonuçları yalnız tanımlayıcıdır. Holm kararına
+  (`evaluate_study_family.py` yalnız birincil H1+H2 sonuçlarını alır), hipotez sonucuna,
+  ikincil kapsam yorumuna veya birincil rapora girmez; ayrı artefakta
+  (`..._test_<kapsam>_cost_sensitivity.json`) yazılır ve her yerde "duyarlılık, karar
+  girdisi değil" etiketiyle anılır. Artefakttaki `hypothesis_test` bloğundan Holm'a ait
+  alanlar (`p_value_for_holm`, `enters_holm_family`, aile alanları) çıkarılır. Duyarlılık
+  sonucu birincil sonucu "kurtarmak" veya "çürütmek" için kullanılamaz; hangi maliyetin
+  doğru olduğuna dair yeni bir karar üretmez.
+- **Gerekçe:** Taraf başına 10 bps kaynaklı bir komisyon değeri değil varsayımdır
+  (`README.md` Ortak tasarım, Maliyet satırı); gerçek maliyet bilinmediği için birincil
+  sonucun maliyet varsayımına ne kadar duyarlı olduğu, sonuç görülmeden önce belirlenmiş
+  sabit bir ızgarayla raporlanır. Izgara sonuç görüldükten sonra seçilirse analist serbestlik
+  derecesi doğar; bu yüzden şimdi, veri okunmadan sabitlenir.
+- **Doğrulama:** Config'in SHA-256'sı aşağıda kayıtlıdır; `run_holdout_test.py` (dry-run
+  denetim 7 ve execute) ve `run_study.py --cost-sensitivity-config` bu kaydı okuyup
+  eşleşmezse **durur** (fail-closed); `scripts/check_env.py` da aynı kaydı denetler.
+  Config ayrıca `test_plan_v1.json`'un hash'ine ve birincil maliyete (10) bağlıdır.
+- **Varsayılan açık:** `run_holdout_test.py` ızgarayı varsayılan olarak hesaplar (ön kayıtlı
+  olduğu için); yalnız prova/hata ayıklama için açık `--no-cost-sensitivity` bayrağı vardır
+  ve manifest bunu kaydeder. Izgara hesabı birincil sonuçlar kaydedildikten sonra çalışır;
+  ızgara hesabı hata verirse birincil sonuçlar ve Holm kararı etkilenmez, hata manifestte
+  `cost_sensitivity.errors` altında kaydedilir.
+
+K4 (2027-03-31'e kadar ara performans değerlendirmesi yok) ve holdout testinin tek sefer
+kuralı aynen geçerlidir.
+
+Duyarlılık config'i: `configs/studies/prereg/cost_sensitivity_v1.json` (şema `fintr_cost_sensitivity_v1`), SHA-256 `4897e76d785aa52f09394b500a096afae8b90a126637d84fe9e252a0dd2d7454`.

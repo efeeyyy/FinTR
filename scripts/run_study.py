@@ -11,6 +11,7 @@ See ``docs/study_engine.md``.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -29,6 +30,7 @@ from fintr.features.price_join import (
 from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
 from fintr.evaluation.symbol_split import NO_SPLIT_GUARD_WARNING
 from fintr.research.capture_merge import CaptureMergeError, CaptureSource, merge_period_captures
+from fintr.research import cost_sensitivity
 from fintr.research.engine import EngineError, load_symbol_data, tradeable_price_bars
 from fintr.research.report import RunParameters, build_reproducibility_block, render_text, run_study
 from fintr.research.study_spec import StudySpecError, load_study_spec
@@ -38,6 +40,10 @@ from fintr.research.test_plan import ALLOWED_TEST_SCOPES, TestPlanError, load_te
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT_DIR = Path("data/interim/studies")
 DEFAULT_CUSTODY_SCALE_JUMP_RATIO = Decimal("3")
+DEFAULT_DECISIONS_DOC = PROJECT_ROOT / "docs" / "prereg" / "DECISIONS.md"
+# Exit code: the primary result was computed and saved, but the opt-in
+# (non-decisional) cost-sensitivity grid failed; the primary is unaffected.
+EXIT_SENSITIVITY_FAILED = 3
 
 
 def _decimal(value: str) -> Decimal:
@@ -134,6 +140,26 @@ def _parser() -> argparse.ArgumentParser:
             f"default: {DEFAULT_RATIO_REGIME_TOLERANCE}"
         ),
     )
+    parser.add_argument(
+        "--cost-sensitivity-config", type=Path, default=None, metavar="COST_SENSITIVITY_JSON",
+        help=(
+            "opt-in, requires --split test with the split guard, --save and --cost-bps equal "
+            "to the test plan's cost: after the primary result is saved, re-run the same "
+            "frozen computation for each extra per-side cost in this pre-registered "
+            "fintr_cost_sensitivity_v1 config (e.g. configs/studies/prereg/cost_sensitivity_v1.json; "
+            "its sha256 must equal the value recorded in --decisions-doc) and write a separate, "
+            "non-decisional artifact; the primary result file is unchanged"
+        ),
+    )
+    parser.add_argument(
+        "--decisions-doc", type=Path, default=DEFAULT_DECISIONS_DOC,
+        help="DECISIONS.md that records the cost-sensitivity config sha256 "
+             "(only with --cost-sensitivity-config)",
+    )
+    parser.add_argument(
+        "--cost-sensitivity-out-dir", type=Path, default=None,
+        help="where the cost-sensitivity artifact is written (default: <out-dir>/cost_sensitivity)",
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR,
                         help=f"default: {DEFAULT_OUT_DIR}")
@@ -151,9 +177,12 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _save(out_dir: Path, spec_id: str, split: str, payload: bytes, *, test_scope: str | None = None) -> Path:
+def _save(
+    out_dir: Path, spec_id: str, split: str, payload: bytes, *, test_scope: str | None = None,
+    label_suffix: str = "",
+) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    label = split if test_scope is None else f"{split}_{test_scope}"
+    label = (split if test_scope is None else f"{split}_{test_scope}") + label_suffix
     for attempt in range(1000):
         suffix = "" if attempt == 0 else f"-{attempt}"
         target = out_dir / f"{spec_id}_{label}{suffix}.json"
@@ -298,9 +327,18 @@ def main(argv: list[str] | None = None) -> int:
     # unless --test-scope primary asked for every declared symbol.
     symbol_scope = "declared" if test_scope in (None, "primary") else "holdout_only"
 
+    if args.cost_sensitivity_config is not None and (test_scope is None or not args.save):
+        print(
+            "Study failed: --cost-sensitivity-config requires --split test with the split guard "
+            "active, and --save",
+            file=sys.stderr,
+        )
+        return 1
+
     test_plan_path: str | None = None
     test_plan_sha256: str | None = None
     test_window_end = None
+    sensitivity_config = None
     if test_scope is not None:
         try:
             plan = load_test_plan(args.test_plan)
@@ -334,6 +372,30 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         plan.scope(test_scope)  # validates the scope block exists and is well-formed
+        if args.cost_sensitivity_config is not None:
+            # Verified before any data is loaded or any result is computed
+            # (fail closed): the file's sha256 must equal the DECISIONS.md record.
+            try:
+                sensitivity_config = cost_sensitivity.load_verified_config(
+                    args.cost_sensitivity_config, args.decisions_doc, plan,
+                )
+                prereg = spec.preregistration
+                cost_sensitivity.require_covered(
+                    sensitivity_config,
+                    hypothesis_id=None if prereg is None else prereg.hypothesis_id,
+                    test_scope=test_scope,
+                )
+            except cost_sensitivity.CostSensitivityError as exc:
+                print(f"Study failed: cost sensitivity config rejected ({exc})", file=sys.stderr)
+                return 1
+            if args.cost_bps != sensitivity_config.primary_cost_bps_per_side:
+                print(
+                    f"Study failed: --cost-bps {args.cost_bps} is not the primary cost "
+                    f"({sensitivity_config.primary_cost_bps_per_side}) the sensitivity grid is "
+                    "pre-registered around",
+                    file=sys.stderr,
+                )
+                return 1
         test_plan_path = str(args.test_plan)
         test_plan_sha256 = plan.plan_sha256
         test_window_end = plan.test_end
@@ -414,11 +476,42 @@ def main(argv: list[str] | None = None) -> int:
         saved = _save(args.out_dir, spec.spec_id, args.split, payload, test_scope=test_scope)
         print(f"Result saved: {saved}", file=sys.stderr)
 
+    exit_code = 0
+    if sensitivity_config is not None:
+        # Runs after the primary result is saved; it only re-runs the frozen
+        # computation with another cost and never touches the primary file.
+        # Non-decisional: a failure here must not lose or alter the primary.
+        try:
+            runs = [
+                run_study(
+                    spec, symbol_data, split=args.split, params=replace(params, cost_bps=cost),
+                    symbol_scope=symbol_scope, test_window_end=test_window_end,
+                )
+                for cost in sensitivity_config.grid_cost_bps_per_side
+            ]
+            artifact = cost_sensitivity.build_artifact(
+                config=sensitivity_config, primary_result=result,
+                primary_payload_sha256=hashlib.sha256(payload).hexdigest(), runs=runs,
+            )
+            artifact_payload = (json.dumps(artifact, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+            sensitivity_dir = args.cost_sensitivity_out_dir or (args.out_dir / "cost_sensitivity")
+            saved_sensitivity = _save(
+                sensitivity_dir, spec.spec_id, args.split, artifact_payload,
+                test_scope=test_scope, label_suffix="_cost_sensitivity",
+            )
+            print(f"Cost sensitivity saved: {saved_sensitivity}", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 -- non-decisional; the primary is already saved
+            print(
+                f"Cost sensitivity failed (primary result unaffected): {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            exit_code = EXIT_SENSITIVITY_FAILED
+
     if args.format == "json":
         sys.stdout.buffer.write(payload)
     else:
         sys.stdout.buffer.write(render_text(result).encode("utf-8"))
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

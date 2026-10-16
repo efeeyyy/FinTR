@@ -43,7 +43,7 @@ PYPROJECT = {
 }
 HASH_LABELS = (
     "spec hash (FREEZE.md)", "tarayıcı kuralları", "split hash (spec kaydı)",
-    "test planı hash (DECISIONS.md)",
+    "test planı hash (DECISIONS.md)", "duyarlılık config hash (DECISIONS.md)",
 )
 
 
@@ -212,7 +212,8 @@ class ClaudeCliTests(unittest.TestCase):
 
 class HashCheckTests(unittest.TestCase):
     def _copy_tree(self, destination: Path) -> Path:
-        for relative in (ce.FREEZE_DOC, ce.DECISIONS_DOC, ce.TEST_PLAN, ce.SCANNER_RULES):
+        for relative in (ce.FREEZE_DOC, ce.DECISIONS_DOC, ce.TEST_PLAN, ce.COST_SENSITIVITY,
+                         ce.SCANNER_RULES):
             target = destination / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(ROOT / relative, target)
@@ -221,7 +222,8 @@ class HashCheckTests(unittest.TestCase):
         return destination
 
     def test_real_repository_hashes_match_recorded_values(self):
-        for check in (ce.check_freeze_hashes, ce.check_scanner_rules, ce.check_test_plan_hash):
+        for check in (ce.check_freeze_hashes, ce.check_scanner_rules, ce.check_test_plan_hash,
+                      ce.check_cost_sensitivity_hash):
             with self.subTest(check=check.__name__):
                 self.assertEqual(check(ROOT).level, ce.OK, check(ROOT).detail)
 
@@ -251,6 +253,14 @@ class HashCheckTests(unittest.TestCase):
             plan = root / ce.TEST_PLAN
             plan.write_bytes(plan.read_bytes() + b" ")
             self.assertEqual(ce.check_test_plan_hash(root).level, ce.ERR)
+
+    def test_modified_cost_sensitivity_config_is_a_hash_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._copy_tree(Path(tmp))
+            self.assertEqual(ce.check_cost_sensitivity_hash(root).level, ce.OK)
+            config = root / ce.COST_SENSITIVITY
+            config.write_bytes(config.read_bytes() + b" ")
+            self.assertEqual(ce.check_cost_sensitivity_hash(root).level, ce.ERR)
 
     def test_missing_freeze_doc_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
