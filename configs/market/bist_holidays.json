@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
-  "status": "draft_unverified",
-  "verified_by": null,
+  "status": "approved",
+  "verified_by": "Efe",
+  "verified_on": "2026-10-16",
   "market": "BIST equity (Pay Piyasası)",
   "coverage": {
     "start": "2023-01-01",
@@ -9,7 +10,9 @@
   },
   "generated_utc": "2026-10-14",
   "notes": [
-    "Taslak: Efe resmi listeyle doğrulamadan koda bağlanmamalı.",
+    "Onay: Efe, 2026-10-16. Belirsiz (uncertain) ve beklenen (expected_not_announced) kayıtlar, birincil kaynak kontrolü yapılmadan Efe tarafından kabul edildi: 2023-02-08..14 deprem kapanışı (ikincil kaynaklar), 2023-10-28, hafta sonuna denk gelen arifelerin tam kapalı kaydı, 2027 Q1 (Diyanet listesi; BIST tablosu yok).",
+    "2027 için BIST'in tatil tablosu yayımlanınca (tahmini Aralık 2026) yeniden kontrol edilecek; o zamana kadar 2027 günleri expected_not_announced kalır.",
+    "Gün başına status alanı korunur: official (BIST belgesi), uncertain, expected_not_announced.",
     "Hafta sonu günleri de resmi tablolarda geçtikleri için listelenmiştir (weekday alanı).",
     "Yarım gün seans bitişi (13:00) resmi 'Resmi Tatil Günleri' sayfasından; PDF'ler yalnız 'yarım gün' der.",
     "İdari izin köprü günleri BIST tarafından kapalı ilan edilmediği sürece dahil edilmemiştir; resmi tablolarda böyle gün görülmedi.",

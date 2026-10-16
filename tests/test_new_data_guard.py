@@ -70,8 +70,31 @@ def _write_scan(root: Path, unsettled: int | None) -> None:
     (target / "observations.json").write_text(json.dumps(document), encoding="utf-8")
 
 
-def _run_pipeline(argv, *, last_end="2026-10-06", unsettled=0, calendar_end=date(2026, 10, 9)):
-    """Run main() against a temp tree; returns (rc, called script names, stdout, stderr)."""
+def _holiday_calendar(closures=(), half_days=(), *, end="2026-12-31") -> dict:
+    """Hypothetical fixture calendar for 2026 (not the real config). ``closures`` and
+    ``half_days`` are (YYYY-MM-DD, weekday name) pairs; the default has one unused closure
+    (2026-12-25) so that the file is valid and no date used by these tests is listed."""
+    days = [(d, w, "full_closure", None) for d, w in closures]
+    days += [(d, w, "half_day", "13:00") for d, w in half_days]
+    days = sorted(days) or [("2026-12-25", "Friday", "full_closure", None)]
+    return {
+        "schema_version": 1, "status": "approved", "verified_by": "fixture", "verified_on": "2026-01-01",
+        "market": "fixture", "coverage": {"start": "2026-01-01", "end": end},
+        "generated_utc": "2026-01-01", "notes": ["fixture"],
+        "sources": [{"id": "s1", "url": "https://example.invalid/x", "accessed_utc": "2026-01-01T00:00:00Z",
+                     "title": "fixture"}],
+        "days": [
+            {"date": d, "weekday": w, "kind": kind, "session_end_local": end_local,
+             "name_tr": f"Deneme tatili {d}", "source_id": "s1", "status": "official", "note": ""}
+            for d, w, kind, end_local in days
+        ],
+    }
+
+
+def _run_pipeline(argv, *, last_end="2026-10-06", unsettled=0, calendar_end=date(2026, 10, 9),
+                  holidays=None):
+    """Run main() against a temp tree; returns (rc, called script names, stdout, stderr).
+    ``holidays``: fixture BIST calendar document, or the string "missing" for no readable file."""
     calls: list[str] = []
 
     def run(cmd, **kwargs):
@@ -86,7 +109,11 @@ def _run_pipeline(argv, *, last_end="2026-10-06", unsettled=0, calendar_end=date
         tmp = Path(directory)
         _write_runs(tmp, last_end)
         _write_scan(tmp, unsettled)
+        calendar_path = tmp / "bist_holidays.json"
+        if holidays != "missing":
+            calendar_path.write_text(json.dumps(holidays or _holiday_calendar()), encoding="utf-8")
         with patch.object(rdp, "ROOT", tmp), patch.object(rdp.subprocess, "run", run), \
+                patch.object(rdp, "MARKET_CALENDAR", calendar_path), \
                 patch.object(rdp, "load_price_calendar", lambda *a, **k: calendar), \
                 redirect_stdout(out), redirect_stderr(err):
             rc = rdp.main(["--layout", "v2", *argv])
@@ -117,6 +144,48 @@ class PipelineGuardTests(unittest.TestCase):
     def test_holiday_skips(self):
         # R=Fri 2026-10-09 -> E=Thu 10-08: inside the price coverage, no tradeable bar
         self.assertSkipped(_run_pipeline(["--run-date", "2026-10-09"], last_end="2026-10-07"), "2026-10-07")
+
+    def test_official_holiday_skips_before_the_price_history_heuristic(self):
+        # R=Wed 2026-10-14 -> E=Tue 10-13: beyond the saved price coverage (10-09), so the price
+        # heuristic alone would collect; the calendar closure skips it.
+        holidays = _holiday_calendar(closures=[("2026-10-13", "Tuesday")])
+        rc, calls, out, err = _run_pipeline(["--run-date", "2026-10-14"], last_end="2026-10-09", holidays=holidays)
+        self.assertEqual((rc, calls), (0, []))
+        self.assertIn(SKIP_LINE.format(last="2026-10-09"), out.splitlines())
+        self.assertIn("reason: official_holiday (window end 2026-10-13)", out)
+        self.assertIn("resmî tatil: Deneme tatili 2026-10-13", out)
+        self.assertEqual(err, "")
+
+    def test_same_day_without_a_listed_closure_still_collects(self):
+        self.assertCollected(_run_pipeline(["--run-date", "2026-10-14"], last_end="2026-10-09"))
+
+    def test_official_holiday_with_unsettled_day_still_collects(self):
+        holidays = _holiday_calendar(closures=[("2026-10-13", "Tuesday")])
+        self.assertCollected(_run_pipeline(["--run-date", "2026-10-14"], last_end="2026-10-09",
+                                           unsettled=1, holidays=holidays))
+
+    def test_half_day_is_collected(self):
+        holidays = _holiday_calendar(half_days=[("2026-10-13", "Tuesday")])
+        self.assertCollected(_run_pipeline(["--run-date", "2026-10-14"], last_end="2026-10-09", holidays=holidays))
+
+    def test_force_collect_bypasses_the_official_holiday_skip(self):
+        holidays = _holiday_calendar(closures=[("2026-10-13", "Tuesday")])
+        self.assertCollected(_run_pipeline(["--run-date", "2026-10-14", "--force-collect"],
+                                           last_end="2026-10-09", holidays=holidays))
+
+    def test_window_end_outside_calendar_coverage_logs_and_falls_back(self):
+        holidays = _holiday_calendar(closures=[("2026-10-08", "Thursday")], end="2026-10-09")
+        rc, calls, out, err = _run_pipeline(["--run-date", "2026-10-14"], last_end="2026-10-09", holidays=holidays)
+        self.assertEqual(calls, ["collect_daily.py", "scan_observations.py", "notify_observations.py"])
+        self.assertIn("BIST holiday calendar does not cover 2026-10-13", err)
+
+    def test_unreadable_calendar_logs_and_falls_back_to_the_price_heuristic(self):
+        rc, calls, out, err = _run_pipeline(["--run-date", "2026-10-14"], last_end="2026-10-09", holidays="missing")
+        self.assertEqual(calls, ["collect_daily.py", "scan_observations.py", "notify_observations.py"])
+        self.assertIn("BIST holiday calendar unusable", err)
+        # the existing heuristic is unchanged without the calendar
+        self.assertSkipped(_run_pipeline(["--run-date", "2026-10-09"], last_end="2026-10-07", holidays="missing"),
+                           "2026-10-07")
 
     def test_normal_day_collects(self):
         # R=Tue 2026-10-13 -> E=Mon 10-12, a weekday beyond the saved end and the coverage
@@ -168,6 +237,25 @@ class DecideNewDataTests(unittest.TestCase):
 
     def test_a_weekday_beyond_price_coverage_is_never_called_a_holiday(self):
         self.assertTrue(self.decide(date(2026, 10, 12)).expect_new_data)
+
+    def test_official_holiday_reason_and_precedence(self):
+        out = self.decide(date(2026, 10, 12), official_holiday_name="Deneme")
+        self.assertEqual((out.expect_new_data, out.reason, out.official_holiday_name),
+                         (False, guard.REASON_OFFICIAL_HOLIDAY, "Deneme"))
+        # before the price-history heuristic and the already-collected rule
+        self.assertEqual(self.decide(date(2026, 10, 8), official_holiday_name="Deneme").reason,
+                         guard.REASON_OFFICIAL_HOLIDAY)
+        self.assertEqual(self.decide(date(2026, 10, 6), last_saved=date(2026, 10, 6),
+                                     official_holiday_name="Deneme").reason, guard.REASON_OFFICIAL_HOLIDAY)
+        # after unsettled and weekend
+        self.assertEqual(self.decide(date(2026, 10, 12), unsettled_pending=True,
+                                     official_holiday_name="Deneme").reason, guard.REASON_UNSETTLED)
+        self.assertEqual(self.decide(date(2026, 10, 10), official_holiday_name="Deneme").reason,
+                         guard.REASON_WEEKEND)
+
+    def test_no_official_verdict_changes_nothing(self):
+        self.assertIsNone(self.decide(date(2026, 10, 8)).official_holiday_name)
+        self.assertEqual(self.decide(date(2026, 10, 8)).reason, guard.REASON_HOLIDAY)
 
 
 def _price_document(symbol: str, start: str, end: str, bars: list[dict]) -> dict:

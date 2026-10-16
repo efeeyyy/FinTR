@@ -630,6 +630,13 @@ formül yeniden yazılmadı: `fintr.research.conditions.evaluate_condition`,
 `fintr.research.engine.load_symbol_data`/`detect_custody_scale_jumps`/
 `drop_ratio_regime_signal_dates`/`tradeable_price_bars` ve
 `fintr.evaluation.symbol_guard.load_active_guards` doğrudan çağrılır.
+
+BIST tatil takvimi (2026-10-16, Efe onayı): `configs/market/bist_holidays.json`
+(2023-01..2027-03; gün başına `official`/`uncertain`/`expected_not_announced`)
+`src/fintr/data/market_calendar.py` ile sıkı doğrulanıp okunur (kapsam dışı tarih
+hata verir, sessiz varsayılan yok); yalnız `run_daily_pipeline.py`'nin yeni-veri
+koruması ve `llm_note.py`'nin `generated_late` kuralı kullanır, dondurulmuş
+çalışma/tarayıcı kural kodu etkilenmez.
 `fintr.scanner.rules.load_scanner_rules`, `configs/scanner/rules_v1.json`
 içindeki her kuralın `docs/prereg/FREEZE.md`'deki ham dosya ve kanonik
 `spec_sha256` hash'lerini spec dosyasının disk üzerindeki hâliyle karşılaştırır

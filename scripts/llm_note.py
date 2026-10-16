@@ -40,6 +40,12 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from fintr.data.market_calendar import (
+    DEFAULT_MARKET_CALENDAR_PATH,
+    MarketCalendarError,
+    OutsideCoverageError,
+    load_market_calendar,
+)
 from fintr.evaluation.live_capture import LivePilotCaptureError, validate_context_contains_no_secrets
 from fintr.evaluation.symbol_guard import SymbolGuardError, load_active_guards
 from fintr.llm_note import runner
@@ -161,17 +167,34 @@ def _iso(moment: datetime) -> str:
 _ISTANBUL = timezone(timedelta(hours=3))  # Europe/Istanbul is fixed UTC+3 since 2016
 
 
-def generation_provenance(as_of: date, now_utc: datetime) -> dict:
+LATE_RULE_CALENDAR = "next_trading_day_bist_calendar_v1"
+LATE_RULE_OUTSIDE_COVERAGE = "next_weekday_outside_calendar_coverage"
+LATE_RULE_CALENDAR_UNREADABLE = "next_weekday_calendar_unreadable"
+
+
+def generation_provenance(as_of: date, now_utc: datetime,
+                          calendar_path: Path = PROJECT_ROOT / DEFAULT_MARKET_CALENDAR_PATH) -> dict:
     """Backfill marker (Efe kararı 2026-10-14): ``generated_late`` is true when the generation
-    date (Europe/Istanbul) is later than the next weekday after ``as_of`` (Fri -> Mon is not late).
-    Holidays are ignored (no calendar in the repo). Such notes were written after the fact and
-    must never feed any study, holdout test or model/prompt choice."""
+    date (Europe/Istanbul) is later than the next trading day after ``as_of``: the next weekday
+    that is not a full closure in the approved BIST holiday calendar (Fri -> Mon is not late;
+    a holiday in between pushes the deadline). ``generated_late_rule`` records which rule decided:
+    ``next_trading_day_bist_calendar_v1``; or, when the calendar does not cover ``as_of`` or the
+    search for the next trading day (``next_weekday_outside_calendar_coverage``) or cannot be
+    read (``next_weekday_calendar_unreadable``), the older next-weekday rule with holidays ignored.
+    Such notes were written after the fact and must never feed any study, holdout test or
+    model/prompt choice."""
     local_day = now_utc.astimezone(_ISTANBUL).date()
-    next_weekday = as_of + timedelta(days=1)
-    while next_weekday.weekday() >= 5:
-        next_weekday += timedelta(days=1)
+    try:
+        deadline = load_market_calendar(calendar_path).next_trading_day(as_of)
+        rule = LATE_RULE_CALENDAR
+    except (OutsideCoverageError, MarketCalendarError) as exc:
+        deadline = as_of + timedelta(days=1)
+        while deadline.weekday() >= 5:
+            deadline += timedelta(days=1)
+        rule = LATE_RULE_OUTSIDE_COVERAGE if isinstance(exc, OutsideCoverageError) else LATE_RULE_CALENDAR_UNREADABLE
     return {"generated_on_local": local_day.isoformat(),
-            "generated_late": local_day > next_weekday}
+            "generated_late": local_day > deadline,
+            "generated_late_rule": rule}
 
 
 def _size_summary(outcomes: list[SymbolOutcome]) -> str:

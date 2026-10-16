@@ -12,15 +12,19 @@ Decision for window end ``E = R - end_offset_days`` (the planner's):
    collect; the rolling window re-reads recent days to close late custody
    settlement and provider revisions, even when no new day is expected.
 2. ``E`` is a Saturday or Sunday -> no new trading day.
-3. ``E`` is a weekday inside the price-history coverage (``E <=`` the latest
+3. ``E`` is a full closure in the approved BIST holiday calendar
+   (``fintr.data.market_calendar``; the caller passes the verdict, and passes
+   ``None`` with no claim when ``E`` is outside the calendar's coverage) ->
+   official holiday, no new trading day. A half day is a trading day.
+4. ``E`` is a weekday inside the price-history coverage (``E <=`` the latest
    requested end of a saved price file) but has no tradeable bar in any
    symbol's history -> holiday, no new trading day. The calendar is derived
    from price history only, so a holiday that no price fetch has covered yet
    is unknown and is collected as before (once; the price step of that run
    then records it).
-4. Every planned symbol's last saved window end (``max`` of run record and
+5. Every planned symbol's last saved window end (``max`` of run record and
    base-capture floor, as in the planner) is ``>= E`` -> already collected.
-5. Otherwise a new trading day is expected -> collect.
+6. Otherwise a new trading day is expected -> collect.
 
 Any missing or unreadable input resolves to "collect": the guard may only
 skip when it can prove nothing new is expected.
@@ -46,6 +50,7 @@ from fintr.research.engine import tradeable_price_bars
 
 REASON_UNSETTLED = "unsettled_days_pending"
 REASON_WEEKEND = "weekend"
+REASON_OFFICIAL_HOLIDAY = "official_holiday"
 REASON_HOLIDAY = "holiday"
 REASON_ALREADY_COLLECTED = "already_collected"
 REASON_NEW_TRADING_DAY = "new_trading_day_expected"
@@ -77,6 +82,8 @@ class NewDataDecision:
     reason: str
     window_end: date
     last_trading_day: date | None
+    # Calendar name (name_tr) of the closure when reason is REASON_OFFICIAL_HOLIDAY.
+    official_holiday_name: str | None = None
 
 
 def istanbul_date(moment: datetime) -> date:
@@ -198,7 +205,11 @@ def last_saved_end(
 
 def decide_new_data(
     *, window_end: date, calendar: PriceCalendar, last_saved: date | None, unsettled_pending: bool,
+    official_holiday_name: str | None = None,
 ) -> NewDataDecision:
+    """``official_holiday_name``: the BIST calendar's name for ``window_end`` when it is a
+    full closure there; ``None`` = not a listed closure, or no calendar verdict (the
+    price-history heuristic below then decides as before)."""
     last_trading = calendar.last_trading_day(window_end)
 
     def decision(expect: bool, reason: str) -> NewDataDecision:
@@ -208,6 +219,10 @@ def decide_new_data(
         return decision(True, REASON_UNSETTLED)
     if window_end.weekday() >= 5:
         return decision(False, REASON_WEEKEND)
+    if official_holiday_name is not None:
+        return NewDataDecision(
+            False, REASON_OFFICIAL_HOLIDAY, window_end, last_trading, official_holiday_name,
+        )
     if (
         calendar.coverage_end is not None and window_end <= calendar.coverage_end
         and window_end not in calendar.trading_days
