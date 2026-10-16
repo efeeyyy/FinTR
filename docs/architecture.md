@@ -971,3 +971,33 @@ holdout sonucu bunu desteklemezse adım kapatılmalıdır; (5) CLI bayrakları s
 bağlıdır (`runner.build_command` tek yerdedir) ve abonelik limitine takılırsa not
 "alınamadı" olur, deterministik bildirim etkilenmez. Ayrıntı `docs/notify.md`,
 `docs/live_check_runbook.md` 6i ve `docs/prereg/DECISIONS.md`.
+
+
+### Yürüyen isabet izleme (`fintr.accuracy`, `scripts/track_accuracy.py`)
+
+Karar (Efe, 2026-10-16, `docs/prereg/DECISIONS.md`, `TRIAL_LOG.md` T-31): K4 yalnız 20
+geliştirme hissesi için kaldırıldı; holdout sembolleri izlenmez (kod koruması
+`validate_symbols` ve tarayıcının mevcut holdout reddi), kural/eşik/spec dondurulmuş kalır,
+Telegram çıktısı yoktur. Problem: kuralların yönünün gerçekte tutup tutmadığı holdout'tan
+önce de gözlenmek isteniyor; saf isabet oranı yanıltıcıdır (taban oranı, bağımlı küçük örneklem,
+örneklem içi dönem, ileriye bakış). Karar: opt-in, çevrimdışı, tanımlayıcı bir izleme; ayrı
+paket, motora ve tarayıcıya dokunmaz (`engine._entry_index`/`_price_return` ve
+`evaluate_rule_for_symbol` aynen yeniden kullanılır).
+
+Tasarım: (1) tahmin: kayıtlı tarama (`scanner_daily`, hash'i backfill olmayan
+`forward_log` kaydıyla eşleşiyorsa `forward_log`, yoksa `saved_scan`) tercih edilir; yoksa
+`point_in_time_view` ile yalnız `t` ve öncesi veriyle (takas T+2 maskeli, fiyat `<= t`)
+`reconstructed`; kayıtlı tahminler yeniden kurulumla çapraz denetlenir. (2) sonuç: motorun
+giriş (`next_open`), çıkış, düşme ve getiri tanımı; 5 ve 1 vade; sıfır getiri isabet değil;
+maliyetli isabet 2x10 bp; vadesi dolmayan `pending`. (3) taban: aynı hisse/gün/dönem/vade
+koşulsuz yön oranı; Wilson %95. (4) `train_window` (<= 2026-09-25) ve `post_train` ayrı
+dallarda, tek sayıda asla toplanmaz. (5) çıktı `fintr_accuracy_v1`, üzerine yazılmaz, girdi
+dosyası hash'leri ve kod commit'iyle.
+
+Alternatifler: gün başına `scan_observations.py --data-cutoff-utc` (taban yakalama tek dosya,
+2026-09-25 öncesi için anlamsız ve ağır) reddedildi; sonuçları bildirime sokmak reddedildi;
+p-değeri/anlamlılık testi reddedildi (bağımlı ve küçük örneklem; planlı test holdout'ta).
+Sonuçlar ve riskler: yeniden kurulan günlerde sonradan revize edilmiş AKD satırları
+artık ileriye bakıştır (çıktıda sayılır, `docs/accuracy.md`); 30 sembollü holdout testi
+geliştirme sembolleri bakımından artık kör değildir (E5 kör kalır); bir kural bu sayılar
+görüldükten sonra değişirse o kuralın holdout penceresi değişiklik tarihinde yeniden başlar.
