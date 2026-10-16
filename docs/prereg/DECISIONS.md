@@ -220,3 +220,36 @@ Efe onayı 2026-10-14 (yönetici oturumu, "evet, 1 2 4'ü başlat"):
   yazılır.
 
 Kural, eşik veya spec değiştirmez. K4 ve holdout testi aynen geçerlidir.
+
+## 2026-10-16 — K4 yalnız geliştirme hisseleri için kaldırıldı: yürüyen isabet izleme (Efe kararı)
+
+Efe (proje sahibi) 2026-10-16'da karar verdi:
+
+- **K4** ("2027-03-31'e kadar H1-H4 için ara performans değerlendirmesi yok") **yalnız 20
+  GELİŞTİRME hissesi için kaldırıldı** (aktif split `configs/splits/current.json`'daki
+  development listesi). **10 holdout hissesi izlenmez**; mevcut kod korumasının (tarama,
+  analiz ve izleme araçlarında holdout sembol reddi) hepsi aynen kalır.
+- **Birincil holdout testi** (30 sembol, 2026-10-01..2027-03-31, Holm H1+H2) planlandığı gibi
+  kalır, ancak şu not düşülür: 2026-10-16'dan itibaren geliştirme sembollerinin pencere içi
+  yön isabet oranı izlendiği için 30 sembollü test **geliştirme sembolleri bakımından kör
+  değildir**. **E5** (yalnız holdout sembolleri) kör kalır.
+- **Kurallar, eşikler ve spec'ler dondurulmuş kalır** (`FREEZE.md` hash'leri). Bir kural bu
+  sayılar görüldükten sonra değiştirilirse, o kuralın holdout penceresi **değişiklik tarihinde
+  yeniden başlar** ve bu tarih burada ve `TRIAL_LOG.md`'de kaydedilir.
+- **Telegram çıktısı yoktur**: isabet izleme bildirim botuna, mesajlara ya da analiz notuna
+  girmez; yalnız `data/interim/accuracy/<koşu tarihi>/` altına yerel dosya yazar.
+
+**Araç.** `scripts/track_accuracy.py` (`src/fintr/accuracy/`; opt-in, `run_daily_pipeline.py
+--accuracy`, varsayılan kapalı). Yürüyen (walk-forward) ve zaman-noktası güvenli: her sinyal
+günü t için yalnız t ve öncesi veri; kayıtlı tahmin (`forward_log` / `scanner_daily`) varsa o
+tercih edilir (`prediction_source`), yoksa yeniden kurulur (`reconstructed`). Sonuç: 5 işlem
+günü (birincil), 1 işlem günü (ikincil), motorun giriş/çıkış ve getiri tanımıyla; maliyetli
+isabet (2x10 bp); vadesi dolmamış `pending`. Taban oranı (koşulsuz yön oranı) ve Wilson %95 GA
+ile; `train_window` (<= 2026-09-25, kurallar bu veriyle kuruldu) ve `post_train` ayrı raporlanır,
+asla tek sayıda toplanmaz. Bilinen artık ileriye bakış (yeniden kurulan günlerde sonradan
+revize edilmiş kayıtlar) `docs/accuracy.md`'de. Deneme kaydı: `TRIAL_LOG.md` T-31 (hesaptan
+önce yazıldı).
+
+**Değişmeyen.** Spec hash'leri, eşikler, tarayıcı kuralları, holdout planı
+(`test_plan_v1.json`), holdout verisinin analizde kullanılmaması. Bu kayıt bir avantaj (edge)
+iddiası değildir; izleme tanımlayıcıdır ve doğrulama yerine geçmez.
